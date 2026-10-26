@@ -1,0 +1,12 @@
+/runtime/
+/analysis/
+/config.local.json
+/config.local.json.*.tmp
+/dist/
+/node_modules/
+/dependencies/
+/WuwaTappoHelper.exe
+npm-debug.log*
+.DS_Store
+Thumbs.db
+Desktop.ini

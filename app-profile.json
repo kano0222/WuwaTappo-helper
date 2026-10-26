@@ -1,0 +1,18 @@
+{
+  "profiles": [
+    {
+      "version": "1.0.0",
+      "executableSha256": "9d9c0c73dd32ad1a80756f277582aa7868177033b8a7a880e083299ed9e477dd",
+      "commonPath": "/assets/index-BPErPBFh.js",
+      "quitPath": "/assets/quitApp-DmlZWI6u.js",
+      "exports": { "environment": "c", "store": "aO", "locked": "aZ", "decode": "dA", "userInfo": "dJ" }
+    },
+    {
+      "version": "1.0.1",
+      "executableSha256": "dd340c92a7320d1ecf3697ba65b4ad23d8f196acb547d2baf3f75ba09d696d97",
+      "commonPath": "/assets/index-D8GJxFG7.js",
+      "quitPath": "/assets/quitApp-DsjyTbze.js",
+      "exports": { "environment": "dB", "store": "E", "locked": "ax", "decode": "P", "userInfo": "dK" }
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "name": "wuwa-tappo-helper",
+  "private": true,
+  "description": "Windows 上的 Wuwa Tappo 后台助手与可视化控制面板",
+  "type": "module",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test tests/*.test.mjs",
+    "test:ui": "pwsh -NoProfile -STA -File tests/panel-smoke.ps1",
+    "test:files": "pwsh -NoProfile -STA -File tests/panel-file-sharing.ps1"
+  }
+}
