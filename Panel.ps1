@@ -77,7 +77,7 @@ if (-not $RenderPath) {
       <Setter Property="Margin" Value="0,0,8,0"/>
       <Setter Property="Cursor" Value="Hand"/>
       <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBoxItem">
-        <Border x:Name="OptionSurface" Background="#F8F7F4" BorderBrush="#EAE5DE" BorderThickness="1" CornerRadius="10" Padding="13,12">
+        <Border x:Name="OptionSurface" Background="#F8F7F4" BorderBrush="#EAE5DE" BorderThickness="1" CornerRadius="10" Padding="13,10">
           <Grid>
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="18"/></Grid.ColumnDefinitions>
             <ContentPresenter VerticalAlignment="Center"/>
@@ -117,77 +117,78 @@ if (-not $RenderPath) {
         <Button x:Name="MinimizeButton" Grid.Column="1" Content="—" Height="30" Padding="0" BorderThickness="0" Background="Transparent" ToolTip="最小化"/>
         <Button x:Name="CloseButton" Grid.Column="2" Content="×" FontSize="20" Height="30" Padding="0" BorderThickness="0" Background="Transparent" ToolTip="收进系统托盘，后台状态不变；右键托盘图标可退出助手"/>
       </Grid>
-      <ScrollViewer x:Name="MainScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="30,13,30,20">
+      <ScrollViewer x:Name="MainScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="24,6,24,16">
         <StackPanel>
-          <Grid Margin="0,0,0,23">
+          <Grid Margin="0,0,0,12">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
             <StackPanel>
-              <TextBlock Text="桌宠控制台" FontSize="29" FontWeight="Bold"/>
-              <TextBlock Text="查看次数与宝箱，管理后台运行。" Foreground="{StaticResource Muted}" Margin="0,8,0,0"/>
+              <TextBlock Text="桌宠控制台" FontSize="25" FontWeight="Bold"/>
             </StackPanel>
-            <Border x:Name="StatusPill" Grid.Column="1" VerticalAlignment="Top" Background="#EAE7E1" CornerRadius="14" Padding="13,7" Margin="0,5,0,0">
+            <Border x:Name="StatusPill" Grid.Column="1" VerticalAlignment="Top" Background="#EAE7E1" CornerRadius="14" Padding="12,5" Margin="0,2,0,0">
               <TextBlock x:Name="StatusLabel" Text="未运行" FontSize="12" FontWeight="SemiBold"/>
             </Border>
           </Grid>
-          <Border x:Name="UsageHint" Background="#FFF4DF" CornerRadius="12" Padding="16,12" Margin="0,0,0,14">
-            <StackPanel>
-              <TextBlock Text="使用提示" FontWeight="SemiBold" FontSize="12" Foreground="#856B46"/>
-              <TextBlock Text="“暂停／继续”无需重启桌宠。“停止并恢复桌宠”会重启为普通桌宠。“退出助手”只停止自动化，不启动或关闭桌宠；调试入口会保留至桌宠退出。首次启用前，请先从桌宠菜单退出，再启动后台，并按需允许管理员提示。" TextWrapping="Wrap" FontSize="12" Foreground="#968267" LineHeight="21" Margin="0,5,0,0"/>
-            </StackPanel>
-          </Border>
-          <Border Style="{StaticResource Card}" Padding="19,15" Margin="0,0,0,16" Background="#F0EBE2" BorderThickness="0">
+          <Border x:Name="StatusArea" Style="{StaticResource Card}" Padding="16,12" Margin="0,0,0,12" Background="#F0EBE2" BorderThickness="0">
             <StackPanel>
               <TextBlock x:Name="MainMessage" FontWeight="SemiBold" TextWrapping="Wrap"/>
               <TextBlock x:Name="DetailMessage" Foreground="#807565" FontSize="12" TextWrapping="Wrap" Margin="0,5,0,0" LineHeight="21"/>
-              <Grid Margin="0,12,0,0">
+              <Grid Margin="0,6,0,0">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="90"/></Grid.ColumnDefinitions>
                 <TextBlock x:Name="AppPathText" Text="桌宠：启动时自动查找，也可手动选择" FontSize="11" Foreground="#9B9186" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
                 <Button x:Name="BrowseAppButton" Grid.Column="2" Content="选择程序" Height="28" Padding="8,0" FontSize="11"/>
               </Grid>
-            </StackPanel>
-          </Border>
-          <Grid Margin="0,0,0,22">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="1.3*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="0.8*"/></Grid.ColumnDefinitions>
-            <Border Style="{StaticResource Card}" Background="#FFF4DF" BorderBrush="#F0DEC0" Margin="0,0,12,0">
-              <StackPanel><TextBlock Text="可用次数" Foreground="#9A784A"/><TextBlock x:Name="AvailableValue" Text="—" FontSize="39" FontFamily="Bahnschrift" Margin="0,10,0,3"/><TextBlock Text="每箱消耗 1,000 · 储备目标 2,000" FontSize="11" Foreground="#A38A67"/></StackPanel>
-            </Border>
-            <Border Grid.Column="1" Style="{StaticResource Card}" Margin="0,0,12,0">
-              <StackPanel><TextBlock Text="累计次数" Foreground="{StaticResource Muted}"/><TextBlock x:Name="TotalValue" Text="—" FontSize="31" FontFamily="Bahnschrift" Margin="0,17,0,10"/><TextBlock x:Name="CountCaption" Text="等待首次读取" FontSize="11" Foreground="#A49B90"/></StackPanel>
-            </Border>
-            <Border Grid.Column="2" Style="{StaticResource Card}">
-              <StackPanel><TextBlock x:Name="ClaimsCaption" Text="本次运行领取" Foreground="{StaticResource Muted}"/><TextBlock x:Name="ClaimsValue" Text="—" FontSize="31" FontFamily="Bahnschrift" Margin="0,17,0,10"/><TextBlock Text="后台重新启动后清零" FontSize="11" Foreground="#A49B90"/></StackPanel>
-            </Border>
-          </Grid>
-          <Grid Margin="0,0,0,10"><TextBlock Text="宝箱进度" FontSize="16" FontWeight="SemiBold"/><TextBlock x:Name="SnapshotLabel" Text="等待连接" Foreground="#9B9186" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center"/></Grid>
-          <Grid Margin="0,0,0,22">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-            <Border Style="{StaticResource Card}" Padding="20,17" Margin="0,0,12,0">
-              <StackPanel>
-                <Grid><TextBlock Text="宝箱一" FontWeight="SemiBold"/><TextBlock x:Name="LeftTag" HorizontalAlignment="Right" FontSize="11" Foreground="#A08B6E"/></Grid>
-                <TextBlock x:Name="LeftTime" Text="等待启动" FontSize="25" FontWeight="SemiBold" Margin="0,12,0,10"/>
-                <Border x:Name="LeftTrack" Height="5" Background="#EFEAE1" CornerRadius="2.5" ClipToBounds="True"><Border x:Name="LeftFill" Background="#DFB367" HorizontalAlignment="Left" Width="0" CornerRadius="2.5"/></Border>
-                <TextBlock x:Name="LeftHint" Foreground="#9B9186" FontSize="11" Margin="0,10,0,0" TextWrapping="Wrap"/>
-              </StackPanel>
-            </Border>
-            <Border Grid.Column="1" Style="{StaticResource Card}" Padding="20,17">
-              <StackPanel>
-                <Grid><TextBlock Text="宝箱二" FontWeight="SemiBold"/><TextBlock x:Name="RightTag" HorizontalAlignment="Right" FontSize="11" Foreground="#A08B6E"/></Grid>
-                <TextBlock x:Name="RightTime" Text="等待启动" FontSize="25" FontWeight="SemiBold" Margin="0,12,0,10"/>
-                <Border x:Name="RightTrack" Height="5" Background="#EFEAE1" CornerRadius="2.5" ClipToBounds="True"><Border x:Name="RightFill" Background="#DFB367" HorizontalAlignment="Left" Width="0" CornerRadius="2.5"/></Border>
-                <TextBlock x:Name="RightHint" Foreground="#9B9186" FontSize="11" Margin="0,10,0,0" TextWrapping="Wrap"/>
-              </StackPanel>
-            </Border>
-          </Grid>
-          <Grid Margin="0,0,0,22">
-            <Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="12"/><ColumnDefinition Width="150"/><ColumnDefinition Width="12"/><ColumnDefinition Width="180"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+          <Grid Margin="0,10,0,0">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition Width="12"/><ColumnDefinition Width="140"/><ColumnDefinition Width="12"/><ColumnDefinition Width="180"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
             <Button x:Name="StartButton" Content="启动后台" Style="{StaticResource Primary}"/>
             <Button x:Name="PauseButton" Grid.Column="2" Content="暂停"/>
             <Button x:Name="StopButton" Grid.Column="4" Content="停止并恢复桌宠"/>
             <TextBlock x:Name="ActionHint" Grid.Column="5" Foreground="#9B9186" FontSize="11" Text="每秒刷新" VerticalAlignment="Center" HorizontalAlignment="Right"/>
           </Grid>
-          <Border Style="{StaticResource Card}" Padding="20,16" Margin="0,0,0,16">
+              <Expander x:Name="UsageHint" Header="使用说明" IsExpanded="False" FontSize="12" Foreground="#856B46" Margin="0,8,0,0">
+                <TextBlock Text="暂停／继续无需重启桌宠；停止并恢复会重启为普通桌宠。退出助手不启动或关闭桌宠，调试入口保留至桌宠退出。首次启用前先从桌宠菜单退出，再启动后台，并按需允许管理员提示。" TextWrapping="Wrap" Foreground="#807565" LineHeight="20" Margin="22,6,0,0"/>
+              </Expander>
+            </StackPanel>
+          </Border>
+          <Grid x:Name="StatsArea" Margin="0,0,0,12">
+            <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+            <Border Style="{StaticResource Card}" Padding="16,12" Background="#FFF4DF" BorderBrush="#F0DEC0" Margin="0,0,12,0">
+              <StackPanel><TextBlock Text="可用次数" Foreground="#9A784A"/><TextBlock x:Name="AvailableValue" Text="—" FontSize="32" FontFamily="Bahnschrift" Margin="0,4,0,2"/><TextBlock Text="每箱消耗 1,000 · 储备目标 2,000" FontSize="11" Foreground="#A38A67"/></StackPanel>
+            </Border>
+            <Border Grid.Column="1" Style="{StaticResource Card}" Padding="16,12" Margin="0,0,12,0">
+              <StackPanel><TextBlock Text="累计次数" Foreground="{StaticResource Muted}"/><TextBlock x:Name="TotalValue" Text="—" FontSize="32" FontFamily="Bahnschrift" Margin="0,4,0,2"/><TextBlock x:Name="CountCaption" Text="等待首次读取" FontSize="11" Foreground="#A49B90"/></StackPanel>
+            </Border>
+            <Border Grid.Column="2" Style="{StaticResource Card}" Padding="16,12">
+              <StackPanel><TextBlock x:Name="ClaimsCaption" Text="本次运行领取" Foreground="{StaticResource Muted}"/><TextBlock x:Name="ClaimsValue" Text="—" FontSize="32" FontFamily="Bahnschrift" Margin="0,4,0,2"/><TextBlock Text="后台重新启动后清零" FontSize="11" Foreground="#A49B90"/></StackPanel>
+            </Border>
+          </Grid>
+          <Border x:Name="ChestArea" Style="{StaticResource Card}" Padding="16,12" Margin="0,0,0,12">
             <StackPanel>
-              <Grid Margin="0,0,0,12">
+              <Grid Margin="0,0,0,12"><TextBlock Text="宝箱进度" FontWeight="SemiBold"/><TextBlock x:Name="SnapshotLabel" Text="等待连接" Foreground="#9B9186" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center"/></Grid>
+              <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                <StackPanel Grid.Column="0" Margin="0,0,16,0">
+                  <StackPanel.ToolTip><StackPanel><TextBlock x:Name="LeftTag"/><TextBlock x:Name="LeftHint"/></StackPanel></StackPanel.ToolTip>
+                  <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                    <TextBlock Text="宝箱一" FontWeight="SemiBold"/>
+                    <TextBlock x:Name="LeftTime" Grid.Column="1" Text="未连接" HorizontalAlignment="Right" Foreground="#8E7858"/>
+                  </Grid>
+                  <Border x:Name="LeftTrack" Height="6" Background="#EFEAE1" CornerRadius="3" ClipToBounds="True"><Border x:Name="LeftFill" Background="#DFB367" HorizontalAlignment="Left" Width="0" CornerRadius="3"/></Border>
+                </StackPanel>
+                <StackPanel Grid.Column="1" Margin="16,0,0,0">
+                  <StackPanel.ToolTip><StackPanel><TextBlock x:Name="RightTag"/><TextBlock x:Name="RightHint"/></StackPanel></StackPanel.ToolTip>
+                  <Grid Margin="0,0,0,8">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                    <TextBlock Text="宝箱二" FontWeight="SemiBold"/>
+                    <TextBlock x:Name="RightTime" Grid.Column="1" Text="未连接" HorizontalAlignment="Right" Foreground="#8E7858"/>
+                  </Grid>
+                  <Border x:Name="RightTrack" Height="6" Background="#EFEAE1" CornerRadius="3" ClipToBounds="True"><Border x:Name="RightFill" Background="#DFB367" HorizontalAlignment="Left" Width="0" CornerRadius="3"/></Border>
+                </StackPanel>
+              </Grid>
+            </StackPanel>
+          </Border>
+          <Border Style="{StaticResource Card}" Padding="16,12" Margin="0,0,0,12">
+            <StackPanel>
+              <Grid Margin="0,0,0,8">
                 <TextBlock Text="次数增加模式" FontWeight="SemiBold"/>
                 <TextBlock Text="选择即保存" FontSize="11" Foreground="#A49B90" HorizontalAlignment="Right"/>
               </Grid>
@@ -207,16 +208,16 @@ if (-not $RenderPath) {
               <TextBlock x:Name="ModeHint" FontSize="11" Foreground="#9B9186" TextWrapping="Wrap" Margin="0,10,0,0"/>
             </StackPanel>
           </Border>
-          <Border Style="{StaticResource Card}" Padding="20,16">
+          <Border x:Name="ActivityArea" Style="{StaticResource Card}" Padding="16,12">
             <StackPanel>
-              <Grid Margin="0,0,0,10"><TextBlock Text="最近活动" FontWeight="SemiBold"/><TextBlock Text="仅保留操作记录" HorizontalAlignment="Right" FontSize="11" Foreground="#A49B90"/></Grid>
-              <TextBlock x:Name="ActivityText" FontSize="12" Foreground="#81796F" LineHeight="25" TextWrapping="Wrap"/>
+              <TextBlock x:Name="ActivityHeading" Text="最近活动 · 暂无记录" FontWeight="SemiBold"/>
+              <TextBlock x:Name="ActivityText" FontSize="12" Foreground="#81796F" LineHeight="22" TextWrapping="Wrap" Margin="0,6,0,0"/>
             </StackPanel>
           </Border>
         </StackPanel>
       </ScrollViewer>
-      <Border x:Name="FooterHint" Grid.Row="2" Padding="30,12,30,14" Background="#F7F6F2" BorderBrush="#EAE5DE" BorderThickness="0,1,0,0" CornerRadius="0,0,20,20">
-        <TextBlock Text="右上角关闭会收进系统托盘，后台状态不变。要完全退出，请右键托盘图标选择退出助手。" FontSize="11" Foreground="#A49B90" TextWrapping="Wrap" TextAlignment="Left" HorizontalAlignment="Left" MaxWidth="650"/>
+      <Border x:Name="FooterHint" Grid.Row="2" Padding="24,9,24,10" Background="#F7F6F2" BorderBrush="#EAE5DE" BorderThickness="0,1,0,0" CornerRadius="0,0,20,20">
+        <TextBlock Text="关闭窗口收进托盘，后台保持运行；完全退出请右键托盘图标 → 退出助手。" FontSize="11" Foreground="#A49B90" TextWrapping="Wrap" TextAlignment="Left" HorizontalAlignment="Left" MaxWidth="650"/>
       </Border>
     </Grid>
   </Border>
@@ -229,7 +230,7 @@ $script:Window.Add_ContentRendered({ Write-PanelLifecycle 'visible' })
 $script:Window.Add_Closed({ Write-PanelLifecycle 'closed' })
 if (-not $RenderPath) { $script:Window.Height=[Math]::Max(660,[Math]::Min(900,[Windows.SystemParameters]::WorkArea.Height-40)) }
 $script:Elements = @{}
-foreach ($name in @('RootSurface','TitleGrip','MinimizeButton','CloseButton','StatusPill','StatusLabel','MainMessage','DetailMessage','AvailableValue','TotalValue','ClaimsValue','ClaimsCaption','CountCaption','SnapshotLabel','LeftTag','LeftTime','LeftTrack','LeftFill','LeftHint','RightTag','RightTime','RightTrack','RightFill','RightHint','StartButton','PauseButton','StopButton','ActionHint','ActivityText','ModeSelector','ModeHint','AppPathText','BrowseAppButton','FooterHint','MainScroll','UsageHint')) {
+foreach ($name in @('RootSurface','TitleGrip','MinimizeButton','CloseButton','StatusPill','StatusLabel','MainMessage','DetailMessage','AvailableValue','TotalValue','ClaimsValue','ClaimsCaption','CountCaption','SnapshotLabel','LeftTag','LeftTime','LeftTrack','LeftFill','LeftHint','RightTag','RightTime','RightTrack','RightFill','RightHint','StartButton','PauseButton','StopButton','ActionHint','ActivityText','ModeSelector','ModeHint','AppPathText','BrowseAppButton','FooterHint','MainScroll','UsageHint','StatusArea','StatsArea','ChestArea','ActivityArea','ActivityHeading')) {
     $script:Elements[$name] = $script:Window.FindName($name)
 }
 function Read-JsonFile([string]$Name) {
@@ -316,17 +317,24 @@ function Complete-Operation($View) {
 function Update-Chest([string]$Prefix,[string]$Side,$View) {
     $e=$script:Elements; $state=$View.data.state
     if (-not $View.alive -or $View.stale -or -not $state -or -not $state.loggedIn) {
-        $e[$Prefix+'Time'].Text='等待更新'; $e[$Prefix+'Tag'].Text='未连接'
+        $e[$Prefix+'Time'].Text='未连接'; $e[$Prefix+'Tag'].Text='未连接'
         $e[$Prefix+'Hint'].Text=''; $e[$Prefix+'Fill'].Width=0; return
     }
-    $remaining=[Math]::Max(0,[Math]::Ceiling(($state.$Side-[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())/1000))
+    $clock=$View.data.chestTimes
+    $now=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()
+    if (-not $clock -or $null -eq $clock.updatedAt -or $clock.error -or ($now-$clock.updatedAt) -gt 90000 -or ($now-$clock.updatedAt) -lt 0) {
+        $e[$Prefix+'Time'].Text='等待同步'; $e[$Prefix+'Tag'].Text='接口时间未就绪'
+        $e[$Prefix+'Hint'].Text=if ($clock.error) {$clock.error} else {'等待服务端宝箱时间，暂不显示旧倒计时'}
+        $e[$Prefix+'Fill'].Width=0; return
+    }
+    $remaining=[Math]::Max(0,[Math]::Ceiling(($clock.$Side-$now)/1000))
     if ($remaining -gt 0) {
         $e[$Prefix+'Time'].Text=('{0:00}:{1:00}' -f [Math]::Floor($remaining/60),($remaining%60))
-        $e[$Prefix+'Tag'].Text='计时中'; $e[$Prefix+'Hint'].Text='沿用桌宠原有活跃计时'
+        $e[$Prefix+'Tag'].Text='计时中'; $e[$Prefix+'Hint'].Text='服务端冷却时间，每 30 秒同步；显示每秒更新'
         $progress=[Math]::Clamp([double](1-$remaining/1800),[double]0,[double]1)
     } else {
         $ready=[bool]$state.buttons.$Side
-        $e[$Prefix+'Time'].Text=if ($ready) {'已就绪'} else {'等待宝箱出现'}
+        $e[$Prefix+'Time'].Text=if ($ready) {'已就绪'} else {'冷却已结束'}
         $e[$Prefix+'Tag'].Text=if ($ready) {'待领取'} else {'等待同步'}
         $e[$Prefix+'Hint'].Text=if ($View.data.paused) {'恢复运行后继续检查领取'} else {'由后台核对并按顺序领取'}
         $progress=1
@@ -377,6 +385,11 @@ function Update-Panel {
             $e.AvailableValue.Text='—'; $e.TotalValue.Text='—'; $e.ClaimsValue.Text='—'
             $e.CountCaption.Text='等待首次读取'; $e.ClaimsCaption.Text='本次运行领取'; $e.SnapshotLabel.Text='等待连接'
         }
+        $clock=$s.chestTimes
+        $clockAge=if ($null -ne $clock.updatedAt) {[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()-$clock.updatedAt} else {$null}
+        $e.SnapshotLabel.Text=if (-not $v.alive -or $v.stale) {'等待连接'} elseif ($clock.error) {'宝箱时间查询失败'} elseif ($null -ne $clockAge -and ($clockAge -gt 90000 -or $clockAge -lt 0)) {'宝箱时间已过期'} elseif ($null -ne $clock.updatedAt) {
+            '接口同步 '+[DateTimeOffset]::FromUnixTimeMilliseconds([long]$clock.updatedAt).ToOffset([TimeSpan]::FromHours(8)).ToString('HH:mm:ss')
+        } else {'等待接口同步'}
         Update-Chest 'Left' 'left' $v; Update-Chest 'Right' 'right' $v
         $logPath=Join-Path $script:Runtime 'events.jsonl'
         $activity=@()
@@ -397,7 +410,9 @@ function Update-Panel {
                 if ($activity.Count -ge 3) { break }
             }
         }
-        $e.ActivityText.Text=if ($activity.Count) {$activity -join "`n"} else {'还没有操作记录。启动后台后将在这里显示。'}
+        $e.ActivityHeading.Text=if ($activity.Count) {'最近活动'} else {'最近活动 · 暂无记录'}
+        $e.ActivityText.Visibility=if ($activity.Count) {'Visible'} else {'Collapsed'}
+        $e.ActivityText.Text=$activity -join "`n"
         Update-PanelTray $v
         if ($script:ExitRequested -and -not $script:Operation) {
             $script:ExitRequested=$false

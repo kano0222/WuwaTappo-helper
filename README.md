@@ -24,6 +24,8 @@ Windows 上的 Wuwa Tappo 后台助手。提供可视化控制台，集中查看
 
 面板每秒刷新；后台停止、离线或状态过期时，会明确标注上次记录，避免把旧数据当作实时状态。“本次运行领取”从本次后台启动计数，暂停或隐藏面板不清零，重新启动后台才清零。
 
+宝箱倒计时读取原程序用户信息接口返回的左右槽位冷却结束时间，启动后台后首次查询，之后每 30 秒同步，界面每秒本地倒计时。暂停或有未确认记录时仍会只读同步；领取前后的服务端查询也会更新显示。查询失败或时间超过 90 秒未更新时显示“等待同步”，不退回桌宠缓存冒充最新结果。宝箱是否显示、次数是否达到 1000 不影响时间查询；实际领取仍须满足原按钮及服务端校验条件。
+
 同一 Windows 用户重复打开时会唤起已有面板；不同用户的面板互不占用单实例锁。窗口显示、关闭及清理记录保存在 `runtime/panel-lifecycle.log`。
 
 缺少文件或启动失败时会显示原因，并写入 `runtime/panel-launcher-error.log`。
@@ -81,15 +83,11 @@ dependencies/                构建时生成的随附运行环境及其许可证
 
 `WuwaTappoHelper.exe` 和 `dependencies/` 是生成文件，已排除版本控制。分发完整目录时须包含它们，并保留随附的第三方许可证；不要包含本机配置、运行记录或桌宠安装文件。启动器仅对自己启动的 PowerShell 进程设置执行策略，不修改系统全局策略。
 
-## 构建分发包
+## 获取分发包
 
-在源码目录执行：
+推送到 `main` 后，GitHub Actions 的 **Build Windows helper** 工作流会自动运行测试、构建 Windows 分发包并检查启动器。也可在 Actions 页面手动运行。成功后在对应运行页面的 **Artifacts** 下载 `WuwaTappoHelper-win-x64-运行编号`，产物保留 30 天。
 
-```powershell
-.\scripts\Build-Distribution.ps1
-```
-
-会在 `dist/` 生成完整目录和 ZIP，包含 exe、随附环境、必要脚本、图标及第三方许可证；通过文件白名单排除本机配置、账号运行记录、网络诊断文件及测试材料。可直接把 ZIP 发给对方；对方仍须自行安装并登录接口兼容的桌宠，并处理管理员提示。首次找不到安装位置时，选一次程序即可。
+分发包由 GitHub 的 Windows 构建环境调用 `scripts/Build-Distribution.ps1` 生成，无需在本机打包。包内包含 exe、随附 PowerShell / Node.js、必要脚本、图标及第三方许可证；通过文件白名单排除本机配置、账号运行记录、网络诊断文件及测试材料。使用者仍须自行安装并登录接口兼容的桌宠，并处理管理员提示。首次找不到安装位置时，选一次程序即可。
 
 ## 检查
 
@@ -97,6 +95,7 @@ dependencies/                构建时生成的随附运行环境及其许可证
 npm test
 npm run test:ui
 npm run test:files
+pwsh -NoProfile -STA -File tests/panel-layout.ps1
 pwsh -NoProfile -File tests/launcher-smoke.ps1
 pwsh -NoProfile -File tests/panel-reopen.ps1
 pwsh -NoProfile -File tests/app-discovery.ps1

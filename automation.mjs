@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
-import { connect, chooseAction, confirmClaim, confirmRejectedClaim, sleep } from './lib/tappo.mjs';
+import { connect, chooseAction, confirmClaim, confirmRejectedClaim, sleep, ChestClock } from './lib/tappo.mjs';
 import { replaceSnapshot } from './lib/storage.mjs';
 import { loadSettings } from './lib/settings.mjs';
 import { modes } from './lib/modes.mjs';
@@ -37,9 +37,15 @@ catch (e) {
 let client, stop = false, restoreRequested = false, paused = false, lastCommand, fault, claims = 0;
 let pending = fs.existsSync(file('pending.json')) ? read('pending.json') : null;
 let current, mode = 'brute', nextBoostAt = 0;
+const chestClock = new ChestClock();
+async function readServer() {
+  const server = await client.server();
+  chestClock.accept(server);
+  return server;
+}
 process.on('SIGINT', () => { stop = true; });
 process.on('SIGTERM', () => { stop = true; });
-const status = extra => write('status.json', { at: new Date().toISOString(), pid: process.pid, running: true, paused: paused || !!fault || !!pending, fault, mode, claimsThisRun: claims, state: current, ...extra });
+const status = extra => write('status.json', { at: new Date().toISOString(), pid: process.pid, running: true, paused: paused || !!fault || !!pending, fault, mode, claimsThisRun: claims, state: current, chestTimes: chestClock.value, ...extra });
 function clearPending() { fs.unlinkSync(file('pending.json')); pending = null; }
 function begin(action, before, server) {
   pending = { at: new Date().toISOString(), action, before, server };
@@ -90,6 +96,8 @@ try {
         if (mode !== preference.mode) { mode = preference.mode; nextBoostAt = 0; log('mode-changed', { mode }); }
       }
       current = await client.snapshot();
+      if (current.loggedIn && !current.locked) await chestClock.poll(() => client.server());
+      else chestClock.reset();
       if (!paused && !fault && !pending) {
         const action = chooseAction(current, { mode, boostDue: performance.now() >= nextBoostAt });
         if (action.kind === 'wait') {
@@ -97,7 +105,7 @@ try {
           status({ message: action.reason });
         }
         else {
-          const server = await client.server();
+          const server = await readServer();
           if (![server.total, server.consumed, server.left, server.right].every(Number.isSafeInteger)) throw new Error('服务端状态格式异常');
           if (server.consumed !== current.consumed) { status({ message: '等待桌宠同步服务器余额' }); }
           else if (action.kind === 'claim' && (server[action.side] > Date.now() || server[action.side] !== current[action.side])) {
@@ -109,7 +117,7 @@ try {
             const after = action.kind === 'boost' ? await client.boost(action.delta, before) : await client.claim(action.side, before);
             if (after.skipped) { log('skipped', { reason: after.reason }); clearPending(); }
             else if (after.rejected && action.kind === 'claim') {
-              const serverAfter = await client.server();
+              const serverAfter = await readServer();
               const reason = confirmRejectedClaim(after.code, before, after, server, serverAfter);
               log('claim-rejected', { side: action.side, code: after.code, before, after, serverBefore: server, serverAfter });
               clearPending(); current = after;
@@ -120,7 +128,7 @@ try {
               log('boost-confirmed', { mode, delta: action.delta, before, after });
               clearPending(); current = after;
             } else {
-              const serverAfter = await client.server();
+              const serverAfter = await readServer();
               confirmClaim(action.side, before, after, server, serverAfter);
               log('claim-confirmed', { side: action.side, before, after, serverBefore: server, serverAfter });
               claims++; clearPending(); current = after;

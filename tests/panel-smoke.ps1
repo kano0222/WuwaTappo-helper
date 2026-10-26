@@ -14,9 +14,10 @@ $script:Fixture=@{
     data=[pscustomobject]@{at=$now; running=$false; paused=$false; fault=$null; normalStartupRestored=$true; automationDisconnected=$false; claimsThisRun=2;
         state=[pscustomobject]@{available=1500;cumulative=4500;loggedIn=$true;left=$now.ToUnixTimeMilliseconds()+720000;right=$now.ToUnixTimeMilliseconds()-1000;buttons=[pscustomobject]@{left=$false;right=$true}}}
 }
+$script:Fixture.data | Add-Member -NotePropertyName chestTimes -NotePropertyValue ([pscustomobject]@{updatedAt=$now.ToUnixTimeMilliseconds();left=$script:Fixture.data.state.left;right=$script:Fixture.data.state.right;error=$null})
 function Read-View { return $script:Fixture }
 Update-Panel
-Assert-Panel ($script:Elements.LeftTime.Text -eq '等待更新') 'Stopped data displayed as live cooldown'
+Assert-Panel ($script:Elements.LeftTime.Text -eq '未连接') 'Stopped data displayed as live cooldown'
 Assert-Panel ($script:Elements.LeftHint.Text -eq '') 'Removed startup description still displayed'
 Assert-Panel ($script:Elements.FooterHint.Child.HorizontalAlignment -eq 'Left' -and $script:Elements.FooterHint.Child.TextAlignment -eq 'Left') 'Tray hint not left aligned'
 $footerBefore=$script:Elements.FooterHint.TranslatePoint([Windows.Point]::new(0,0),$script:Elements.RootSurface)
@@ -26,7 +27,7 @@ $footerAfter=$script:Elements.FooterHint.TranslatePoint([Windows.Point]::new(0,0
 Assert-Panel ($footerBefore.Y -eq $footerAfter.Y -and $script:Elements.FooterHint.Parent -eq $script:Elements.MainScroll.Parent) 'Tray hint moved with scroll content'
 $script:Elements.MainScroll.ScrollToTop()
 $script:Elements.RootSurface.UpdateLayout()
-Assert-Panel ($script:Elements.UsageHint.ActualHeight -gt 0) 'Usage guidance is collapsed'
+Assert-Panel (-not $script:Elements.UsageHint.IsExpanded -and $script:Elements.UsageHint.ActualHeight -gt 0) 'Usage guidance should be available and collapsed by default'
 Assert-Panel ($script:Elements.CountCaption.Text -eq '上次运行的记录') 'Historical values not identified'
 Assert-Panel ($script:Elements.StartButton.IsEnabled -and -not $script:Elements.StopButton.IsEnabled) 'Stopped controls incorrect'
 $script:Fixture.alive=$true; $script:Fixture.data.running=$true
@@ -35,9 +36,23 @@ Assert-Panel ($script:Elements.LeftTime.Text -match '^\d{2}:\d{2}$') 'Live count
 Assert-Panel ($script:Elements.LeftFill.Width -gt 0 -and $script:Elements.LeftFill.Width -lt $script:Elements.LeftTrack.ActualWidth) 'Countdown progress rounded to empty or full'
 Assert-Panel ($script:Elements.RightTime.Text -eq '已就绪') 'Ready slot not shown'
 Assert-Panel (-not $script:Elements.StartButton.IsEnabled -and $script:Elements.PauseButton.IsEnabled) 'Live controls incorrect'
+$savedChestTime=$script:Fixture.data.chestTimes.left
+$script:Fixture.data.chestTimes.left=[DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds()+300000
+Update-Panel
+Assert-Panel ($script:Elements.LeftFill.Width/$script:Elements.LeftTrack.ActualWidth -gt 0.8) 'Chest display uses local cache instead of server timestamp'
+$script:Fixture.data.chestTimes.error='模拟接口超时'
+Update-Panel
+Assert-Panel ($script:Elements.LeftTime.Text -eq '等待同步' -and $script:Elements.LeftFill.Width -eq 0) 'Failed query displays a fresh countdown'
+$script:Fixture.data.chestTimes.error=$null
+$script:Fixture.data.chestTimes.updatedAt=$now.ToUnixTimeMilliseconds()-100000
+Update-Panel
+Assert-Panel ($script:Elements.LeftTime.Text -eq '等待同步') 'Expired timestamp displayed as live'
+$script:Fixture.data.chestTimes.updatedAt=$now.ToUnixTimeMilliseconds()
+$script:Fixture.data.chestTimes.left=$savedChestTime
 $script:Fixture.data.paused=$true
 Update-Panel
 Assert-Panel ($script:Elements.PauseButton.Content -eq '继续运行') 'Pause/resume label incorrect'
+Assert-Panel ($script:Elements.LeftTime.Text -match '^\d{2}:\d{2}$') 'Paused display lost server countdown'
 $script:Fixture.pending=$true
 Update-Panel
 Assert-Panel (-not $script:Elements.PauseButton.IsEnabled -and $script:Elements.StopButton.IsEnabled) 'Uncertain operation permits resume'
@@ -46,7 +61,7 @@ Update-Panel
 Assert-Panel ($script:Elements.StatusLabel.Text -eq '处理中') 'In-flight action incorrectly presented as an error'
 $script:Fixture.pending=$false; $script:Fixture.stale=$true
 Update-Panel
-Assert-Panel ($script:Elements.LeftTime.Text -eq '等待更新' -and $script:Elements.StatusLabel.Text -eq '状态未更新') 'Stale state appears live'
+Assert-Panel ($script:Elements.LeftTime.Text -eq '未连接' -and $script:Elements.StatusLabel.Text -eq '状态未更新') 'Stale state appears live'
 $script:Fixture.stale=$false
 $script:RecordedDispatches=@()
 function Start-Process {
@@ -86,6 +101,10 @@ $modeFixture=Join-Path ([IO.Path]::GetTempPath()) ('tappo-mode-'+[guid]::NewGuid
 $originalRuntime=$script:Runtime
 try {
     $script:Runtime=$modeFixture
+    # Ensure the first tested selection changes, regardless of local preferences.
+    $script:UpdatingModeSelection=$true
+    $script:Elements.ModeSelector.SelectedIndex=0
+    $script:UpdatingModeSelection=$false
     $commandCount=$script:RecordedDispatches.Count
     foreach ($item in @($script:Elements.ModeSelector.Items[1],$script:Elements.ModeSelector.Items[2],$script:Elements.ModeSelector.Items[0])) {
         $script:Elements.ModeSelector.SelectedItem=$item

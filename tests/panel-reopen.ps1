@@ -3,6 +3,7 @@ $root = Split-Path -Parent $PSScriptRoot
 $fixture = Join-Path ([IO.Path]::GetTempPath()) ('Tappo reopen ' + [guid]::NewGuid().ToString('N'))
 [void][IO.Directory]::CreateDirectory($fixture)
 $shell = Join-Path $root 'dependencies\powershell\pwsh.exe'
+if (-not (Test-Path -LiteralPath $shell)) { $shell = Join-Path $PSHOME 'pwsh.exe' }
 $children = @()
 function Start-Check([string]$Script) {
     $info = [Diagnostics.ProcessStartInfo]::new($shell, ('-NoProfile -NonInteractive -STA -ExecutionPolicy Bypass -File "' + $Script + '"'))
