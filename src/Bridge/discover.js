@@ -44,16 +44,7 @@ function inspectSources(sources) {
 async function discoverProfile() {
   if (location.hostname !== 'tauri.localhost' || window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label !== 'main' ||
       typeof window.__TAURI_INTERNALS__?.invoke !== 'function') throw new Error('兼容性检查失败：非桌宠主窗口');
-  const paths = [...new Set([...document.scripts].map(s => s.src).concat(performance.getEntriesByType('resource').map(e => e.name)))]
-    .map(p => new URL(p, location.href)).filter(p => p.origin === location.origin && /^\/assets\/[\w-]+\.js$/.test(p.pathname)).map(p => p.pathname);
-  if (!paths.length || paths.length > 80) throw new Error('兼容性检查失败：应用资源列表异常');
-  const sources = await Promise.all(paths.map(async p => {
-    const r = await fetch(p, { signal: AbortSignal.timeout(5000) });
-    if (!r.ok) throw new Error('兼容性检查失败：无法读取应用资源');
-    const s = await r.text();
-    if (s.length > 4000000) throw new Error('兼容性检查失败：应用资源过大');
-    return [p, s];
-  }));
+  const sources = await waitForSources();
   const quitPath = inspectSources(sources);
   const candidates = sources.filter(([, s]) => s.includes('function userInfo()') && s.includes('function isForceUpdateLocked()'));
   if (candidates.length !== 1) throw new Error('兼容性检查失败：共享状态模块缺失或不唯一');
@@ -66,5 +57,28 @@ async function discoverProfile() {
   return { commonPath, quitPath, exports };
 }
 
+async function waitForSources() {
+  // CDP becomes reachable before the router's lazy main module finishes loading.
+  // Observe resources only; importing the main module here could run app startup twice.
+  const cache = new Map(), deadline = Date.now() + 8000;
+  for (;;) {
+    const paths = [...new Set([...document.scripts].map(s => s.src).concat(performance.getEntriesByType('resource').map(e => e.name))
+      .map(p => new URL(p, location.href)).filter(p => p.origin === location.origin && /^\/assets\/[\w-]+\.js$/.test(p.pathname)).map(p => p.pathname))];
+    if (paths.length > 80) throw new Error('兼容性检查失败：应用资源列表异常');
+    await Promise.all(paths.filter(p => !cache.has(p)).map(async p => {
+      const r = await fetch(p, { signal: AbortSignal.timeout(Math.max(1, Math.min(5000, deadline - Date.now()))) });
+      if (!r.ok) throw new Error('兼容性检查失败：无法读取应用资源');
+      const s = await r.text();
+      if (s.length > 4000000) throw new Error('兼容性检查失败：应用资源过大');
+      cache.set(p, s);
+    }));
+    const sources = [...cache];
+    if (sources.some(([, s]) => s.includes('case"boost-local-clicks":')) &&
+        sources.some(([, s]) => s.includes('function userInfo()') && s.includes('function isForceUpdateLocked()')) &&
+        sources.some(([p]) => /\/quitApp-[\w-]+\.js$/.test(p))) return sources;
+    if (Date.now() >= deadline) throw new Error('兼容性检查失败：主界面资源未就绪或版本不兼容，请等待桌宠启动完成后重试');
+    await new Promise(r => setTimeout(r, 250));
+  }
+}
 
 try{return {profile:await discoverProfile()}}catch(error){return {error:String(error.message).startsWith('兼容性检查失败：')?error.message:'兼容性检查失败：资源或接口无法确认'}}})()

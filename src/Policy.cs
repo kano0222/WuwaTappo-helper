@@ -25,6 +25,13 @@ namespace Tappo {
             return Wait("等待原有活跃计时及宝箱入口");
         }
         static Plan Wait(string reason) { return new Plan {kind="wait",reason=reason}; }
+        public static bool BoostContextMatches(Snapshot before,Snapshot after) {
+            return after.loggedIn&&!after.locked&&!after.claimBusy&&after.consumed==before.consumed&&after.left==before.left&&after.right==before.right;
+        }
+        public static bool BoostConfirmed(int delta,Snapshot before,Snapshot after) {
+            return BoostContextMatches(before,after)&&after.cumulative.HasValue&&after.available.HasValue&&
+                after.cumulative>=before.cumulative+delta&&after.available>=before.available+delta;
+        }
         public static void Confirm(string side,Snapshot before,Snapshot after,ServerState a,ServerState b) {
             if(side!="left"&&side!="right") throw new InvalidOperationException("领取槽位无效");
             a.Validate(); b.Validate();

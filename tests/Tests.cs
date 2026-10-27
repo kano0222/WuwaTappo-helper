@@ -13,10 +13,12 @@ using System.Windows.Threading;
 namespace Tappo {
     internal sealed class FakeClient : IAppClient {
         public Snapshot State=Tests.State(); public int Reads,Boosts,Claims,Quits,Closed; public bool ThrowClaim;
-        public Func<Snapshot> ClaimResult;
-        public Task<Snapshot> Snapshot() {return Task.FromResult(State);}
-        public Task<ServerState> Server() {Reads++;return Task.FromResult(new ServerState {total=State.cumulative,consumed=State.consumed,left=State.left,right=State.right});}
-        public Task<Snapshot> Boost(int delta,Snapshot before) {Boosts++;var result=Tests.Copy(before);result.cumulative+=delta;result.available+=delta;State=result;return Task.FromResult(result);}
+        public Func<Snapshot> ClaimResult,SnapshotResult;
+        public Func<ServerState> ServerResult;
+        public Func<int,Snapshot,Snapshot> BoostResult;
+        public Task<Snapshot> Snapshot() {return Task.FromResult(SnapshotResult==null?State:SnapshotResult());}
+        public Task<ServerState> Server() {Reads++;return Task.FromResult(ServerResult==null?new ServerState {total=State.cumulative,consumed=State.consumed,left=State.left,right=State.right}:ServerResult());}
+        public Task<Snapshot> Boost(int delta,Snapshot before) {Boosts++;if(BoostResult!=null)return Task.FromResult(BoostResult(delta,before));var result=Tests.Copy(before);result.cumulative+=delta;result.available+=delta;State=result;return Task.FromResult(result);}
         public Task<Snapshot> Claim(string side,Snapshot before) {Claims++;if(ThrowClaim) throw new TimeoutException("调用超时，禁止自动重发操作");var result=ClaimResult==null?Tests.Copy(before):ClaimResult();State=result;return Task.FromResult(result);}
         public Task Quit() {Quits++;return Task.FromResult(0);}
         public void Dispose() {Closed++;}
@@ -29,10 +31,13 @@ namespace Tappo {
         static void Reject(Action action,string message) {bool rejected=false;try{action();}catch{rejected=true;}Check(rejected,message);}
         static RuntimeStore Store() {return new RuntimeStore(Path.Combine(root,Guid.NewGuid().ToString("N")));}
         [STAThread] public static int Main(string[] args) {
+            if(args.Length==2&&args[0]=="--process-check") {
+                var alive=RuntimeStore.Alive(int.Parse(args[1]));Console.WriteLine("Query-only process check: "+alive);return alive?0:2;
+            }
             if(args.Length==2&&args[0]=="--panel-child") return PanelChild(args[1]);
             root=Path.Combine(Path.GetTempPath(),"tappo-native-tests-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
             try {
-                Policies();Files();Clocks().GetAwaiter().GetResult();Workers().GetAwaiter().GetResult();Layouts();Lifecycle();
+                Policies();Files();Clocks().GetAwaiter().GetResult();Workers().GetAwaiter().GetResult();BoostObservations().GetAwaiter().GetResult();Resets().GetAwaiter().GetResult();QueryRetries().GetAwaiter().GetResult();ResetPanels();Layouts();Lifecycle();
                 Console.WriteLine("PASS: "+checks+" native checks; no account mutations, app restarts, or system policy changes.");return 0;
             } catch(Exception error) {Console.Error.WriteLine(error);return 1;}
             finally {
@@ -69,6 +74,8 @@ namespace Tappo {
             Reject(()=>Policy.ConfirmRejected(70006,before,after,a,a),"changed state rejection cleared");
         }
         static void Files() {
+            Check(RuntimeStore.Alive(Process.GetCurrentProcess().Id),"current process is not alive");
+            Check(!RuntimeStore.Alive(0)&&!RuntimeStore.Alive(-1),"invalid process accepted");
             var store=Store();store.Write("preferences.json",new Preference {mode="human"});Check(store.Read<Preference>("preferences.json").mode=="human","preferences roundtrip");
             File.WriteAllText(store.FilePath("pending.json"),"{\"historical\":true}");
             Reject(()=>store.Begin(new Plan {kind="claim"},State(),new ServerState()),"historical journal overwritten");
@@ -126,8 +133,135 @@ namespace Tappo {
                 if(action=="wrong-slot"||action=="unknown-rejection") Check(store.Exists("pending.json")&&client.Claims==1,"unconfirmed result retried");
             }
         }
+        static async Task BoostObservations() {
+            foreach(var scenario in new[]{"delayed","report-reset","timeout","consumed","slot","logout"}) {
+                var store=Store();var client=new FakeClient();client.State.available=0;client.State.left=client.State.right=900000;
+                store.Write("preferences.json",new Preference {mode="clicker"});
+                var before=Copy(client.State);int observations=0,waits=0;
+                client.BoostResult=(delta,s)=> {
+                    var after=Copy(s);
+                    if(scenario=="report-reset") {after.cumulative-=50;after.available-=50;}
+                    if(scenario=="consumed") after.consumed+=1000;
+                    if(scenario=="slot") after.left++;
+                    if(scenario=="logout") after.loggedIn=false;
+                    return after;
+                };
+                client.SnapshotResult=()=> {
+                    if(client.Boosts==0) return client.State;
+                    observations++;var after=Copy(before);
+                    if(scenario!="timeout"&&observations>=3) {after.cumulative+=100;after.available+=100;}
+                    return after;
+                };
+                Worker worker=null;
+                worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>Task.FromResult(0),ms=> {
+                    if(ms==250) waits++;else worker.RequestDisconnect();return Task.FromResult(0);
+                },()=>100000);
+                await worker.Run();
+                bool confirmed=scenario=="delayed"||scenario=="report-reset";
+                Check(client.Boosts==1,scenario+" resent mutation");
+                Check(store.Exists("pending.json")!=confirmed,scenario+" journal handling");
+                Check((worker.Status.fault==null)==confirmed,scenario+" confirmation result");
+                Check(waits==(confirmed?3:scenario=="timeout"?12:0),scenario+" observation bound");
+                if(!confirmed) {
+                    Check(RuntimeStore.ReadText(store.FilePath("events.jsonl")).Contains("boost-unconfirmed"),scenario+" observation missing");
+                    Check(store.Read<Journal>("pending.json").before.cumulative==before.cumulative,scenario+" original state changed");
+                    // Restarting must retain the operation and describe which action is blocked.
+                    client.Boosts=0;worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>Task.FromResult(0),ms=>{worker.RequestDisconnect();return Task.FromResult(0);},()=>100000);
+                    await worker.Run();
+                    Check(client.Boosts==0&&worker.Status.fault.Contains("补充 100 次"),scenario+" restart lost pending action");
+                }
+            }
+        }
+        static async Task Resets() {
+            foreach(var scenario in new[]{"success","changed","archive-failed","replayed"}) {
+                var store=Store();var client=new FakeClient();client.State.left=client.State.right=900000;
+                var journal="{\"action\":{\"kind\":\"boost\",\"delta\":5},\"at\":\"2026-10-27T05:22:16Z\"}";
+                if(scenario!="replayed") File.WriteAllText(store.FilePath("pending.json"),journal);
+                var hash=scenario=="replayed"?"old-hash":store.PendingHash();
+                if(scenario=="archive-failed") File.WriteAllText(store.FilePath("history"),"blocked");
+                store.Write("control.json",new Command {id="reset-test",action="reset",pendingHash=scenario=="changed"?"wrong-hash":hash});
+                Worker worker=null;worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>Task.FromResult(0),ms=>{worker.RequestDisconnect();return Task.FromResult(0);},()=>100000);
+                await worker.Run();
+                var success=scenario=="success"||scenario=="replayed";
+                Check(worker.Status.resetCommandId=="reset-test"&&(worker.Status.resetError==null)==success,scenario+" reset acknowledgement");
+                Check(!worker.Status.paused==success,scenario+" reset pause state");
+                Check(client.Claims==0&&client.Boosts==0&&client.Quits==0,scenario+" reset mutated account");
+                Check(store.Exists("pending.json")!=success,scenario+" reset pending retention");
+                if(scenario=="success") {
+                    var archive=Directory.GetFiles(store.FilePath("history"),"*.json").Single(p=>!p.EndsWith(".resolution.json"));
+                    Check(File.ReadAllText(archive)==journal,"reset changed original bytes");
+                    Check(File.ReadAllText(archive+".resolution.json").Contains(hash),"reset missing original digest");
+                }
+            }
+        }
+        static async Task QueryRetries() {
+            foreach(var scenario in new[]{"recover","manual-pause","disconnect","persistent","snapshot","post-claim","invalid-state"}) {
+                var store=Store();var client=new FakeClient();long now=100000;int loops=0,snapshots=0;bool pauseSent=false;
+                client.State.left=client.State.right=900000;
+                store.Write("preferences.json",new Preference {mode="clicker"});
+                if(scenario!="snapshot") client.State.available=0;
+                if(scenario=="post-claim") {client.State.available=2000;client.State.left=4000;client.ClaimResult=()=>{var s=Copy(client.State);s.left=900000;s.consumed+=1000;s.available-=1000;return s;};}
+                client.ServerResult=()=> {
+                    if(scenario=="post-claim"?client.Reads==3:scenario!="snapshot"&&scenario!="invalid-state"&&client.Reads>=2&&(client.Reads<=3||scenario=="persistent")) throw new InvalidOperationException("HTTP 403");
+                    return new ServerState {total=scenario=="invalid-state"?null:client.State.cumulative,consumed=client.State.consumed,left=client.State.left,right=client.State.right};
+                };
+                client.SnapshotResult=()=>{if(++snapshots==1&&scenario=="snapshot")throw new TimeoutException("read timeout");return client.State;};
+                Worker worker=null;
+                worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>Task.FromResult(0),ms=> {
+                    now+=ms;loops++;
+                    if(worker.Status.readRetryCount>0&&scenario=="manual-pause"&&!pauseSent) {store.Write("control.json",new Command {id="pause-test",action="pause"});pauseSent=true;}
+                    if(worker.Status.readRetryCount>0&&scenario=="disconnect") store.Write("control.json",new Command {id="disconnect-test",action="disconnect"});
+                    if(client.Boosts>0||worker.Status.fault!=null||scenario=="persistent"&&worker.Status.readRetryCount==6||
+                        scenario=="manual-pause"&&pauseSent&&worker.Status.readRetryCount==0||scenario=="snapshot"&&snapshots>1&&worker.Status.readRetryCount==0||loops>260) worker.RequestDisconnect();
+                    return Task.FromResult(0);
+                },()=>now);
+                await worker.Run();
+                Check(loops<=260,scenario+" retry did not terminate");
+                var log=RuntimeStore.ReadText(store.FilePath("events.jsonl"));
+                var retries=log.Split('\n').Where(l=>l.Contains("\"read-query-retry\"")).Select(l=>Json.Decode<Dictionary<string,object>>(l)).ToArray();
+                if(scenario=="recover"||scenario=="manual-pause") {
+                    Check(retries.Length==2&&Convert.ToInt32(retries[0]["retryAfterSeconds"])==5&&Convert.ToInt32(retries[1]["retryAfterSeconds"])==10,scenario+" backoff sequence");
+                    Check(log.Contains("read-query-recovered")&&worker.Status.fault==null&&worker.Status.readRetryAt==null,scenario+" did not recover");
+                    Check(client.Boosts==(scenario=="recover"?1:0)&&client.Claims==0,scenario+" manual pause overridden");
+                    Check(worker.Status.paused==(scenario=="manual-pause"),scenario+" pause intent lost");
+                } else if(scenario=="persistent") {
+                    Check(string.Join(",",retries.Select(r=>r["retryAfterSeconds"].ToString()))=="5,10,20,40,60,60","retry delay not capped");
+                    Check(client.Boosts==0&&client.Claims==0&&worker.Status.fault==null,"read failure allowed mutation or permanent fault");
+                } else if(scenario=="post-claim") {
+                    Check(client.Claims==1&&store.Exists("pending.json")&&retries.Length==0&&worker.Status.fault!=null,"post-claim query failure resent or cleared action");
+                } else if(scenario=="invalid-state") {
+                    Check(retries.Length==0&&worker.Status.fault!=null&&client.Boosts==0,"malformed state retried");
+                } else if(scenario=="snapshot") {
+                    Check(retries.Length==1&&log.Contains("read-query-recovered")&&client.Boosts==0,"snapshot retry did not recover");
+                } else Check(retries.Length==1&&client.Reads==2&&client.Boosts==0,"disconnect waited for retry");
+            }
+        }
+        static void ResetPanels() {
+            var store=Store();File.WriteAllText(store.FilePath("pending.json"),"{\"historical\":true}");
+            using(var panel=new Panel(store)) {
+                panel.ReadStatus=()=>new Status();panel.ConfirmReset=()=>false;
+                panel.ResetPending().GetAwaiter().GetResult();Check(store.Exists("pending.json"),"cancelled reset removed journal");
+                panel.ConfirmReset=()=>true;
+                using(var guard=new FileStream(store.FilePath("worker.guard"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None)) {
+                    panel.ResetPending().GetAwaiter().GetResult();Check(store.Exists("pending.json"),"reset ignored worker guard");
+                }
+                panel.ResetPending().GetAwaiter().GetResult();Check(!store.Exists("pending.json"),"offline reset did not archive");
+                Check(panel.E<Button>("ResetPendingButton").Visibility==Visibility.Collapsed,"resolved reset button visible");
+            }
+            store=Store();File.WriteAllText(store.FilePath("pending.json"),"{}");
+            using(var panel=new Panel(store)) {
+                panel.ReadStatus=()=>new Status {running=true,pid=Process.GetCurrentProcess().Id,at=DateTimeOffset.UtcNow.ToString("o")};
+                panel.Refresh();Check(!panel.E<Button>("ResetPendingButton").IsEnabled,"in-flight reset enabled");
+                bool asked=false;panel.ConfirmReset=()=>{asked=true;return true;};panel.ResetPending().GetAwaiter().GetResult();
+                Check(!asked&&store.Exists("pending.json"),"in-flight reset accepted");
+                panel.ReadStatus=()=>new Status {running=true,paused=true,fault="unknown",pid=Process.GetCurrentProcess().Id,at=DateTimeOffset.UtcNow.ToString("o")};
+                panel.Refresh();Check(panel.E<Button>("ResetPendingButton").IsEnabled,"blocked reset disabled");
+                string dispatched=null;panel.DispatchOverride=action=>dispatched=action;panel.ResetPending().GetAwaiter().GetResult();Check(dispatched=="reset","reset button did not dispatch");
+            }
+        }
         static void Layouts() {
             var store=Store();using(var panel=new Panel(store)) {
+                panel.InitializeTray();
                 var state=State();state.left=RuntimeStore.Now+650000;state.right=RuntimeStore.Now-1000;
                 var status=new Status {at=DateTimeOffset.UtcNow.ToString("o"),pid=Process.GetCurrentProcess().Id,running=true,mode="brute",state=state,
                     chestTimes=new ChestTimes {updatedAt=RuntimeStore.Now,left=state.left,right=state.right}};
@@ -138,6 +272,13 @@ namespace Tappo {
                 Check(panel.E<TextBlock>("LeftTime").Text.Contains(":"),"server countdown missing");
                 Check(panel.E<TextBlock>("RightTime").Text=="已就绪","ready slot missing");
                 Check(!panel.E<Button>("StartButton").IsEnabled&&panel.E<Button>("PauseButton").IsEnabled,"running controls");
+                status.readRetryAt=RuntimeStore.Now+10000;status.readRetryError="读取服务器状态失败";panel.Refresh();
+                Check(panel.E<TextBlock>("StatusLabel").Text=="等待重试"&&panel.E<TextBlock>("DetailMessage").Text.Contains("不补数、不领取"),"retry status missing");
+                status.paused=true;panel.Refresh();Check(panel.E<TextBlock>("StatusLabel").Text=="已暂停","retry hid manual pause");
+                status.paused=false;status.readRetryAt=null;status.readRetryError=null;panel.Refresh();
+                Check(panel.E<Button>("ExitButton").IsEnabled&&panel.E<MenuItem>("ExitMenuItem").IsEnabled&&panel.TrayExitEnabled,"exit entry unavailable");
+                panel.ReadStatus=()=>{throw new UnauthorizedAccessException("模拟读取失败");};panel.Refresh();
+                Check(panel.TrayExitEnabled&&panel.E<Button>("ExitButton").IsEnabled,"status error disabled exit");panel.ReadStatus=()=>status;panel.Refresh();
                 Check(panel.E<TextBlock>("ActivityText").Visibility==Visibility.Collapsed,"empty activities not collapsed");
                 status.paused=true;panel.Refresh();Check((string)panel.E<Button>("PauseButton").Content=="继续运行","pause label");
                 File.WriteAllText(store.FilePath("pending.json"),"{\"historical\":true}");panel.Refresh();Check(!panel.E<Button>("PauseButton").IsEnabled&&panel.E<Button>("StopButton").IsEnabled,"pending controls");
@@ -153,7 +294,14 @@ namespace Tappo {
                 var modes=panel.E<ListBox>("ModeSelector");modes.SelectedIndex=1;modes.SelectedIndex=2;Check(store.Read<Preference>("preferences.json").mode=="human","mode not persisted");
                 File.Delete(store.FilePath("preferences.json"));Directory.CreateDirectory(store.FilePath("preferences.json"));
                 modes.SelectedIndex=1;Check((string)((ListBoxItem)modes.SelectedItem).Tag=="human","failed save changed selection");Directory.Delete(store.FilePath("preferences.json"));
-                string dispatched=null;panel.DispatchOverride=action=>dispatched=action;status.running=true;panel.Exit().GetAwaiter().GetResult();Check(dispatched=="disconnect","exit requested restore");
+                string dispatched=null;panel.DispatchOverride=action=>dispatched=action;status.running=true;
+                panel.E<Button>("ExitButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Check(dispatched=="disconnect","title exit requested restore");
+            }
+            foreach(var entry in new[]{"context","tray"}) using(var panel=new Panel(Store())) {
+                panel.InitializeTray();panel.ReadStatus=()=>new Status {running=true,pid=Process.GetCurrentProcess().Id};string dispatched=null;panel.DispatchOverride=action=>dispatched=action;
+                if(entry=="context") panel.E<MenuItem>("ExitMenuItem").RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
+                else ((System.Windows.Forms.ToolStripMenuItem)typeof(Panel).GetField("trayExit",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic).GetValue(panel)).PerformClick();
+                Check(dispatched=="disconnect",entry+" exit requested restore");
             }
         }
         static int PanelChild(string directory) {

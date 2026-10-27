@@ -21,10 +21,12 @@ namespace Tappo {
     internal sealed class Panel : IDisposable {
         readonly RuntimeStore store; public readonly Window Window;
         public bool Busy {get;private set;} public bool AllowExit;
+        internal bool TrayExitEnabled {get {return trayExit!=null&&trayExit.Enabled;}}
         string notice,savedMode="brute"; bool selecting;
         Forms.NotifyIcon tray; Forms.ContextMenuStrip menu; Forms.ToolStripMenuItem trayPause,trayStop,trayExit,trayStatus;
         DispatcherTimer timer; Mutex mutex; EventWaitHandle showEvent; bool ownsMutex; System.Drawing.Icon icon;
         public Func<Status> ReadStatus; public Action<string> DispatchOverride;
+        internal Func<bool> ConfirmReset;
         public Panel(RuntimeStore store) {
             this.store=store; Window=(Window)XamlReader.Parse(Resources.Text("Panel.xaml"));
             ReadStatus=()=>store.Read<Status>("status.json");
@@ -35,9 +37,12 @@ namespace Tappo {
             E<Button>("StartButton").Click+=async(s,e)=>await UserAction("start");
             E<Button>("PauseButton").Click+=async(s,e)=>{var status=ReadStatus();await UserAction(status!=null&&status.paused?"resume":"pause");};
             E<Button>("StopButton").Click+=async(s,e)=>await UserAction("stop");
+            E<Button>("ResetPendingButton").Click+=async(s,e)=>await ResetPending();
             E<Button>("BrowseAppButton").Click+=(s,e)=>ChoosePath(true);
             E<Button>("MinimizeButton").Click+=(s,e)=>Window.WindowState=WindowState.Minimized;
             E<Button>("CloseButton").Click+=(s,e)=>Window.Close();
+            E<Button>("ExitButton").Click+=async(s,e)=>await Exit();
+            E<MenuItem>("ExitMenuItem").Click+=async(s,e)=>await Exit();
             E<System.Windows.Controls.Grid>("TitleGrip").MouseLeftButtonDown+=(s,e)=>{
                 if(e.ClickCount==2) Window.WindowState=Window.WindowState==WindowState.Maximized?WindowState.Normal:WindowState.Maximized;
                 else if(e.LeftButton==MouseButtonState.Pressed) Window.DragMove();
@@ -104,12 +109,17 @@ namespace Tappo {
             if(old!=null&&RuntimeStore.Alive(old.pid)) throw new InvalidOperationException("自动化已运行，请先停止现有后台。");
             store.Write("control.json",new Command {id=Guid.NewGuid().ToString(),action="resume"});
         }
-        public async Task Act(string action) {
+        public async Task Act(string action,string pendingHash=null) {
             if(Busy) return;
             if(DispatchOverride!=null) {DispatchOverride(action);return;}
             if(action=="start"&&!ChoosePath(false)) return;
             Busy=true;notice=null;Refresh();var requested=DateTimeOffset.UtcNow;
+            string commandId=Guid.NewGuid().ToString();
             try {
+                if(action=="reset"&&!Alive(ReadStatus())) {
+                    using(var guard=new FileStream(store.FilePath("worker.guard"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None)) store.ResolvePending(pendingHash);
+                    notice="未确认记录已归档，原操作不会重发；可点击启动后台。";return;
+                }
                 if(action=="start") {
                     PrepareStart(store);
                     var info=new ProcessStartInfo(Platform.Executable,"--worker") {WorkingDirectory=store.Root,UseShellExecute=true,WindowStyle=ProcessWindowStyle.Hidden};
@@ -121,7 +131,7 @@ namespace Tappo {
                 } else {
                     var status=ReadStatus();if(!Alive(status)) throw new InvalidOperationException("后台未运行。");
                     if(action=="resume"&&store.Exists("pending.json")) throw new InvalidOperationException("存在结果未确认的操作，已阻止恢复。");
-                    store.Write("control.json",new Command {id=Guid.NewGuid().ToString(),action=action});
+                    store.Write("control.json",new Command {id=commandId,action=action,pendingHash=pendingHash});
                 }
                 var until=RuntimeStore.Now+(action=="start"?75000:40000);
                 while(RuntimeStore.Now<until) {
@@ -130,6 +140,10 @@ namespace Tappo {
                     if(launcher!=null&&launcher.error!=null&&DateTimeOffset.TryParse(launcher.failedAt,out failed)&&failed>=requested) throw new InvalidOperationException(launcher.error);
                     DateTimeOffset at;
                     if(status==null||!DateTimeOffset.TryParse(status.at,out at)||at<requested) continue;
+                    if(action=="reset"&&status.resetCommandId==commandId) {
+                        if(status.resetError!=null) throw new InvalidOperationException(status.resetError);
+                        notice="未确认记录已归档，已恢复自动化。";return;
+                    }
                     if(action=="start"&&Alive(status)||action=="pause"&&Alive(status)&&status.paused||action=="resume"&&Alive(status)&&!status.paused) return;
                     if((action=="stop"||action=="disconnect")&&!status.running) {
                         if(action=="disconnect"&&!status.automationDisconnected) throw new InvalidOperationException("自动化停止尚未确认。");
@@ -142,13 +156,33 @@ namespace Tappo {
             } catch(Exception error) {notice=error.Message;throw;}
             finally {Busy=false;Refresh();}
         }
-        async Task UserAction(string action) {try {await Act(action);} catch {Refresh();}}
+        async Task UserAction(string action) {
+            try {await Act(action);}
+            catch(Exception error) {
+                try {store.Log("panel-action-failed",new {action=action,errorType=error.GetType().Name,message=error.Message});} catch { }
+                Refresh();
+            }
+        }
+        internal async Task ResetPending() {
+            if(Busy) return;
+            try {
+                var status=ReadStatus();
+                if(!store.Exists("pending.json")) {notice="当前没有待确认操作。";return;}
+                if(Alive(status)&&(!status.paused||status.fault==null)) throw new InvalidOperationException("操作仍在确认中，请等待完成后再处理。");
+                var hash=store.PendingHash();
+                var confirmed=ConfirmReset!=null?ConfirmReset():MessageBox.Show(Window,
+                    "该操作可能已经执行，但结果尚未确认。\n\n继续后会归档原记录，不重发该操作；后台已连接时会恢复自动化，否则需手动启动。\n不会清零次数、宝箱进度或日志。\n\n是否结束这笔待确认操作？",
+                    "结束待确认操作",MessageBoxButton.YesNo,MessageBoxImage.Warning,MessageBoxResult.No)==MessageBoxResult.Yes;
+                if(confirmed) await Act("reset",hash);
+            } catch(Exception error) {notice=error.Message;}
+            finally {Refresh();}
+        }
         public async Task Exit() {
             if(Busy) {notice="正在处理操作，请等待完成后退出。";Show();return;}
             try {
                 if(Alive(ReadStatus())) await Act("disconnect");
                 AllowExit=true;Window.Close();if(Application.Current!=null) Application.Current.Shutdown();
-            } catch {Show();}
+            } catch(Exception error) {notice="退出未完成："+error.Message;Refresh();Show();}
         }
         public void Refresh() {
             try {
@@ -158,6 +192,7 @@ namespace Tappo {
                 string label="未运行",color="#EAE7E1",message="后台助手尚未运行",detail="先退出普通启动的桌宠，再点击“启动后台”。";
                 if(alive) {
                     label="运行中";color="#E2EFDD";message="后台正在照看桌宠";detail="自动补足领取所需次数，并按原有冷却检查宝箱。";
+                    if(s.readRetryAt.HasValue) {label="等待重试";color="#FFF0D1";message="状态查询失败，正在等待自动重试";detail=(s.readRetryError??"状态暂时无法读取")+"；约 "+Math.Max(0,(long)Math.Ceiling((s.readRetryAt.Value-RuntimeStore.Now)/1000.0))+" 秒后重试，期间不补数、不领取。";}
                     if(s.paused) {label="已暂停";color="#FFF0D1";message="自动操作已暂停";detail="计数与领取已暂停，连接仍保留。";}
                     if(pending&&!s.paused&&s.fault==null) {label="处理中";color="#FFF0D1";message="正在确认操作结果";detail="等待桌宠与服务器同步，期间不会重复提交。";}
                     if(s.fault!=null||pending&&s.paused) {label="需处理";color="#F8E0D8";message="后台已暂停，等待确认";detail=s.fault??"上次操作结果待确认，请先停止并核对桌宠。";}
@@ -170,6 +205,8 @@ namespace Tappo {
                 E<Button>("StartButton").IsEnabled=!alive&&!Busy;E<Button>("PauseButton").IsEnabled=alive&&!Busy&&!pending;
                 E<Button>("PauseButton").Content=s!=null&&s.paused?"继续运行":"暂停";
                 E<Button>("StopButton").IsEnabled=alive&&!Busy;E<Button>("BrowseAppButton").IsEnabled=!alive&&!Busy;
+                E<Button>("ResetPendingButton").Visibility=pending?Visibility.Visible:Visibility.Collapsed;
+                E<Button>("ResetPendingButton").IsEnabled=pending&&!Busy&&(!alive||!stale&&s.paused&&s.fault!=null);
                 Text("ActionHint",Busy?"处理中…":"每秒刷新");
                 var state=s==null?null:s.state;
                 Text("AvailableValue",state==null||!state.available.HasValue?"—":state.available.Value.ToString("N0"));
@@ -187,11 +224,13 @@ namespace Tappo {
                 if(tray!=null) {
                     tray.Text="Wuwa Tappo 助手 · "+label;trayStatus.Text="后台："+label;
                     trayPause.Text=s!=null&&s.paused?"继续运行":"暂停自动化";trayPause.Enabled=alive&&!Busy&&!pending;
-                    trayStop.Enabled=alive&&!Busy;trayExit.Enabled=!Busy;trayExit.Text=alive?"停止自动化并退出助手":"退出助手";
+                    trayStop.Enabled=alive&&!Busy;trayExit.Enabled=true;trayExit.Text=alive?"停止自动化并退出助手":"退出助手";
                 }
             } catch(Exception error) {
                 Text("MainMessage","状态暂时无法读取");Text("DetailMessage",error is IOException?"正在等待状态文件更新；不会自动重试领取。":error.Message);
                 E<Button>("StartButton").IsEnabled=false;E<Button>("PauseButton").IsEnabled=false;E<Button>("StopButton").IsEnabled=false;
+                E<Button>("ResetPendingButton").IsEnabled=false;
+                if(tray!=null) {trayPause.Enabled=false;trayStop.Enabled=false;trayExit.Enabled=true;trayStatus.Text="后台：状态读取失败";}
             }
         }
         void Chest(string prefix,string side,Status s,bool alive,bool valid) {
@@ -217,6 +256,9 @@ namespace Tappo {
                         else if(name=="claim-confirmed") text="已领取"+((string)ev["side"]=="left"?"宝箱一":"宝箱二")+" · 消耗 1,000 次";
                         else if(name=="boost-confirmed") text="已补充 "+ev["delta"]+" 次";
                         else if(name=="paused-on-error") text="后台暂停，等待处理";
+                        else if(name=="pending-resolved") text="已归档待确认操作，原操作不重发";
+                        else if(name=="read-query-retry") text="状态查询失败，等待自动重试";
+                        else if(name=="read-query-recovered") text="状态查询已恢复";
                         else if(name=="cleanup-needs-attention") text="停止后需要检查桌宠状态";
                         if(text!=null) lines.Add(DateTimeOffset.Parse((string)ev["at"]).ToOffset(TimeSpan.FromHours(8)).ToString("MM-dd HH:mm")+"    "+text);
                         if(lines.Count>=3) break;

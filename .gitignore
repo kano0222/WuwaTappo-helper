@@ -7,6 +7,7 @@
 /dependencies/
 /build/
 /WuwaTappoHelper.exe
+/WuwaTappoHelper.exe.config
 npm-debug.log*
 .DS_Store
 Thumbs.db

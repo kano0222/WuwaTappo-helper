@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Web.Script.Serialization;
@@ -40,13 +42,14 @@ namespace Tappo {
     }
     internal sealed class ChestTimes { public long? updatedAt, left, right; public string error; }
     internal sealed class Status {
-        public string at, fault, mode, message; public int pid, claimsThisRun;
+        public string at, fault, mode, message, resetCommandId, resetError; public int pid, claimsThisRun;
         public bool running, paused, normalStartupRestored, automationDisconnected;
+        public long? readRetryAt; public int readRetryCount; public string readRetryError;
         public Snapshot state; public ChestTimes chestTimes;
     }
     internal sealed class Preference { public string mode; }
     internal sealed class Settings { public string appPath; }
-    internal sealed class Command { public string id, action; }
+    internal sealed class Command { public string id, action, pendingHash; }
     internal sealed class LauncherStatus { public string failedAt, error, requestedAt; public int runnerId; }
     internal sealed class Journal { public string at; public Plan action; public Snapshot before; public ServerState server; }
     internal sealed class RuntimeStore {
@@ -81,6 +84,19 @@ namespace Tappo {
             }
         }
         public void ClearPending() { File.Delete(FilePath("pending.json")); }
+        public string PendingHash() {
+            using(var sha=SHA256.Create()) return BitConverter.ToString(sha.ComputeHash(File.ReadAllBytes(FilePath("pending.json")))).Replace("-","");
+        }
+        public string ResolvePending(string expectedHash) {
+            if(string.IsNullOrEmpty(expectedHash)||!Exists("pending.json")||PendingHash()!=expectedHash)
+                throw new InvalidOperationException("待确认记录已变化，请重新查看后再确认。");
+            Directory.CreateDirectory(FilePath("history"));
+            var name="history/pending-"+DateTimeOffset.UtcNow.ToString("yyyyMMddTHHmmssfffZ")+"-"+Guid.NewGuid().ToString("N")+".json";
+            Write(name+".resolution.json",new {resolvedAt=DateTimeOffset.UtcNow.ToString("o"),resolution="user-confirmed-end-without-retry",originalOutcome="unknown",originalSha256=expectedHash,replayed=false});
+            File.Move(FilePath("pending.json"),FilePath(name));
+            Log("pending-resolved",new {archive=name,originalSha256=expectedHash});
+            return name;
+        }
         public void Log(string name, object data = null) {
             var entry=new Dictionary<string,object> { {"at",DateTimeOffset.UtcNow.ToString("o")},{"event",name} };
             if(data!=null) foreach(var pair in Json.Decode<Dictionary<string,object>>(Json.Encode(data))) entry[pair.Key]=pair.Value;
@@ -91,8 +107,20 @@ namespace Tappo {
                 var bytes=Utf8.GetBytes(text); stream.Write(bytes,0,bytes.Length);
             }
         }
+        [DllImport("kernel32.dll",SetLastError=true)] static extern IntPtr OpenProcess(uint access,bool inherit,int pid);
+        [DllImport("kernel32.dll",SetLastError=true)] static extern bool GetExitCodeProcess(IntPtr process,out uint code);
+        [DllImport("kernel32.dll")] static extern bool CloseHandle(IntPtr handle);
         public static bool Alive(int pid) {
-            try { using(var p=Process.GetProcessById(pid)) return !p.HasExited; } catch(ArgumentException) { return false; }
+            if(pid<=0) return false;
+            // Process.HasExited requests broader access on .NET Framework and can reject
+            // a standard-user panel inspecting its elevated worker. Query-only access suffices.
+            var handle=OpenProcess(0x1000,false,pid); // PROCESS_QUERY_LIMITED_INFORMATION
+            if(handle==IntPtr.Zero) {
+                var error=Marshal.GetLastWin32Error();
+                return error!=87&&error!=1168; // Unverifiable means alive; never launch a duplicate.
+            }
+            try {uint code;return !GetExitCodeProcess(handle,out code)||code==259;}
+            finally {CloseHandle(handle);}
         }
         public static long Now { get { return DateTimeOffset.UtcNow.ToUnixTimeMilliseconds(); } }
     }

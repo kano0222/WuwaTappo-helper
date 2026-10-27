@@ -3,6 +3,7 @@ name: Build Windows helper
 on:
   push:
     branches: [main]
+    tags: ['v*']
   workflow_dispatch:
 
 permissions:
@@ -26,6 +27,8 @@ jobs:
           persist-credentials: false
       - name: Build and test native C# application
         run: ./scripts/Build.ps1 -Test
+      - name: Test bridge resource discovery
+        run: node ./tests/discovery.cjs
       - name: Stage portable distribution
         run: |
           $stage = Join-Path $PWD 'dist/WuwaTappoHelper-win-x64'
@@ -51,3 +54,25 @@ jobs:
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
+
+  release:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download tested Windows package
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: WuwaTappoHelper-win-x64-${{ github.run_number }}
+          path: release-assets
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: >-
+          gh release create "$RELEASE_TAG"
+          release-assets/WuwaTappoHelper-win-x64.zip
+          --verify-tag --title "$RELEASE_TAG" --generate-notes

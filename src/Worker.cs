@@ -6,6 +6,10 @@ using System.Threading;
 using System.Threading.Tasks;
 
 namespace Tappo {
+    internal sealed class ReadQueryException : Exception {
+        public readonly string Operation;
+        public ReadQueryException(string operation,Exception inner) : base(operation+"失败",inner) {Operation=operation;}
+    }
     internal sealed class Worker {
         readonly RuntimeStore store; readonly Func<Task<IAppClient>> connect;
         readonly Func<IAppClient,Task> restore; readonly Func<int,Task> delay; readonly Func<long> now;
@@ -22,7 +26,36 @@ namespace Tappo {
             Status.paused=paused||Status.fault!=null||store.Exists("pending.json"); Status.message=Status.fault??message; Status.chestTimes=clock.Value;
             store.Write("status.json",Status);
         }
-        async Task<ServerState> ReadServer() { var result=await client.Server().ConfigureAwait(false);clock.Accept(result);return result; }
+        async Task<Snapshot> ReadSnapshot() {
+            try {return await client.Snapshot().ConfigureAwait(false);}
+            catch(Exception error) {throw new ReadQueryException("读取桌宠状态",error);}
+        }
+        async Task<ServerState> ReadServer() {
+            ServerState result;
+            try {result=await client.Server().ConfigureAwait(false);}
+            catch(Exception error) {throw new ReadQueryException("读取服务器状态",error);}
+            result.Validate();clock.Accept(result);return result;
+        }
+        async Task<Snapshot> ObserveBoost(int delta,Snapshot before,Snapshot after) {
+            // The event is sent once. Only read snapshots while its result propagates.
+            int reads=0;
+            while(!Policy.BoostConfirmed(delta,before,after)&&Policy.BoostContextMatches(before,after)&&reads<12) {
+                await delay(250).ConfigureAwait(false);
+                after=await client.Snapshot().ConfigureAwait(false);reads++;
+            }
+            if(!Policy.BoostConfirmed(delta,before,after)) {
+                store.Log("boost-unconfirmed",new {delta=delta,before=before,after=after,confirmationReads=reads});
+                throw new InvalidOperationException("补充 "+delta+" 次的结果未确认，已暂停且不会重发；可点击“结束待确认操作”归档并恢复。");
+            }
+            return after;
+        }
+        string PendingMessage() {
+            var journal=store.Read<Journal>("pending.json");DateTimeOffset at;
+            var when=journal!=null&&DateTimeOffset.TryParse(journal.at,out at)?at.ToLocalTime().ToString("MM-dd HH:mm:ss"):"此前";
+            var action=journal==null?null:journal.action;
+            var description=action==null?"操作":action.kind=="boost"?"补充 "+action.delta+" 次":action.kind=="claim"?"领取"+(action.side=="left"?"宝箱一":"宝箱二"):"操作";
+            return when+" 的"+description+"结果未确认；不会自动重发，可点击“结束待确认操作”处理。";
+        }
         public async Task<int> Run() {
             // This guard serializes native workers; lock.json also blocks an older Node worker.
             using(var guard=new FileStream(store.FilePath("worker.guard"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None)) {
@@ -34,7 +67,7 @@ namespace Tappo {
                 }
                 try {
                     client=await connect().ConfigureAwait(false); store.Log("started",new {mode="background"});
-                    if(store.Exists("pending.json")) Status.fault="存在结果未确认的历史操作；不会自动重复，请查看 runtime/pending.json";
+                    if(store.Exists("pending.json")) Status.fault=PendingMessage();
                     Publish("已连接");
                     while(!stop) {
                         int loopDelay=1000;
@@ -44,21 +77,40 @@ namespace Tappo {
                             if(command.action=="stop"||command.action=="disconnect") { stop=true;restoreRequested=command.action=="stop"; }
                             else if(command.action=="pause") paused=true;
                             else if(command.action=="resume"&&!store.Exists("pending.json")) { paused=false;Status.fault=null; }
+                            else if(command.action=="reset") {
+                                Status.resetCommandId=command.id;Status.resetError=null;
+                                try {
+                                    if(store.Exists("pending.json")) {
+                                        if(Status.fault==null) throw new InvalidOperationException("操作仍在确认中，请等待完成后再处理。");
+                                        store.ResolvePending(command.pendingHash);
+                                        paused=false;Status.fault=null;
+                                    }
+                                } catch(Exception error) {Status.resetError=error.Message;}
+                            }
                         }
                         if(stop) break;
+                        if(Status.readRetryAt.HasValue&&now()<Status.readRetryAt.Value) {
+                            Publish("状态查询失败，等待自动重试");await delay(1000).ConfigureAwait(false);continue;
+                        }
                         try {
                             var preference=store.Read<Preference>("preferences.json");
                             if(preference!=null) {
                                 if(!Policy.Modes.Contains(preference.mode)) throw new InvalidOperationException("增加模式配置无效，请在面板重新选择。");
                                 if(Status.mode!=preference.mode) { Status.mode=preference.mode; nextBoost=0;store.Log("mode-changed",new {mode=Status.mode}); }
                             }
-                            Status.state=await client.Snapshot().ConfigureAwait(false);
+                            Status.state=await ReadSnapshot().ConfigureAwait(false);
+                            ServerState retryServer=null;
+                            if(Status.readRetryCount>0) {
+                                retryServer=await ReadServer().ConfigureAwait(false);
+                                store.Log("read-query-recovered",new {attempts=Status.readRetryCount});
+                                Status.readRetryAt=null;Status.readRetryCount=0;Status.readRetryError=null;
+                            }
                             if(Status.state.loggedIn&&!Status.state.locked) await clock.Poll(client.Server).ConfigureAwait(false); else clock.Reset();
                             if(!paused&&Status.fault==null&&!store.Exists("pending.json")) {
                                 var action=Policy.Choose(Status.state,Status.mode,now()>=nextBoost,random.NextDouble);
                                 if(action.kind=="wait") { if(action.delayMs>0) nextBoost=now()+action.delayMs;Publish(action.reason); }
                                 else {
-                                    var server=await ReadServer().ConfigureAwait(false);server.Validate();
+                                    var server=retryServer??await ReadServer().ConfigureAwait(false);server.Validate();
                                     if(server.consumed!=Status.state.consumed) Publish("等待桌宠同步服务器余额");
                                     else if(action.kind=="claim"&&(server.Slot(action.side)>now()||server.Slot(action.side)!=Status.state.Slot(action.side))) Publish("等待服务器确认槽位到期");
                                     else {
@@ -72,7 +124,7 @@ namespace Tappo {
                                             store.Log("claim-rejected",new {side=action.side,code=after.code,before=before,after=after,serverBefore=server,serverAfter=serverAfter});
                                             store.ClearPending();Status.state=after;throw new InvalidOperationException(reason);
                                         } else if(action.kind=="boost") {
-                                            if(!after.cumulative.HasValue||after.cumulative<before.cumulative+action.delta||after.consumed!=before.consumed) throw new InvalidOperationException("补充次数的结果未确认，不重发。");
+                                            after=await ObserveBoost(action.delta,before,after).ConfigureAwait(false);
                                             store.Log("boost-confirmed",new {mode=Status.mode,delta=action.delta,before=before,after=after});store.ClearPending();Status.state=after;
                                         } else {
                                             var serverAfter=await ReadServer().ConfigureAwait(false);Policy.Confirm(action.side,before,after,server,serverAfter);
@@ -85,8 +137,16 @@ namespace Tappo {
                                 }
                             } else Publish(Status.fault??"已暂停");
                         } catch(Exception error) {
-                            if(Status.fault!=error.Message) store.Log("paused-on-error",new {message=error.Message});
-                            Status.fault=error.Message;Publish(Status.fault);
+                            if(error is ReadQueryException&&!store.Exists("pending.json")&&Status.fault==null) {
+                                Status.readRetryCount++;
+                                var seconds=Math.Min(60,5*(1<<Math.Min(4,Status.readRetryCount-1)));
+                                Status.readRetryAt=now()+seconds*1000;Status.readRetryError=error.Message;
+                                store.Log("read-query-retry",new {operation=((ReadQueryException)error).Operation,errorType=error.InnerException.GetType().Name,attempt=Status.readRetryCount,retryAfterSeconds=seconds});
+                                Publish("状态查询失败，等待自动重试");
+                            } else {
+                                if(Status.fault!=error.Message) store.Log("paused-on-error",new {message=error.Message});
+                                Status.fault=error.Message;Publish(Status.fault);
+                            }
                         }
                         await delay(loopDelay).ConfigureAwait(false);
                     }
