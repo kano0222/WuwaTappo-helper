@@ -14,7 +14,9 @@ namespace Tappo {
             if(s.claimBusy) return Wait("等待当前宝箱领取完成");
             var ready=new[]{"left","right"}.FirstOrDefault(side=>s.Slot(side)<=s.time&&s.Button(side));
             if(ready!=null&&s.available>=1000) return new Plan {kind="claim",side=ready};
-            if(s.available<2000&&(mode!="brute"||ready!=null)) {
+            // A low balance can hide the original button; only claiming needs that button.
+            var due=new[]{s.left,s.right}.Any(slot=>slot<=s.time);
+            if(s.available<2000&&(mode!="brute"||due)) {
                 if(!boostDue) return Wait("按所选速率补充次数");
                 var delta=(int)(2000-s.available.Value);
                 if(mode=="brute") return new Plan {kind="boost",delta=delta};

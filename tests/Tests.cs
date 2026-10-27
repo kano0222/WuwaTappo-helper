@@ -43,7 +43,7 @@ namespace Tappo {
             if(args.Length==2&&args[0]=="--panel-child") return PanelChild(args[1]);
             root=Path.Combine(Path.GetTempPath(),"tappo-native-tests-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
             try {
-                Policies();Files();Clocks().GetAwaiter().GetResult();Workers().GetAwaiter().GetResult();BoostObservations().GetAwaiter().GetResult();Resets().GetAwaiter().GetResult();QueryRetries().GetAwaiter().GetResult();Connections().GetAwaiter().GetResult();ResetPanels();Layouts();CloseChoices();Lifecycle();
+                Policies();Files();Clocks().GetAwaiter().GetResult();Workers().GetAwaiter().GetResult();WakeReplenishment().GetAwaiter().GetResult();BoostObservations().GetAwaiter().GetResult();Resets().GetAwaiter().GetResult();QueryRetries().GetAwaiter().GetResult();Connections().GetAwaiter().GetResult();ResetPanels();Layouts();CloseChoices();Lifecycle();
                 checks+=TransportChecks.Run().GetAwaiter().GetResult();checks+=UpdateChecks.Run().GetAwaiter().GetResult();UpdatePanels();
                 Console.WriteLine("PASS: "+checks+" native checks; no account mutations, app restarts, or system policy changes.");return 0;
             } catch(Exception error) {Console.Error.WriteLine(error);return 1;}
@@ -58,6 +58,10 @@ namespace Tappo {
             s.left=5000;s.available=721;Check(Policy.Choose(s,"brute",true,random).delta==1279,"brute delta");
             s=State();s.available=0;s.buttons["left"]=false;s.buttons["right"]=false;
             Check(Policy.Choose(s,"brute",true,random).kind=="wait","brute behavior changed");
+            s.left=s.time;Check(Policy.Choose(s,"brute",true,random).delta==2000,"due chest without button must replenish");
+            s.available=379;Check(Policy.Choose(s,"brute",true,random).delta==1621,"low balance after wake must replenish");
+            s.available=2000;Check(Policy.Choose(s,"brute",true,random).kind=="wait","claim still requires original button");
+            s.available=0;
             Check(Policy.Choose(s,"clicker",true,random).delta==100,"clicker rate");
             Check(Policy.Choose(s,"human",true,random).delta==5,"human rate");
             Check(Policy.Choose(s,"human",true,()=>0).delayMs==2000,"human rest");
@@ -139,6 +143,28 @@ namespace Tappo {
                 if(action=="skip") Check(!store.Exists("pending.json")&&client.Claims==1,"skipped action left journal");
                 if(action=="wrong-slot"||action=="unknown-rejection") Check(store.Exists("pending.json")&&client.Claims==1,"unconfirmed result retried");
             }
+        }
+        static async Task WakeReplenishment() {
+            var store=Store();var client=new FakeClient();long now=5000;int loops=0;
+            client.State.available=379;client.State.buttons["left"]=client.State.buttons["right"]=false;
+            client.BoostResult=(delta,before)=> {
+                var after=Copy(before);after.available+=delta;after.cumulative+=delta;
+                after.buttons["left"]=true;client.State=after;return after;
+            };
+            client.ClaimResult=()=> {
+                var after=Copy(client.State);after.available-=1000;after.consumed+=1000;
+                after.left=now+1800000;after.buttons["left"]=false;return after;
+            };
+            Worker worker=null;
+            worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>Task.FromResult(0),ms=> {
+                // Cross both cooldowns while the worker is suspended, then resume observation.
+                if(++loops==1) {now+=7200000;client.State.time=now;}
+                if(loops==3)worker.RequestDisconnect();return Task.FromResult(0);
+            },()=>now);
+            await worker.Run();
+            Check(client.Boosts==1&&client.Claims==1,"wake must replenish before original-button claim");
+            Check(worker.Status.fault==null&&!store.Exists("pending.json"),"wake recovery left uncertain operation");
+            Check(client.State.available==1000&&client.State.consumed==3000,"wake balance confirmation");
         }
         static async Task BoostObservations() {
             foreach(var scenario in new[]{"delayed","report-reset","timeout","consumed","slot","logout","overwritten","invalid-receipt"}) {
