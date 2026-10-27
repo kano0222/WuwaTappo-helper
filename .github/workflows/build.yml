@@ -67,6 +67,33 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout release changelog
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Extract version release notes
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import pathlib
+          import re
+
+          tag = os.environ['RELEASE_TAG']
+          if not re.fullmatch(r'v\d+\.\d+\.\d+', tag):
+              raise SystemExit('Release tag must use vX.Y.Z format.')
+          text = pathlib.Path('CHANGELOG.md').read_text(encoding='utf-8')
+          sections = re.split(r'^##\s+', text, flags=re.MULTILINE)[1:]
+          notes = []
+          for section in sections:
+              heading, _, body = section.partition('\n')
+              if re.fullmatch(r'\[' + re.escape(tag[1:]) + r'\] - \d{4}-\d{2}-\d{2}\s*', heading):
+                  notes.append(body.strip())
+          if len(notes) != 1 or not notes[0]:
+              raise SystemExit('CHANGELOG.md must contain exactly one nonempty entry for ' + tag)
+          pathlib.Path('release-notes.md').write_text(notes[0] + '\n', encoding='utf-8')
+          PY
       - name: Download tested Windows package
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
@@ -80,4 +107,4 @@ jobs:
         run: >-
           gh release create "$RELEASE_TAG"
           release-assets/WuwaTappoHelper-win-x64.zip
-          --verify-tag --title "$RELEASE_TAG" --generate-notes
+          --verify-tag --title "$RELEASE_TAG" --notes-file release-notes.md

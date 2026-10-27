@@ -89,6 +89,8 @@ node tests/boost.cjs
 
 GitHub Actions 完成上述检查后生成压缩包：`main` 推送和手动构建上传 **Artifacts**，保留 30 天；推送 `v*` 标签还会创建 **GitHub Release** 并附上分发包。Artifacts 不等同于 Release。
 
+发布前在 [CHANGELOG.md](CHANGELOG.md) 中添加对应版本的更新记录，使用 `## [X.Y.Z] - YYYY-MM-DD` 标题。工作流将该版本的内容填入 Release notes；缺少记录、记录为空或同一版本重复时停止发布。
+
 仓库与分发包不包含本机配置、运行记录、桌宠安装文件或账号数据。
 
 ### 重新生成 README 预览
