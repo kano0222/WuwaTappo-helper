@@ -12,7 +12,7 @@ Windows 上的 Wuwa Tappo 后台助手，提供次数统计、宝箱倒计时、
 
 - Windows 10 22H2 / Windows 11，64 位，使用系统预装的 .NET Framework 4.8 或兼容更新。
 - 自行安装并登录 Wuwa Tappo，助手连接时会检查接口兼容性。
-- 从 [Releases](https://github.com/kano0222/ww-tappo/releases) 下载完整分发包，解压到当前用户具有写入权限的目录，避免放入 `Program Files` 等受保护目录。
+- 从 [Releases](https://github.com/kano0222/WuwaTappo-helper/releases) 下载完整分发包，解压到当前用户具有写入权限的目录，避免放入 `Program Files` 等受保护目录。
 - 双击 `WuwaTappoHelper.exe`，无需安装 PowerShell 7、Node.js 或 Python。
 
 助手启动时及每 6 小时自动检查 GitHub 正式版本，也可点击底栏的版本按钮手动检查。发现新版后点击提示打开发布页；检查失败会在 15 分钟后重试，不影响后台运行。更新时请完全退出助手并保留配置与 `runtime/`，程序不会自动下载或覆盖文件。

@@ -16,7 +16,7 @@ namespace Tappo {
     }
     internal static class UpdateChecks {
         static void Check(bool condition) {if(!condition)throw new Exception("update check failed");}
-        static string Release(string version) {return "{\"tag_name\":\""+version+"\",\"html_url\":\"https://github.com/kano0222/ww-tappo/releases/tag/"+version+"\",\"draft\":false,\"prerelease\":false}";}
+        static string Release(string version) {return "{\"tag_name\":\""+version+"\",\"html_url\":\"https://github.com/kano0222/WuwaTappo-helper/releases/tag/"+version+"\",\"draft\":false,\"prerelease\":false}";}
         public static async Task<int> Run() {
             int checks=0;
             Check(Updates.Parse(Release("v0.1.2"),"0.1.1").available);checks++;
