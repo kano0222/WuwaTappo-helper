@@ -171,7 +171,7 @@ namespace Tappo {
                 if(Alive(status)&&(!status.paused||status.fault==null)) throw new InvalidOperationException("操作仍在确认中，请等待完成后再处理。");
                 var hash=store.PendingHash();
                 var confirmed=ConfirmReset!=null?ConfirmReset():MessageBox.Show(Window,
-                    "该操作可能已经执行，但结果尚未确认。\n\n继续后会归档原记录，不重发该操作；后台已连接时会恢复自动化，否则需手动启动。\n不会清零次数、宝箱进度或日志。\n\n是否结束这笔待确认操作？",
+                    "结束这笔待确认操作？\n\n原记录会保留，不会重复执行。\n后台已连接时会自动继续。",
                     "结束待确认操作",MessageBoxButton.YesNo,MessageBoxImage.Warning,MessageBoxResult.No)==MessageBoxResult.Yes;
                 if(confirmed) await Act("reset",hash);
             } catch(Exception error) {notice=error.Message;}
@@ -197,7 +197,8 @@ namespace Tappo {
                     if(pending&&!s.paused&&s.fault==null) {label="处理中";color="#FFF0D1";message="正在确认操作结果";detail="等待桌宠与服务器同步，期间不会重复提交。";}
                     if(s.fault!=null||pending&&s.paused) {label="需处理";color="#F8E0D8";message="后台已暂停，等待确认";detail=s.fault??"上次操作结果待确认，请先停止并核对桌宠。";}
                     if(stale) {label="状态未更新";color="#FFF0D1";message="暂时没有收到新的后台状态";detail="以下数值是上次记录，不代表当前状态。";}
-                } else if(s!=null&&s.normalStartupRestored) {message="桌宠已恢复普通运行";detail="要重新开启助手，请先从桌宠设置或托盘退出应用，再点击启动。";}
+                } else if(s!=null&&s.fault!=null) {label="启动或运行失败";color="#F8E0D8";message="后台已停止";detail=s.fault;}
+                else if(s!=null&&s.normalStartupRestored) {message="桌宠已恢复普通运行";detail="要重新开启助手，请先从桌宠设置或托盘退出应用，再点击启动。";}
                 else if(s!=null&&s.running) {message="后台进程已退出";detail="当前显示上次记录，请核对桌宠状态。";}
                 if(Busy) {label="处理中";message="正在等待后台完成操作";detail="请按需处理管理员提示，不要重复启动。";}
                 Text("StatusLabel",label);E<Border>("StatusPill").Background=(Brush)new BrushConverter().ConvertFromString(color);
@@ -259,6 +260,8 @@ namespace Tappo {
                         else if(name=="pending-resolved") text="已归档待确认操作，原操作不重发";
                         else if(name=="read-query-retry") text="状态查询失败，等待自动重试";
                         else if(name=="read-query-recovered") text="状态查询已恢复";
+                        else if(name=="connection-restored") text="桌宠连接已恢复";
+                        else if(name=="boost-overwritten") text="本次补数被旧上报覆盖，按最新计数继续";
                         else if(name=="cleanup-needs-attention") text="停止后需要检查桌宠状态";
                         if(text!=null) lines.Add(DateTimeOffset.Parse((string)ev["at"]).ToOffset(TimeSpan.FromHours(8)).ToString("MM-dd HH:mm")+"    "+text);
                         if(lines.Count>=3) break;

@@ -28,7 +28,11 @@ jobs:
       - name: Build and test native C# application
         run: ./scripts/Build.ps1 -Test
       - name: Test bridge resource discovery
-        run: node ./tests/discovery.cjs
+        run: |
+          node ./tests/discovery.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Discovery tests failed.' }
+          node ./tests/boost.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Boost receipt tests failed.' }
       - name: Stage portable distribution
         run: |
           $stage = Join-Path $PWD 'dist/WuwaTappoHelper-win-x64'

@@ -10,6 +10,7 @@ using System.Threading.Tasks;
 
 namespace Tappo {
     internal interface IAppClient : IDisposable {
+        bool Connected { get; }
         Task<Snapshot> Snapshot(); Task<ServerState> Server(); Task<Snapshot> Boost(int delta,Snapshot before);
         Task<Snapshot> Claim(string side,Snapshot before); Task Quit();
     }
@@ -21,16 +22,36 @@ namespace Tappo {
         readonly CancellationTokenSource lifetime=new CancellationTokenSource();
         readonly Dictionary<int,TaskCompletionSource<object>> pending=new Dictionary<int,TaskCompletionSource<object>>();
         readonly SemaphoreSlim sends=new SemaphoreSlim(1,1);
-        int sequence; bool disposed;
+        int sequence; bool disposed; volatile bool disconnected;
+        public bool Connected { get {return !disposed&&!disconnected&&socket.State==WebSocketState.Open;} }
         public AppProfile Profile { get; private set; }
-        static readonly string[] KnownErrors={"未确认领取结果，不自动重试","领取期间出现其他计数或槽位变化，已暂停且不会自动重发"};
+        static readonly string[] KnownErrors={"未确认领取结果，不自动重试","领取期间出现其他计数或槽位变化，已暂停且不会自动重发","补数期间账号变化，结果未确认，不自动重发"};
         AppClient(ClientWebSocket socket) { this.socket=socket; }
         public static async Task<string> LocalGet(string suffix,int timeout) {
             using(var handler=new HttpClientHandler {UseProxy=false})
             using(var http=new HttpClient(handler) {Timeout=TimeSpan.FromMilliseconds(timeout)})
                 return await http.GetStringAsync("http://127.0.0.1:19222"+suffix).ConfigureAwait(false);
         }
-        public static async Task<AppClient> Connect() {
+        internal static async Task<T> WaitForMain<T>(Func<Task<T>> inspect,Func<int,Task> delay,Func<long> now,int timeoutMs) where T:class {
+            var deadline=now()+timeoutMs;
+            while(true) {
+                var result=await inspect().ConfigureAwait(false);
+                if(result!=null) return result;
+                if(now()>=deadline) throw new TimeoutException("桌宠主窗口尚未就绪，请等待桌宠完成启动后再试。");
+                await delay(400).ConfigureAwait(false);
+            }
+        }
+        public static async Task<AppClient> Connect(int mainWaitMs=25000) {
+            var selected=await WaitForMain(FindMain,Task.Delay,()=>RuntimeStore.Now,mainWaitMs).ConfigureAwait(false);
+            try {
+                var version=await selected.Evaluate("window.__TAURI_INTERNALS__.invoke('plugin:app|version')").ConfigureAwait(false) as string;
+                var found=Json.Convert<DiscoveryResult>(await selected.Evaluate(Resources.Text("bridge.discover.js"),15000).ConfigureAwait(false));
+                if(found==null||found.profile==null) throw new InvalidOperationException(found==null?"兼容性检查失败":found.error);
+                selected.Profile=found.profile; selected.Profile.version=version;
+                return selected;
+            } catch {selected.Dispose();throw;}
+        }
+        static async Task<AppClient> FindMain() {
             Platform.CheckListeners();
             var targets=Json.Decode<Target[]>(await LocalGet("/json/list",5000).ConfigureAwait(false));
             AppClient selected=null;
@@ -55,11 +76,6 @@ namespace Tappo {
                         selected=client;
                     } catch { client.Dispose(); throw; }
                 }
-                if(selected==null) throw new InvalidOperationException("未找到桌宠主窗口");
-                var version=await selected.Evaluate("window.__TAURI_INTERNALS__.invoke('plugin:app|version')").ConfigureAwait(false) as string;
-                var found=Json.Convert<DiscoveryResult>(await selected.Evaluate(Resources.Text("bridge.discover.js"),15000).ConfigureAwait(false));
-                if(found==null||found.profile==null) throw new InvalidOperationException(found==null?"兼容性检查失败":found.error);
-                selected.Profile=found.profile; selected.Profile.version=version;
                 return selected;
             } catch { if(selected!=null) selected.Dispose(); throw; }
         }
@@ -91,7 +107,11 @@ namespace Tappo {
                         } catch(Exception error) { waiter.TrySetException(error); }
                     }
                 }
-            } catch { FailPending(); }
+            } catch {
+                disconnected=true;
+                try {socket.Abort();} catch(ObjectDisposedException) { }
+                FailPending();
+            }
         }
         void FailPending() {
             lock(pending) {
@@ -100,6 +120,7 @@ namespace Tappo {
             }
         }
         public async Task<object> Evaluate(string expression,int timeout=8000) {
+            if(!Connected) throw new IOException("桌宠连接已断开，等待重新连接；不会自动重发操作。");
             var id=Interlocked.Increment(ref sequence); var waiter=new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
             lock(pending) pending.Add(id,waiter);
             try {

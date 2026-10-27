@@ -11,14 +11,14 @@ namespace Tappo {
         public ReadQueryException(string operation,Exception inner) : base(operation+"失败",inner) {Operation=operation;}
     }
     internal sealed class Worker {
-        readonly RuntimeStore store; readonly Func<Task<IAppClient>> connect;
+        readonly RuntimeStore store; readonly Func<Task<IAppClient>> connect,reconnect;
         readonly Func<IAppClient,Task> restore; readonly Func<int,Task> delay; readonly Func<long> now;
         readonly Random random=new Random(); readonly ChestClock clock;
         public Status Status=new Status {running=true,mode="brute"};
         bool stop,restoreRequested,paused; string lastCommand;
         IAppClient client; long nextBoost;
-        public Worker(RuntimeStore store,Func<Task<IAppClient>> connect,Func<IAppClient,Task> restore,Func<int,Task> delay,Func<long> now) {
-            this.store=store;this.connect=connect;this.restore=restore;this.delay=delay;this.now=now;clock=new ChestClock(now);
+        public Worker(RuntimeStore store,Func<Task<IAppClient>> connect,Func<IAppClient,Task> restore,Func<int,Task> delay,Func<long> now,Func<Task<IAppClient>> reconnect=null) {
+            this.store=store;this.connect=connect;this.reconnect=reconnect??connect;this.restore=restore;this.delay=delay;this.now=now;clock=new ChestClock(now);
         }
         public void RequestDisconnect() { stop=true; }
         void Publish(string message) {
@@ -37,6 +37,7 @@ namespace Tappo {
             result.Validate();clock.Accept(result);return result;
         }
         async Task<Snapshot> ObserveBoost(int delta,Snapshot before,Snapshot after) {
+            if(Policy.BoostOverwritten(delta,before,after)) return after;
             // The event is sent once. Only read snapshots while its result propagates.
             int reads=0;
             while(!Policy.BoostConfirmed(delta,before,after)&&Policy.BoostContextMatches(before,after)&&reads<12) {
@@ -93,6 +94,11 @@ namespace Tappo {
                             Publish("状态查询失败，等待自动重试");await delay(1000).ConfigureAwait(false);continue;
                         }
                         try {
+                            if(Status.readRetryCount>0&&!store.Exists("pending.json")&&Status.fault==null&&(client==null||!client.Connected)) {
+                                if(client!=null) {client.Dispose();client=null;}
+                                try {client=await reconnect().ConfigureAwait(false);store.Log("connection-restored");}
+                                catch(Exception error) {throw new ReadQueryException("重新连接桌宠",error);}
+                            }
                             var preference=store.Read<Preference>("preferences.json");
                             if(preference!=null) {
                                 if(!Policy.Modes.Contains(preference.mode)) throw new InvalidOperationException("增加模式配置无效，请在面板重新选择。");
@@ -125,13 +131,13 @@ namespace Tappo {
                                             store.ClearPending();Status.state=after;throw new InvalidOperationException(reason);
                                         } else if(action.kind=="boost") {
                                             after=await ObserveBoost(action.delta,before,after).ConfigureAwait(false);
-                                            store.Log("boost-confirmed",new {mode=Status.mode,delta=action.delta,before=before,after=after});store.ClearPending();Status.state=after;
+                                            store.Log(Policy.BoostOverwritten(action.delta,before,after)?"boost-overwritten":"boost-confirmed",new {mode=Status.mode,delta=action.delta,before=before,after=after});store.ClearPending();Status.state=after;
                                         } else {
                                             var serverAfter=await ReadServer().ConfigureAwait(false);Policy.Confirm(action.side,before,after,server,serverAfter);
                                             store.Log("claim-confirmed",new {side=action.side,before=before,after=after,serverBefore=server,serverAfter=serverAfter});
                                             Status.claimsThisRun++;store.ClearPending();Status.state=after;
                                         }
-                                        Publish(action.kind=="claim"?"领取已确认":"次数补充已确认");
+                                        Publish(action.kind=="claim"?"领取已确认":Policy.BoostOverwritten(action.delta,before,after)?"本次补数被旧上报覆盖，按最新计数继续":"次数补充已确认");
                                         if(action.kind=="boost") loopDelay=(int)Math.Max(100,Math.Min(1000,nextBoost-now()));
                                     }
                                 }

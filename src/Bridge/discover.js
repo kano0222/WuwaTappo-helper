@@ -10,7 +10,7 @@ function inspectModule(m) {
     environment: unique(v => v === 'cn-cn-prod', '应用环境'),
     store: unique(v => v && typeof v === 'object' && typeof v.isLoggedIn === 'boolean' &&
       ['totalClickCount','cumulativeClickCount','localClickCount','serverClickConsume','serverClickTotal'].every(k => Number.isSafeInteger(v[k]) && v[k] >= 0) &&
-      typeof v.addLocalClickCount === 'function' && 'userInfo' in v, '计数状态'),
+      typeof v.addLocalClickCount === 'function' && typeof v.applyClickReportSuccess === 'function' && typeof v.$onAction === 'function' && 'userInfo' in v, '计数状态'),
     locked: unique(fn('isForceUpdateLocked', /^function isForceUpdateLocked\(\)\{return \w+\.value\}$/), '更新锁'),
     userInfo: unique(fn('userInfo', /^function userInfo\(\)\{return \w+\.get\("api\/frontend\/user\/me",\{\},\{\}\)\}$/), '只读用户接口'),
     decode: unique(fn('unwrapApiData', /Number\(\w+\?\.code\).*Number\.isFinite.*isApiSuccess.*\.data\?\?\w+\.result/s), '响应解码')

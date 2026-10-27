@@ -32,6 +32,11 @@ namespace Tappo {
             return BoostContextMatches(before,after)&&after.cumulative.HasValue&&after.available.HasValue&&
                 after.cumulative>=before.cumulative+delta&&after.available>=before.available+delta;
         }
+        public static bool BoostOverwritten(int delta,Snapshot before,Snapshot after) {
+            return before.cumulative.HasValue&&before.available.HasValue&&after.boostOverwritten&&BoostContextMatches(before,after)&&after.boostAppliedTotal==before.cumulative+delta&&
+                after.boostReportTotal==before.cumulative&&after.cumulative==before.cumulative&&after.available==before.available&&
+                after.serverTotal==before.cumulative&&after.local==0;
+        }
         public static void Confirm(string side,Snapshot before,Snapshot after,ServerState a,ServerState b) {
             if(side!="left"&&side!="right") throw new InvalidOperationException("领取槽位无效");
             a.Validate(); b.Validate();

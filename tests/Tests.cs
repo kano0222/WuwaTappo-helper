@@ -12,6 +12,8 @@ using System.Windows.Threading;
 
 namespace Tappo {
     internal sealed class FakeClient : IAppClient {
+        bool connected=true;
+        public bool Connected {get{return connected;}set{connected=value;}}
         public Snapshot State=Tests.State(); public int Reads,Boosts,Claims,Quits,Closed; public bool ThrowClaim;
         public Func<Snapshot> ClaimResult,SnapshotResult;
         public Func<ServerState> ServerResult;
@@ -37,7 +39,8 @@ namespace Tappo {
             if(args.Length==2&&args[0]=="--panel-child") return PanelChild(args[1]);
             root=Path.Combine(Path.GetTempPath(),"tappo-native-tests-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
             try {
-                Policies();Files();Clocks().GetAwaiter().GetResult();Workers().GetAwaiter().GetResult();BoostObservations().GetAwaiter().GetResult();Resets().GetAwaiter().GetResult();QueryRetries().GetAwaiter().GetResult();ResetPanels();Layouts();Lifecycle();
+                Policies();Files();Clocks().GetAwaiter().GetResult();Workers().GetAwaiter().GetResult();BoostObservations().GetAwaiter().GetResult();Resets().GetAwaiter().GetResult();QueryRetries().GetAwaiter().GetResult();Connections().GetAwaiter().GetResult();ResetPanels();Layouts();Lifecycle();
+                checks+=TransportChecks.Run().GetAwaiter().GetResult();
                 Console.WriteLine("PASS: "+checks+" native checks; no account mutations, app restarts, or system policy changes.");return 0;
             } catch(Exception error) {Console.Error.WriteLine(error);return 1;}
             finally {
@@ -134,7 +137,7 @@ namespace Tappo {
             }
         }
         static async Task BoostObservations() {
-            foreach(var scenario in new[]{"delayed","report-reset","timeout","consumed","slot","logout"}) {
+            foreach(var scenario in new[]{"delayed","report-reset","timeout","consumed","slot","logout","overwritten","invalid-receipt"}) {
                 var store=Store();var client=new FakeClient();client.State.available=0;client.State.left=client.State.right=900000;
                 store.Write("preferences.json",new Preference {mode="clicker"});
                 var before=Copy(client.State);int observations=0,waits=0;
@@ -144,12 +147,17 @@ namespace Tappo {
                     if(scenario=="consumed") after.consumed+=1000;
                     if(scenario=="slot") after.left++;
                     if(scenario=="logout") after.loggedIn=false;
+                    if(scenario=="overwritten"||scenario=="invalid-receipt") {
+                        after.boostOverwritten=true;after.boostAppliedTotal=s.cumulative+delta;after.boostReportTotal=s.cumulative;
+                        after.serverTotal=s.cumulative;after.local=0;
+                        if(scenario=="invalid-receipt")after.boostAppliedTotal=null;
+                    }
                     return after;
                 };
                 client.SnapshotResult=()=> {
                     if(client.Boosts==0) return client.State;
                     observations++;var after=Copy(before);
-                    if(scenario!="timeout"&&observations>=3) {after.cumulative+=100;after.available+=100;}
+                    if(scenario!="timeout"&&scenario!="invalid-receipt"&&observations>=3) {after.cumulative+=100;after.available+=100;}
                     return after;
                 };
                 Worker worker=null;
@@ -157,11 +165,12 @@ namespace Tappo {
                     if(ms==250) waits++;else worker.RequestDisconnect();return Task.FromResult(0);
                 },()=>100000);
                 await worker.Run();
-                bool confirmed=scenario=="delayed"||scenario=="report-reset";
+                bool confirmed=scenario=="delayed"||scenario=="report-reset"||scenario=="overwritten";
                 Check(client.Boosts==1,scenario+" resent mutation");
                 Check(store.Exists("pending.json")!=confirmed,scenario+" journal handling");
                 Check((worker.Status.fault==null)==confirmed,scenario+" confirmation result");
-                Check(waits==(confirmed?3:scenario=="timeout"?12:0),scenario+" observation bound");
+                Check(waits==(scenario=="overwritten"?0:confirmed?3:scenario=="timeout"||scenario=="invalid-receipt"?12:0),scenario+" observation bound");
+                if(scenario=="overwritten")Check(RuntimeStore.ReadText(store.FilePath("events.jsonl")).Contains("boost-overwritten"),"overwritten boost misreported as success");
                 if(!confirmed) {
                     Check(RuntimeStore.ReadText(store.FilePath("events.jsonl")).Contains("boost-unconfirmed"),scenario+" observation missing");
                     Check(store.Read<Journal>("pending.json").before.cumulative==before.cumulative,scenario+" original state changed");
@@ -236,6 +245,39 @@ namespace Tappo {
                 } else Check(retries.Length==1&&client.Reads==2&&client.Boosts==0,"disconnect waited for retry");
             }
         }
+        static async Task Connections() {
+            long now=0;int reads=0;
+            var ready=new object();
+            var result=await AppClient.WaitForMain(()=>Task.FromResult(++reads<4?null:ready),ms=>{now+=ms;return Task.FromResult(0);},()=>now,2000);
+            Check(result==ready&&reads==4&&now==1200,"lazy main window not awaited");
+            now=0;bool expired=false;
+            try {await AppClient.WaitForMain(()=>Task.FromResult<object>(null),ms=>{now+=ms;return Task.FromResult(0);},()=>now,1000);}catch(TimeoutException){expired=true;}
+            Check(expired&&now==1200,"main window deadline ignored");
+            reads=0;bool rejected=false;
+            try {await AppClient.WaitForMain<object>(()=>{reads++;throw new InvalidOperationException("主窗口不唯一");},ms=>Task.FromResult(0),()=>0,1000);}catch(InvalidOperationException){rejected=true;}
+            Check(rejected&&reads==1,"ambiguous main window retried");
+            foreach(var scenario in new[]{"reconnect","unavailable","http","pending","claim-disconnect"}) {
+                var store=Store();var old=new FakeClient();var fresh=new FakeClient();int initial=0,reconnections=0,loops=0;now=100000;
+                old.State.left=old.State.right=fresh.State.left=fresh.State.right=900000;
+                if(scenario=="pending") File.WriteAllText(store.FilePath("pending.json"),"{\"historical\":true}");
+                old.SnapshotResult=()=>{if(scenario!="http")old.Connected=false;if(scenario!="claim-disconnect")throw new IOException("connection lost");return old.State;};
+                if(scenario=="claim-disconnect") {old.State.left=4000;old.ClaimResult=()=>{old.Connected=false;throw new IOException("claim connection lost");};}
+                Worker worker=null;
+                worker=new Worker(store,()=>{initial++;return Task.FromResult<IAppClient>(old);},c=>{throw new Exception("must not restart pet");},ms=> {
+                    now+=ms;loops++;
+                    if(fresh.Reads>0||worker.Status.fault!=null||scenario=="http"&&worker.Status.readRetryCount==2||loops>50)worker.RequestDisconnect();
+                    return Task.FromResult(0);
+                },()=>now,()=>{reconnections++;if(scenario=="unavailable"&&reconnections<3)throw new IOException("port not ready");return Task.FromResult<IAppClient>(fresh);});
+                await worker.Run();
+                Check(initial==1&&loops<=50,scenario+" restarted pet or stalled");
+                if(scenario=="reconnect"||scenario=="unavailable") {
+                    Check(reconnections==(scenario=="unavailable"?3:1)&&fresh.Reads>0&&worker.Status.fault==null,scenario+" did not restore connection");
+                    Check(old.Closed==1&&fresh.Closed==1,scenario+" connection not disposed");
+                } else Check(reconnections==0,scenario+" reconnected while outcome pending or transport alive");
+                if(scenario=="claim-disconnect")Check(old.Claims==1&&store.Exists("pending.json"),"uncertain claim journal cleared");
+                Check(old.Boosts==0&&fresh.Claims==0&&fresh.Boosts==0,scenario+" reconnect resent mutations");
+            }
+        }
         static void ResetPanels() {
             var store=Store();File.WriteAllText(store.FilePath("pending.json"),"{\"historical\":true}");
             using(var panel=new Panel(store)) {
@@ -287,6 +329,7 @@ namespace Tappo {
                 status.chestTimes.error="timeout";panel.Refresh();Check(panel.E<TextBlock>("LeftTime").Text=="等待同步"&&panel.E<Border>("LeftFill").Width==0,"failed API displayed live time");
                 status.chestTimes.error=null;status.chestTimes.updatedAt=RuntimeStore.Now-100000;panel.Refresh();Check(panel.E<TextBlock>("LeftTime").Text=="等待同步","expired time");
                 status.running=false;panel.Render(Path.Combine(images,"disconnected.png"));Check(panel.E<TextBlock>("LeftTime").Text=="未连接","disconnected view");
+                status.fault="桌宠主窗口尚未就绪";panel.Refresh();Check(panel.E<TextBlock>("DetailMessage").Text==status.fault,"stopped failure hidden behind restart hint");status.fault=null;
                 panel.E<Expander>("UsageHint").IsExpanded=true;panel.SetPath(@"C:\Long installation path\Long installation path\Long installation path\WuwaTappo.exe");panel.Render(Path.Combine(images,"minimum.png"),820,660);
                 Check(panel.E<ScrollViewer>("MainScroll").ScrollableHeight>0,"minimum expanded window does not scroll");
                 var surface=panel.E<Border>("RootSurface");var start=panel.E<Button>("StartButton").TranslatePoint(new Point(),surface);var stop=panel.E<Button>("StopButton").TranslatePoint(new Point(),surface);

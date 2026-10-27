@@ -28,6 +28,7 @@ namespace Tappo {
     internal sealed class Snapshot {
         public long time; public bool loggedIn, locked, claimBusy, skipped, rejected;
         public long? available, cumulative, local, consumed, serverTotal, left, right;
+        public bool boostOverwritten; public long? boostAppliedTotal,boostReportTotal;
         public int code; public string reason;
         public Dictionary<string, bool> buttons = new Dictionary<string, bool>();
         public long? Slot(string side) { return side == "left" ? left : right; }
