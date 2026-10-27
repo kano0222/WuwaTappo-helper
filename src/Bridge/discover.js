@@ -1,5 +1,5 @@
-// These checks describe capabilities, not release versions or generated export aliases.
-export function inspectModule(m) {
+(async()=>{// These checks describe capabilities, not release versions or generated aliases.
+function inspectModule(m) {
   const unique = (predicate, label) => {
     const keys = Object.keys(m).filter(k => predicate(m[k]));
     if (keys.length !== 1) throw new Error('兼容性检查失败：' + label + '缺失或不唯一');
@@ -25,7 +25,7 @@ export function inspectModule(m) {
   return exports;
 }
 
-export function inspectSources(sources) {
+function inspectSources(sources) {
   const mains = sources.filter(([, s]) => s.includes('case"boost-local-clicks":'));
   if (mains.length !== 1) throw new Error('兼容性检查失败：补数处理器缺失或不唯一');
   const source = mains[0][1];
@@ -41,7 +41,7 @@ export function inspectSources(sources) {
   return quits[0][0];
 }
 
-export async function discoverProfile() {
+async function discoverProfile() {
   if (location.hostname !== 'tauri.localhost' || window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label !== 'main' ||
       typeof window.__TAURI_INTERNALS__?.invoke !== 'function') throw new Error('兼容性检查失败：非桌宠主窗口');
   const paths = [...new Set([...document.scripts].map(s => s.src).concat(performance.getEntriesByType('resource').map(e => e.name)))]
@@ -66,10 +66,5 @@ export async function discoverProfile() {
   return { commonPath, quitPath, exports };
 }
 
-export const discoverySource = `(async () => {
-  ${inspectModule.toString()}
-  ${inspectSources.toString()}
-  ${discoverProfile.toString()}
-  try { return { profile: await discoverProfile() }; }
-  catch (error) { return { error: String(error.message).startsWith('兼容性检查失败：') ? error.message : '兼容性检查失败：资源或接口无法确认' }; }
-})()`;
+
+try{return {profile:await discoverProfile()}}catch(error){return {error:String(error.message).startsWith('兼容性检查失败：')?error.message:'兼容性检查失败：资源或接口无法确认'}}})()

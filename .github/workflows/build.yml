@@ -15,7 +15,7 @@ concurrency:
 jobs:
   build:
     runs-on: windows-2022
-    timeout-minutes: 20
+    timeout-minutes: 15
     defaults:
       run:
         shell: pwsh
@@ -24,30 +24,25 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - name: Set up Node.js
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: '24.12.0'
-          package-manager-cache: false
-      - name: Test backend
-        run: npm test
-      - name: Test panel controls
-        run: npm run test:ui
-      - name: Test panel layouts
-        run: pwsh -NoProfile -STA -File tests/panel-layout.ps1
-      - name: Test shared status files
-        run: npm run test:files
-      - name: Test application discovery
-        run: pwsh -NoProfile -File tests/app-discovery.ps1
-      - name: Test panel lifecycle
-        run: pwsh -NoProfile -STA -File tests/panel-reopen.ps1
-      - name: Build distribution
-        run: ./scripts/Build-Distribution.ps1
-      - name: Validate packaged launcher
+      - name: Build and test native C# application
+        run: ./scripts/Build.ps1 -Test
+      - name: Stage portable distribution
         run: |
-          $packages = @(Get-ChildItem -LiteralPath dist -Directory)
-          if ($packages.Count -ne 1) { throw 'Expected one distribution directory.' }
-          ./tests/launcher-smoke.ps1 -PackageRoot $packages[0].FullName
+          $stage = Join-Path $PWD 'dist/WuwaTappoHelper-win-x64'
+          [void][IO.Directory]::CreateDirectory($stage)
+          foreach ($file in @('build/WuwaTappoHelper.exe','build/WuwaTappoHelper.exe.config','README.md','config.example.json')) {
+            Copy-Item -LiteralPath $file -Destination $stage
+          }
+          $check = Start-Process -FilePath (Join-Path $stage 'WuwaTappoHelper.exe') -ArgumentList '--check' -PassThru -Wait -WindowStyle Hidden
+          if ($check.ExitCode -ne 0) { throw 'Embedded resource validation failed.' }
+          $files = @(Get-ChildItem -LiteralPath $stage -Recurse -File)
+          if ($files.Count -ne 4) { throw 'Unexpected distribution files.' }
+          $size = ($files | Measure-Object Length -Sum).Sum
+          if ($size -gt 5MB) { throw 'Native distribution unexpectedly exceeds 5 MiB.' }
+          "Native distribution: $size bytes; no bundled PowerShell or Node.js." >> $env:GITHUB_STEP_SUMMARY
+      - name: Create package in GitHub Actions
+        run: |
+          [IO.Compression.ZipFile]::CreateFromDirectory((Join-Path $PWD 'dist/WuwaTappoHelper-win-x64'),(Join-Path $PWD 'dist/WuwaTappoHelper-win-x64.zip'))
       - name: Upload Windows package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:

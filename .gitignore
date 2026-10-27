@@ -5,6 +5,7 @@
 /dist/
 /node_modules/
 /dependencies/
+/build/
 /WuwaTappoHelper.exe
 npm-debug.log*
 .DS_Store

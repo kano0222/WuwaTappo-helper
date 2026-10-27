@@ -1,0 +1,189 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Text;
+using System.Threading;
+using System.Threading.Tasks;
+using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Threading;
+
+namespace Tappo {
+    internal sealed class FakeClient : IAppClient {
+        public Snapshot State=Tests.State(); public int Reads,Boosts,Claims,Quits,Closed; public bool ThrowClaim;
+        public Func<Snapshot> ClaimResult;
+        public Task<Snapshot> Snapshot() {return Task.FromResult(State);}
+        public Task<ServerState> Server() {Reads++;return Task.FromResult(new ServerState {total=State.cumulative,consumed=State.consumed,left=State.left,right=State.right});}
+        public Task<Snapshot> Boost(int delta,Snapshot before) {Boosts++;var result=Tests.Copy(before);result.cumulative+=delta;result.available+=delta;State=result;return Task.FromResult(result);}
+        public Task<Snapshot> Claim(string side,Snapshot before) {Claims++;if(ThrowClaim) throw new TimeoutException("调用超时，禁止自动重发操作");var result=ClaimResult==null?Tests.Copy(before):ClaimResult();State=result;return Task.FromResult(result);}
+        public Task Quit() {Quits++;return Task.FromResult(0);}
+        public void Dispose() {Closed++;}
+    }
+    internal static class Tests {
+        static int checks;static string root;
+        public static Snapshot State() {return new Snapshot {time=5000,loggedIn=true,available=2000,cumulative=4000,consumed=2000,left=6000,right=7000,buttons=new Dictionary<string,bool>{{"left",true},{"right",true}}};}
+        public static Snapshot Copy(Snapshot s) {return Json.Decode<Snapshot>(Json.Encode(s));}
+        static void Check(bool value,string message) {if(!value) throw new Exception(message);checks++;}
+        static void Reject(Action action,string message) {bool rejected=false;try{action();}catch{rejected=true;}Check(rejected,message);}
+        static RuntimeStore Store() {return new RuntimeStore(Path.Combine(root,Guid.NewGuid().ToString("N")));}
+        [STAThread] public static int Main(string[] args) {
+            if(args.Length==2&&args[0]=="--panel-child") return PanelChild(args[1]);
+            root=Path.Combine(Path.GetTempPath(),"tappo-native-tests-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
+            try {
+                Policies();Files();Clocks().GetAwaiter().GetResult();Workers().GetAwaiter().GetResult();Layouts();Lifecycle();
+                Console.WriteLine("PASS: "+checks+" native checks; no account mutations, app restarts, or system policy changes.");return 0;
+            } catch(Exception error) {Console.Error.WriteLine(error);return 1;}
+            finally {
+                var target=Path.GetFullPath(root);var temp=Path.GetFullPath(Path.GetTempPath());
+                if(target.StartsWith(temp,StringComparison.OrdinalIgnoreCase)&&Path.GetFileName(target).StartsWith("tappo-native-tests-")) Directory.Delete(target,true);
+            }
+        }
+        static void Policies() {
+            var s=State();Func<double> random=()=>0.5;
+            Check(Policy.Choose(s,"brute",true,random).kind=="wait","early claim");
+            s.left=5000;s.available=721;Check(Policy.Choose(s,"brute",true,random).delta==1279,"brute delta");
+            s=State();s.available=0;s.buttons["left"]=false;s.buttons["right"]=false;
+            Check(Policy.Choose(s,"brute",true,random).kind=="wait","brute behavior changed");
+            Check(Policy.Choose(s,"clicker",true,random).delta==100,"clicker rate");
+            Check(Policy.Choose(s,"human",true,random).delta==5,"human rate");
+            Check(Policy.Choose(s,"human",true,()=>0).delayMs==2000,"human rest");
+            Check(Policy.Choose(s,"clicker",false,random).kind=="wait","boost throttling");
+            s.available=1999;Check(Policy.Choose(s,"clicker",true,random).delta==1,"target clamp");
+            s=State();s.available=1000;s.left=s.right=4000;Check(Policy.Choose(s,"brute",false,random).side=="left","serial slots");
+            s.claimBusy=true;Check(Policy.Choose(s,"clicker",true,random).kind=="wait","animation lock");
+            s=State();s.available=null;Reject(()=>Policy.Choose(s,"brute",true,random),"missing count accepted");
+            s=State();s.left=null;Reject(()=>Policy.Choose(s,"brute",true,random),"missing cooldown accepted");
+            s=State();s.loggedIn=false;Check(Policy.Choose(s,"brute",true,random).kind=="wait","logged out");s.loggedIn=true;s.locked=true;Check(Policy.Choose(s,"brute",true,random).kind=="wait","update lock");
+            var before=State();before.left=before.right=4000;var after=Copy(before);after.consumed+=1000;after.available-=1000;after.left=9000;
+            var a=new ServerState {total=4000,consumed=2000,left=4000,right=4000};var b=new ServerState {total=4000,consumed=3000,left=9000,right=4000};
+            Policy.Confirm("left",before,after,a,b);checks++;
+            Check(Policy.Choose(after,"brute",true,random).side=="right","second slot after confirmation");
+            foreach(var damage in new Action<Snapshot>[] {x=>x.right=9000,x=>x.consumed=4000,x=>x.claimBusy=true,x=>{x.left=4000;x.right=9000;}}) {
+                var bad=Copy(after);damage(bad);Reject(()=>Policy.Confirm("left",before,bad,a,b),"invalid claim confirmed");
+            }
+            b.left=9500;Reject(()=>Policy.Confirm("left",before,after,a,b),"server mismatch confirmed");
+            Check(Policy.ConfirmRejected(70006,before,before,a,a).Contains("冷却"),"known rejection");
+            Reject(()=>Policy.ConfirmRejected(12345,before,before,a,a),"unknown rejection cleared");
+            Reject(()=>Policy.ConfirmRejected(70006,before,after,a,a),"changed state rejection cleared");
+        }
+        static void Files() {
+            var store=Store();store.Write("preferences.json",new Preference {mode="human"});Check(store.Read<Preference>("preferences.json").mode=="human","preferences roundtrip");
+            File.WriteAllText(store.FilePath("pending.json"),"{\"historical\":true}");
+            Reject(()=>store.Begin(new Plan {kind="claim"},State(),new ServerState()),"historical journal overwritten");
+            Check(File.ReadAllText(store.FilePath("pending.json"))=="{\"historical\":true}","journal changed");
+            using(var reader=new FileStream(store.FilePath("preferences.json"),FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete)) {
+                for(int i=0;i<500;i++) store.Write("preferences.json",new Preference {mode=i%2==0?"brute":"clicker"});
+            }
+            Check(store.Read<Preference>("preferences.json").mode=="clicker","atomic status replacement");
+            Check(Platform.InstallExecutable("\"Z:\\Missing App\"")==@"Z:\Missing App\WuwaTappo.exe","quoted install path");
+            Check(!Platform.ValidPath(@"Z:\Missing App\WuwaTappo.exe"),"missing app accepted");
+            Check(!Platform.ValidPath("WuwaTappo.exe"),"relative app accepted");
+            var missing=Json.Decode<Snapshot>("{\"loggedIn\":true}");Reject(()=>Policy.Choose(missing,"brute",true,()=>0.5),"missing JSON counts accepted");
+            Check(Resources.Text("bridge.claim.js").Contains("button.click()")&&!Resources.Text("bridge.claim.js").Contains("chests/open"),"claim bypasses original handler");
+            Check(Resources.Text("bridge.discover.js").Contains("inspectModule")&&Resources.Text("bridge.discover.js").Contains("inspectSources"),"missing capability checks");
+            store.Write("control.json",new Command {id="previous-stop",action="disconnect"});Panel.PrepareStart(store);
+            Check(store.Read<Command>("control.json").action=="resume","new start consumes old disconnect");
+            store.Write("lock.json",new {pid=Process.GetCurrentProcess().Id});
+            var command=RuntimeStore.ReadText(store.FilePath("control.json"));Reject(()=>Panel.PrepareStart(store),"duplicate worker start accepted");
+            Check(RuntimeStore.ReadText(store.FilePath("control.json"))==command,"duplicate start resumed active worker");
+        }
+        static async Task Clocks() {
+            long now=1000;int reads=0;var clock=new ChestClock(()=>now);Func<Task<ServerState>> read=()=>{reads++;return Task.FromResult(new ServerState {left=90000,right=120000});};
+            await clock.Poll(read);for(now=2000;now<31000;now+=1000) await clock.Poll(read);Check(reads==1,"poll rate");
+            await clock.Poll(read);Check(reads==2,"poll due");now=40000;clock.Accept(new ServerState {left=180000,right=120000});now=61000;await clock.Poll(read);Check(reads==2,"transaction refresh not reused");
+            now=70000;await clock.Poll(()=>{throw new IOException("timeout");});Check(clock.Value.error!=null&&clock.Value.updatedAt==40000,"query failure freshness");
+            now=71000;await clock.Poll(read);Check(reads==2,"failure hot retry");now=100000;await clock.Poll(read);Check(clock.Value.error==null,"query recovery");
+            clock.Reset();Check(!clock.Value.updatedAt.HasValue,"logout cache retained");Reject(()=>clock.Accept(new ServerState {right=10}),"missing server time accepted");
+        }
+        static async Task Workers() {
+            foreach(var action in new[]{"disconnect","stop","poll","timeout","reject","success","boost","skip","wrong-slot","unknown-rejection"}) {
+                var store=Store();var client=new FakeClient();long now=100000;int loops=0,restores=0;
+                bool historical=action=="disconnect"||action=="stop"||action=="poll";
+                if(historical) File.WriteAllText(store.FilePath("pending.json"),"{\"historical\":true}");
+                if(action=="disconnect"||action=="stop") store.Write("control.json",new Command {id="fixture",action=action});
+                if(!historical) {client.State.left=4000;client.State.time=5000;}
+                if(action=="timeout") client.ThrowClaim=true;
+                if(action=="reject") client.ClaimResult=()=>{var s=Copy(client.State);s.rejected=true;s.code=70006;return s;};
+                if(action=="success") client.ClaimResult=()=>{var s=Copy(client.State);s.left=90000;s.consumed+=1000;s.available-=1000;return s;};
+                if(action=="boost") {client.State.left=900000;client.State.right=900000;client.State.available=0;store.Write("preferences.json",new Preference {mode="clicker"});}
+                if(action=="skip") client.ClaimResult=()=>{var s=Copy(client.State);s.skipped=true;s.reason="条件已变化";s.buttons["left"]=false;return s;};
+                if(action=="wrong-slot") client.ClaimResult=()=>{var s=Copy(client.State);s.right=90000;s.consumed+=1000;s.available-=1000;return s;};
+                if(action=="unknown-rejection") client.ClaimResult=()=>{var s=Copy(client.State);s.rejected=true;s.code=12345;return s;};
+                Worker worker=null;
+                worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),async c=>{restores++;await c.Quit();},ms=>{now+=30000;if(++loops==2)worker.RequestDisconnect();return Task.FromResult(0);},()=>now);
+                await worker.Run();
+                Check(restores==(action=="stop"?1:0),action+" restore intent");Check(client.Quits==restores,action+" quit intent");Check(client.Closed==1,action+" connection cleanup");
+                Check(!worker.Status.running&&worker.Status.automationDisconnected,action+" disconnect confirmation");Check(!store.Exists("lock.json"),action+" stale lock");
+                if(historical) {Check(File.ReadAllText(store.FilePath("pending.json"))=="{\"historical\":true}","historical record changed");Check(client.Claims==0&&client.Boosts==0,"pending allowed mutations");}
+                if(action=="poll") Check(client.Reads==2,"paused historical polling");
+                if(action=="timeout") Check(store.Exists("pending.json")&&client.Claims==1,"uncertain claim retried");
+                if(action=="reject") Check(!store.Exists("pending.json")&&worker.Status.fault!=null&&client.Claims==1,"rejection confirmation");
+                if(action=="success") Check(!store.Exists("pending.json")&&worker.Status.claimsThisRun==1,"confirmed claim not cleared");
+                if(action=="boost") Check(!store.Exists("pending.json")&&client.Boosts==2&&client.State.available==200,"native boost loop");
+                if(action=="skip") Check(!store.Exists("pending.json")&&client.Claims==1,"skipped action left journal");
+                if(action=="wrong-slot"||action=="unknown-rejection") Check(store.Exists("pending.json")&&client.Claims==1,"unconfirmed result retried");
+            }
+        }
+        static void Layouts() {
+            var store=Store();using(var panel=new Panel(store)) {
+                var state=State();state.left=RuntimeStore.Now+650000;state.right=RuntimeStore.Now-1000;
+                var status=new Status {at=DateTimeOffset.UtcNow.ToString("o"),pid=Process.GetCurrentProcess().Id,running=true,mode="brute",state=state,
+                    chestTimes=new ChestTimes {updatedAt=RuntimeStore.Now,left=state.left,right=state.right}};
+                panel.ReadStatus=()=>status;
+                var images=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"previews");Directory.CreateDirectory(images);
+                panel.Render(Path.Combine(images,"running.png"));
+                Check(panel.E<ScrollViewer>("MainScroll").ScrollableHeight<1,"default layout scrolls");Check(panel.E<Border>("ChestArea").ActualHeight<100,"chests too tall");
+                Check(panel.E<TextBlock>("LeftTime").Text.Contains(":"),"server countdown missing");
+                Check(panel.E<TextBlock>("RightTime").Text=="已就绪","ready slot missing");
+                Check(!panel.E<Button>("StartButton").IsEnabled&&panel.E<Button>("PauseButton").IsEnabled,"running controls");
+                Check(panel.E<TextBlock>("ActivityText").Visibility==Visibility.Collapsed,"empty activities not collapsed");
+                status.paused=true;panel.Refresh();Check((string)panel.E<Button>("PauseButton").Content=="继续运行","pause label");
+                File.WriteAllText(store.FilePath("pending.json"),"{\"historical\":true}");panel.Refresh();Check(!panel.E<Button>("PauseButton").IsEnabled&&panel.E<Button>("StopButton").IsEnabled,"pending controls");
+                store.Log("started");store.Log("boost-confirmed",new {delta=100});store.Log("claim-confirmed",new {side="left"});panel.Render(Path.Combine(images,"paused.png"));
+                Check(panel.E<TextBlock>("ActivityText").Text.Split('\n').Length==3,"activity history");
+                status.chestTimes.error="timeout";panel.Refresh();Check(panel.E<TextBlock>("LeftTime").Text=="等待同步"&&panel.E<Border>("LeftFill").Width==0,"failed API displayed live time");
+                status.chestTimes.error=null;status.chestTimes.updatedAt=RuntimeStore.Now-100000;panel.Refresh();Check(panel.E<TextBlock>("LeftTime").Text=="等待同步","expired time");
+                status.running=false;panel.Render(Path.Combine(images,"disconnected.png"));Check(panel.E<TextBlock>("LeftTime").Text=="未连接","disconnected view");
+                panel.E<Expander>("UsageHint").IsExpanded=true;panel.SetPath(@"C:\Long installation path\Long installation path\Long installation path\WuwaTappo.exe");panel.Render(Path.Combine(images,"minimum.png"),820,660);
+                Check(panel.E<ScrollViewer>("MainScroll").ScrollableHeight>0,"minimum expanded window does not scroll");
+                var surface=panel.E<Border>("RootSurface");var start=panel.E<Button>("StartButton").TranslatePoint(new Point(),surface);var stop=panel.E<Button>("StopButton").TranslatePoint(new Point(),surface);
+                Check(start.Y==stop.Y&&stop.X+panel.E<Button>("StopButton").ActualWidth<796,"control row overflow");
+                var modes=panel.E<ListBox>("ModeSelector");modes.SelectedIndex=1;modes.SelectedIndex=2;Check(store.Read<Preference>("preferences.json").mode=="human","mode not persisted");
+                File.Delete(store.FilePath("preferences.json"));Directory.CreateDirectory(store.FilePath("preferences.json"));
+                modes.SelectedIndex=1;Check((string)((ListBoxItem)modes.SelectedItem).Tag=="human","failed save changed selection");Directory.Delete(store.FilePath("preferences.json"));
+                string dispatched=null;panel.DispatchOverride=action=>dispatched=action;status.running=true;panel.Exit().GetAwaiter().GetResult();Check(dispatched=="disconnect","exit requested restore");
+            }
+        }
+        static int PanelChild(string directory) {
+            try {
+                var app=new Application {ShutdownMode=ShutdownMode.OnExplicitShutdown};var store=new RuntimeStore(directory);
+                using(var panel=new Panel(store)) {
+                    if(!panel.ClaimInstance()) return 2;panel.InitializeTray();panel.StartTimer();int step=0;
+                    var timer=new DispatcherTimer {Interval=TimeSpan.FromSeconds(1)};
+                    timer.Tick+=async(s,e)=>{try{step++;if(step==1)panel.Window.Close();if(step==5){Check(panel.Window.IsVisible,"duplicate did not restore");timer.Stop();await panel.Exit();}}catch(Exception error){File.WriteAllText(store.FilePath("test-error.txt"),error.ToString());Environment.Exit(1);}};
+                    timer.Start();app.Run(panel.Window);
+                }
+                return 0;
+            }catch(Exception error){Console.Error.WriteLine(error);return 1;}
+        }
+        static void Lifecycle() {
+            var store=Store();var executable=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"WuwaTappoHelper.exe");var copy=Path.Combine(store.Root,"WuwaTappoHelper.exe");File.Copy(executable,copy);
+            for(int round=0;round<2;round++) {
+                using(var first=Process.Start(new ProcessStartInfo(System.Reflection.Assembly.GetExecutingAssembly().Location,"--panel-child \""+store.Root+"\""){UseShellExecute=false,CreateNoWindow=true})) {
+                    var deadline=RuntimeStore.Now+12000;var log=store.FilePath("panel-lifecycle.log");int expected=round+1;
+                    while(RuntimeStore.Now<deadline&&!first.HasExited) {
+                        if(File.Exists(log)&&RuntimeStore.ReadText(log).Split(new[]{"hidden-to-tray"},StringSplitOptions.None).Length>expected)break;Thread.Sleep(100);
+                    }
+                    var duplicateInfo=new ProcessStartInfo(copy) {UseShellExecute=false,CreateNoWindow=true};
+                    duplicateInfo.EnvironmentVariables["PATH"]=Environment.GetFolderPath(Environment.SpecialFolder.System);
+                    using(var duplicate=Process.Start(duplicateInfo)) {Check(duplicate.WaitForExit(8000)&&duplicate.ExitCode==0,"duplicate launch without runtimes failed");}
+                    if(!first.WaitForExit(12000)) {first.Kill();throw new Exception("test panel did not exit");}
+                    Check(first.ExitCode==0,"test panel lifecycle failed");
+                }
+            }
+            Check(!RuntimeStore.Alive(999999),"nonexistent process alive");
+        }
+    }
+}
