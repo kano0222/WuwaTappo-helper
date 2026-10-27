@@ -7,6 +7,13 @@ using System.Windows;
 namespace Tappo {
     internal static class Program {
         [STAThread] public static int Main(string[] args) {
+            // Branch before constructing the real runtime store, including on preview errors.
+            if(args.Length>0&&args[0]=="--render-preview") {
+                try {
+                    if(args.Length!=2) throw new ArgumentException("用法：--render-preview 帧输出目录");
+                    ReadmePreview.Render(Path.GetFullPath(args[1]));return 0;
+                } catch(Exception error) {Console.Error.WriteLine(error.Message);return 1;}
+            }
             if(args.Length==1&&args[0]=="--check") {
                 try {
                     Resources.Text("Panel.xaml");Resources.Text("bridge.discover.js");Resources.Text("bridge.state.js");Resources.Text("bridge.boost.js");Resources.Text("bridge.claim.js");
@@ -34,6 +41,7 @@ namespace Tappo {
                 using(var panel=new Panel(store)) {
                     if(render) {panel.Render(Path.GetFullPath(args[1]));return 0;}
                     if(!panel.ClaimInstance()) return 0;
+                    panel.AutoCheckUpdates=true;
                     var app=new Application {ShutdownMode=ShutdownMode.OnExplicitShutdown};
                     app.DispatcherUnhandledException+=(s,e)=>{RuntimeStore.Append(store.FilePath("panel-launcher-error.log"),e.Exception.Message+"\n");e.Handled=true;};
                     panel.Window.Height=Math.Max(660,Math.Min(900,SystemParameters.WorkArea.Height-40));

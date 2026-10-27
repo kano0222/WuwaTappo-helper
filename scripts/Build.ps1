@@ -1,12 +1,25 @@
-param([switch]$Test,[string]$OutputDirectory)
+param([switch]$Test,[string]$OutputDirectory,[string]$Version)
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
 if (-not $OutputDirectory) { $OutputDirectory=Join-Path $root 'build' }
 [void][IO.Directory]::CreateDirectory($OutputDirectory)
 $framework=Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319'
 $compiler=Join-Path $framework 'csc.exe'
-if (-not (Test-Path -LiteralPath $compiler)) { throw '需要 Windows 的 .NET Framework 4.8 构建环境。' }
+if (-not (Test-Path -LiteralPath $compiler)) { throw 'Windows with .NET Framework 4.8 build tools is required.' }
 $sources=@(Get-ChildItem -LiteralPath (Join-Path $root 'src') -Filter '*.cs' | ForEach-Object { $_.FullName })
+$releaseBuild=$false
+if ($Version) { $releaseBuild=$true }
+elseif ($env:GITHUB_REF_TYPE -eq 'tag') { $Version=$env:GITHUB_REF_NAME; $releaseBuild=$true }
+else {
+    if (Get-Command git -ErrorAction SilentlyContinue) { $Version=& git -C $root describe --tags --match 'v[0-9]*' --abbrev=0 2>$null }
+    if (-not $Version) { $Version='0.0.0' }
+}
+if ($Version -notmatch '^v?(\d+)\.(\d+)\.(\d+)$') { throw 'Version must use vX.Y.Z or X.Y.Z format.' }
+$buildVersion=$Version.TrimStart('v')
+$displayVersion=if ($releaseBuild) { $buildVersion } else { $buildVersion+'-dev' }
+$versionSource=Join-Path $OutputDirectory 'Version.cs'
+[IO.File]::WriteAllText($versionSource,('[assembly:System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8")][assembly:System.Reflection.AssemblyVersion("'+$buildVersion+'.0")][assembly:System.Reflection.AssemblyInformationalVersion("'+$displayVersion+'")]'))
+$sources+=$versionSource
 # JSON models are populated by JavaScriptSerializer rather than C# assignments.
 $arguments=@('/nologo','/target:winexe','/platform:x64','/optimize+','/warn:4','/nowarn:0649','/main:Tappo.Program',('/out:'+(Join-Path $OutputDirectory 'WuwaTappoHelper.exe')),('/win32icon:'+(Join-Path $root 'assets\helper.ico')),('/win32manifest:'+(Join-Path $root 'src\app.manifest')))
 foreach ($assembly in @('System.dll','System.Core.dll','System.Net.Http.dll','System.Web.Extensions.dll','System.Drawing.dll','System.Windows.Forms.dll','System.Xaml.dll','WPF\WindowsBase.dll','WPF\PresentationCore.dll','WPF\PresentationFramework.dll')) {
@@ -16,16 +29,16 @@ $arguments+=('/resource:'+(Join-Path $root 'src\Panel.xaml')+',Panel.xaml')
 $arguments+=('/resource:'+(Join-Path $root 'assets\helper.ico')+',helper.ico')
 foreach ($file in Get-ChildItem -LiteralPath (Join-Path $root 'src\Bridge') -Filter '*.js') { $arguments+=('/resource:'+$file.FullName+',bridge.'+$file.Name) }
 & $compiler @arguments @sources
-if ($LASTEXITCODE -ne 0) { throw 'C# 编译失败。' }
+if ($LASTEXITCODE -ne 0) { throw 'C# compilation failed.' }
 $configuration='<?xml version="1.0"?><configuration><startup><supportedRuntime version="v4.0" sku=".NETFramework,Version=v4.8"/></startup></configuration>'
 [IO.File]::WriteAllText((Join-Path $OutputDirectory 'WuwaTappoHelper.exe.config'),$configuration)
-Write-Output ('已生成：'+(Join-Path $OutputDirectory 'WuwaTappoHelper.exe'))
+Write-Output ('Built: '+(Join-Path $OutputDirectory 'WuwaTappoHelper.exe'))
 if ($Test) {
     $testArguments=@($arguments | Where-Object { $_ -notlike '/main:*' -and $_ -notlike '/out:*' -and $_ -notlike '/target:*' })
     $testArguments+=@('/target:exe','/main:Tappo.Tests',('/out:'+(Join-Path $OutputDirectory 'Tests.exe')))
     $testSources=@(Get-ChildItem -LiteralPath (Join-Path $root 'tests') -Filter '*.cs' | ForEach-Object { $_.FullName })
     & $compiler @testArguments @sources @testSources
-    if ($LASTEXITCODE -ne 0) { throw '测试编译失败。' }
+    if ($LASTEXITCODE -ne 0) { throw 'Test compilation failed.' }
     & (Join-Path $OutputDirectory 'Tests.exe')
-    if ($LASTEXITCODE -ne 0) { throw 'C# 检查未通过。' }
+    if ($LASTEXITCODE -ne 0) { throw 'C# checks failed.' }
 }

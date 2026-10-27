@@ -77,13 +77,12 @@
     <Grid>
       <Grid.RowDefinitions><RowDefinition Height="46"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
       <Grid Margin="20,7,12,0">
-        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="86"/><ColumnDefinition Width="38"/><ColumnDefinition Width="38"/></Grid.ColumnDefinitions>
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="38"/><ColumnDefinition Width="38"/></Grid.ColumnDefinitions>
         <Grid x:Name="TitleGrip" Background="Transparent">
           <TextBlock Text="WUWA TAPPO  /  后台助手" FontSize="10" FontWeight="SemiBold" Foreground="#918678" VerticalAlignment="Center"/>
         </Grid>
-        <Button x:Name="ExitButton" Grid.Column="1" Content="退出助手" FontSize="11" Height="30" Padding="8,0" BorderThickness="0" Background="Transparent" ToolTip="停止自动化并退出助手，不启动或关闭桌宠"/>
-        <Button x:Name="MinimizeButton" Grid.Column="2" Content="—" Height="30" Padding="0" BorderThickness="0" Background="Transparent" ToolTip="最小化"/>
-        <Button x:Name="CloseButton" Grid.Column="3" Content="×" FontSize="20" Height="30" Padding="0" BorderThickness="0" Background="Transparent" ToolTip="收进系统托盘，后台状态不变；退出请点击“退出助手”"/>
+        <Button x:Name="MinimizeButton" Grid.Column="1" Content="—" Height="30" Padding="0" BorderThickness="0" Background="Transparent" ToolTip="最小化"/>
+        <Button x:Name="CloseButton" Grid.Column="2" Content="×" FontSize="20" Height="30" Padding="0" BorderThickness="0" Background="Transparent" ToolTip="选择退出助手或最小化到托盘"/>
       </Grid>
       <ScrollViewer x:Name="MainScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="24,6,24,16">
         <StackPanel>
@@ -114,7 +113,7 @@
           </Grid>
               <Button x:Name="ResetPendingButton" Content="结束待确认操作" HorizontalAlignment="Left" Height="30" Margin="0,8,0,0" Padding="12,0" Visibility="Collapsed" ToolTip="归档未确认记录，不重发原操作，并恢复自动化"/>
               <Expander x:Name="UsageHint" Header="使用说明" IsExpanded="False" FontSize="12" Foreground="#856B46" Margin="0,8,0,0">
-                <TextBlock Text="暂停／继续无需重启桌宠；停止并恢复会重启为普通桌宠。退出助手不启动或关闭桌宠，调试入口保留至桌宠退出。首次启用前先从桌宠菜单退出，再启动后台，并按需允许管理员提示。" TextWrapping="Wrap" Foreground="#807565" LineHeight="20" Margin="22,6,0,0"/>
+                <TextBlock Text="暂停：暂时停止自动操作，之后可以继续。&#10;停止并恢复桌宠：退出后台模式，让桌宠恢复正常显示和操作。&#10;关闭助手：不会影响已经运行的桌宠。&#10;首次启动后台前，请先从桌宠菜单正常退出桌宠。启动时如果弹出管理员权限提示，请按需确认。" TextWrapping="Wrap" Foreground="#807565" LineHeight="20" Margin="22,6,0,0"/>
               </Expander>
             </StackPanel>
           </Border>
@@ -186,7 +185,10 @@
         </StackPanel>
       </ScrollViewer>
       <Border x:Name="FooterHint" Grid.Row="2" Padding="24,9,24,10" Background="#F7F6F2" BorderBrush="#EAE5DE" BorderThickness="0,1,0,0" CornerRadius="0,0,20,20">
-        <TextBlock Text="关闭窗口收进托盘，后台保持运行；完全退出请点“退出助手”，或右键面板／托盘选择退出。" FontSize="11" Foreground="#A49B90" TextWrapping="Wrap" TextAlignment="Left" HorizontalAlignment="Left" MaxWidth="650"/>
+        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <TextBlock Text="关闭窗口时可选择退出或最小化到托盘；收进托盘后后台继续运行。" FontSize="11" Foreground="#A49B90" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,12,0"/>
+          <Button x:Name="UpdateButton" Grid.Column="1" Content="检查更新" Height="28" Padding="10,0" FontSize="11"/>
+        </Grid>
       </Border>
     </Grid>
   </Border>

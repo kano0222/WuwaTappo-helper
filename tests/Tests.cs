@@ -33,14 +33,18 @@ namespace Tappo {
         static void Reject(Action action,string message) {bool rejected=false;try{action();}catch{rejected=true;}Check(rejected,message);}
         static RuntimeStore Store() {return new RuntimeStore(Path.Combine(root,Guid.NewGuid().ToString("N")));}
         [STAThread] public static int Main(string[] args) {
+            if(args.Length==2&&args[0]=="--update-probe") {
+                try {var update=Updates.Check(CancellationToken.None).GetAwaiter().GetResult();File.WriteAllText(args[1],Json.Encode(new {current=Updates.CurrentVersion,build=Updates.BuildVersion,latest=update.version,available=update.available,url=update.url}));return 0;}
+                catch(Exception error){Console.Error.WriteLine("TLS="+System.Net.ServicePointManager.SecurityProtocol);while(error!=null){Console.Error.WriteLine(error.GetType().Name+": "+error.Message);error=error.InnerException;}return 1;}
+            }
             if(args.Length==2&&args[0]=="--process-check") {
                 var alive=RuntimeStore.Alive(int.Parse(args[1]));Console.WriteLine("Query-only process check: "+alive);return alive?0:2;
             }
             if(args.Length==2&&args[0]=="--panel-child") return PanelChild(args[1]);
             root=Path.Combine(Path.GetTempPath(),"tappo-native-tests-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
             try {
-                Policies();Files();Clocks().GetAwaiter().GetResult();Workers().GetAwaiter().GetResult();BoostObservations().GetAwaiter().GetResult();Resets().GetAwaiter().GetResult();QueryRetries().GetAwaiter().GetResult();Connections().GetAwaiter().GetResult();ResetPanels();Layouts();Lifecycle();
-                checks+=TransportChecks.Run().GetAwaiter().GetResult();
+                Policies();Files();Clocks().GetAwaiter().GetResult();Workers().GetAwaiter().GetResult();BoostObservations().GetAwaiter().GetResult();Resets().GetAwaiter().GetResult();QueryRetries().GetAwaiter().GetResult();Connections().GetAwaiter().GetResult();ResetPanels();Layouts();CloseChoices();Lifecycle();
+                checks+=TransportChecks.Run().GetAwaiter().GetResult();checks+=UpdateChecks.Run().GetAwaiter().GetResult();UpdatePanels();
                 Console.WriteLine("PASS: "+checks+" native checks; no account mutations, app restarts, or system policy changes.");return 0;
             } catch(Exception error) {Console.Error.WriteLine(error);return 1;}
             finally {
@@ -318,9 +322,10 @@ namespace Tappo {
                 Check(panel.E<TextBlock>("StatusLabel").Text=="等待重试"&&panel.E<TextBlock>("DetailMessage").Text.Contains("不补数、不领取"),"retry status missing");
                 status.paused=true;panel.Refresh();Check(panel.E<TextBlock>("StatusLabel").Text=="已暂停","retry hid manual pause");
                 status.paused=false;status.readRetryAt=null;status.readRetryError=null;panel.Refresh();
-                Check(panel.E<Button>("ExitButton").IsEnabled&&panel.E<MenuItem>("ExitMenuItem").IsEnabled&&panel.TrayExitEnabled,"exit entry unavailable");
+                Check(panel.Window.FindName("ExitButton")==null,"unexpected title exit button");
+                Check(panel.E<MenuItem>("ExitMenuItem").IsEnabled&&panel.TrayExitEnabled,"exit entry unavailable");
                 panel.ReadStatus=()=>{throw new UnauthorizedAccessException("模拟读取失败");};panel.Refresh();
-                Check(panel.TrayExitEnabled&&panel.E<Button>("ExitButton").IsEnabled,"status error disabled exit");panel.ReadStatus=()=>status;panel.Refresh();
+                Check(panel.TrayExitEnabled&&panel.E<MenuItem>("ExitMenuItem").IsEnabled,"status error disabled exit");panel.ReadStatus=()=>status;panel.Refresh();
                 Check(panel.E<TextBlock>("ActivityText").Visibility==Visibility.Collapsed,"empty activities not collapsed");
                 status.paused=true;panel.Refresh();Check((string)panel.E<Button>("PauseButton").Content=="继续运行","pause label");
                 File.WriteAllText(store.FilePath("pending.json"),"{\"historical\":true}");panel.Refresh();Check(!panel.E<Button>("PauseButton").IsEnabled&&panel.E<Button>("StopButton").IsEnabled,"pending controls");
@@ -337,8 +342,6 @@ namespace Tappo {
                 var modes=panel.E<ListBox>("ModeSelector");modes.SelectedIndex=1;modes.SelectedIndex=2;Check(store.Read<Preference>("preferences.json").mode=="human","mode not persisted");
                 File.Delete(store.FilePath("preferences.json"));Directory.CreateDirectory(store.FilePath("preferences.json"));
                 modes.SelectedIndex=1;Check((string)((ListBoxItem)modes.SelectedItem).Tag=="human","failed save changed selection");Directory.Delete(store.FilePath("preferences.json"));
-                string dispatched=null;panel.DispatchOverride=action=>dispatched=action;status.running=true;
-                panel.E<Button>("ExitButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Check(dispatched=="disconnect","title exit requested restore");
             }
             foreach(var entry in new[]{"context","tray"}) using(var panel=new Panel(Store())) {
                 panel.InitializeTray();panel.ReadStatus=()=>new Status {running=true,pid=Process.GetCurrentProcess().Id};string dispatched=null;panel.DispatchOverride=action=>dispatched=action;
@@ -347,10 +350,68 @@ namespace Tappo {
                 Check(dispatched=="disconnect",entry+" exit requested restore");
             }
         }
+        static void UpdatePanels() {
+            var store=Store();using(var panel=new Panel(store)) {
+                panel.ReadStatus=()=>new Status {running=true,pid=Process.GetCurrentProcess().Id};
+                panel.UpdateCheck=token=>Task.FromResult(new UpdateInfo {version="0.1.1",available=false});
+                panel.CheckForUpdates().GetAwaiter().GetResult();Check(panel.E<Button>("UpdateButton").Content.ToString().Contains("已是最新"),"up-to-date UI");
+                panel.UpdateCheck=token=>Task.FromResult(new UpdateInfo {version="9.9.9",available=true,url="https://github.com/kano0222/ww-tappo/releases/tag/v9.9.9"});
+                panel.CheckForUpdates().GetAwaiter().GetResult();string opened=null;panel.OpenUpdatePage=url=>opened=url;
+                panel.Render(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"previews","update-available.png"),820,660);
+                var updateButton=panel.E<Button>("UpdateButton");var position=updateButton.TranslatePoint(new Point(),panel.E<Border>("RootSurface"));
+                Check(position.X>=0&&position.X+updateButton.ActualWidth<=820&&position.Y+updateButton.ActualHeight<=660,"update button overflow");
+                panel.UpdateAction().GetAwaiter().GetResult();Check(opened!=null&&opened.EndsWith("v9.9.9"),"update page not opened");
+                panel.UpdateCheck=token=>{throw new InvalidOperationException("GitHub 暂时限制查询");};panel.CheckForUpdates().GetAwaiter().GetResult();
+                Check(panel.E<Button>("UpdateButton").IsEnabled&&panel.E<Button>("UpdateButton").Content.ToString().Contains("失败"),"update failure disabled controls");
+                int retries=0;panel.UpdateCheck=token=>{retries++;return Task.FromResult(new UpdateInfo {version="0.1.1"});};
+                panel.UpdateAction().GetAwaiter().GetResult();Check(retries==1,"retry opened stale update page");
+                Check(!store.Exists("control.json")&&panel.ReadStatus().running,"update check changed automation");
+                var waiting=new TaskCompletionSource<UpdateInfo>();int calls=0;
+                panel.UpdateCheck=token=>{calls++;return waiting.Task;};var first=panel.CheckForUpdates();
+                panel.CheckForUpdates().GetAwaiter().GetResult();Check(calls==1&&!panel.E<Button>("UpdateButton").IsEnabled,"overlapping update requests");
+                waiting.SetResult(new UpdateInfo {version="0.1.1"});panel.Window.Dispatcher.Invoke(new Action(()=>{}),DispatcherPriority.ApplicationIdle);first.GetAwaiter().GetResult();
+                Check(panel.E<Button>("UpdateButton").IsEnabled,"update button not restored");
+            }
+        }
+        static void CloseChoices() {
+            foreach(var choice in new[]{CloseChoice.Cancel,CloseChoice.Tray,CloseChoice.Exit}) using(var panel=new Panel(Store())) {
+                panel.InitializeTray();panel.ReadStatus=()=>new Status {running=true,pid=Process.GetCurrentProcess().Id};panel.Window.Show();
+                string dispatched=null;panel.DispatchOverride=action=>dispatched=action;panel.ClosePrompt=()=>choice;
+                panel.E<Button>("CloseButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Check(panel.Window.IsVisible==(choice==CloseChoice.Cancel),choice+" close visibility");
+                Check(dispatched==(choice==CloseChoice.Exit?"disconnect":null),choice+" close automation action");
+                Check(panel.AllowExit==(choice==CloseChoice.Exit),choice+" close exit permission");
+                if(choice!=CloseChoice.Exit) {panel.AllowExit=true;panel.Window.Close();}
+            }
+            foreach(var action in new[]{"exit","tray","cancel","escape"}) {
+                var dialog=new CloseDialog(null);
+                dialog.Window.ContentRendered+=(s,e)=>dialog.Window.Dispatcher.BeginInvoke(new Action(()=> {
+                    if(action=="cancel") {
+                        var content=(FrameworkElement)dialog.Window.Content;content.UpdateLayout();
+                        var bitmap=new System.Windows.Media.Imaging.RenderTargetBitmap((int)Math.Ceiling(content.ActualWidth),(int)Math.Ceiling(content.ActualHeight),96,96,System.Windows.Media.PixelFormats.Pbgra32);
+                        bitmap.Render(content);var encoder=new System.Windows.Media.Imaging.PngBitmapEncoder();encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
+                        using(var output=File.Create(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"previews","close-dialog.png")))encoder.Save(output);
+                    }
+                    if(action=="exit")dialog.ExitButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    else if(action=="tray")dialog.TrayButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    else if(action=="escape") dialog.Window.RaiseEvent(new System.Windows.Input.KeyEventArgs(System.Windows.Input.Keyboard.PrimaryDevice,PresentationSource.FromVisual(dialog.Window),0,System.Windows.Input.Key.Escape){RoutedEvent=System.Windows.Input.Keyboard.PreviewKeyDownEvent});
+                    else dialog.Window.Close();
+                }));
+                var result=dialog.Show();
+                Check(result==(action=="exit"?CloseChoice.Exit:action=="tray"?CloseChoice.Tray:CloseChoice.Cancel),action+" dialog result");
+            }
+            using(var panel=new Panel(Store())) {
+                panel.Window.Show();int prompts=0;panel.ClosePrompt=()=>{prompts++;return CloseChoice.Cancel;};
+                panel.Window.Close();panel.Window.Dispatcher.Invoke(new Action(()=>{}),DispatcherPriority.ApplicationIdle);
+                Check(prompts==1&&panel.Window.IsVisible,"window close bypassed cancellation");
+                panel.AllowExit=true;panel.Window.Close();
+            }
+        }
         static int PanelChild(string directory) {
             try {
                 var app=new Application {ShutdownMode=ShutdownMode.OnExplicitShutdown};var store=new RuntimeStore(directory);
                 using(var panel=new Panel(store)) {
+                    panel.ClosePrompt=()=>CloseChoice.Tray;
                     if(!panel.ClaimInstance()) return 2;panel.InitializeTray();panel.StartTimer();int step=0;
                     var timer=new DispatcherTimer {Interval=TimeSpan.FromSeconds(1)};
                     timer.Tick+=async(s,e)=>{try{step++;if(step==1)panel.Window.Close();if(step==5){Check(panel.Window.IsVisible,"duplicate did not restore");timer.Stop();await panel.Exit();}}catch(Exception error){File.WriteAllText(store.FilePath("test-error.txt"),error.ToString());Environment.Exit(1);}};

@@ -22,12 +22,19 @@ namespace Tappo {
         readonly RuntimeStore store; public readonly Window Window;
         public bool Busy {get;private set;} public bool AllowExit;
         internal bool TrayExitEnabled {get {return trayExit!=null&&trayExit.Enabled;}}
-        string notice,savedMode="brute"; bool selecting;
+        string notice,savedMode="brute"; bool selecting,choosingClose;
         Forms.NotifyIcon tray; Forms.ContextMenuStrip menu; Forms.ToolStripMenuItem trayPause,trayStop,trayExit,trayStatus;
         DispatcherTimer timer; Mutex mutex; EventWaitHandle showEvent; bool ownsMutex; System.Drawing.Icon icon;
         public Func<Status> ReadStatus; public Action<string> DispatchOverride;
         internal Func<bool> ConfirmReset;
-        public Panel(RuntimeStore store) {
+        internal Func<CloseChoice> ClosePrompt;
+        internal bool AutoCheckUpdates;
+        internal Func<CancellationToken,Task<UpdateInfo>> UpdateCheck=Updates.Check;
+        internal Action<string> OpenUpdatePage=url=>{Process.Start(new ProcessStartInfo(url){UseShellExecute=true});};
+        readonly CancellationTokenSource updateCancellation=new CancellationTokenSource();
+        bool checkingUpdates,disposed; long nextUpdateCheck; UpdateInfo update;
+        internal Func<long> ReadClock=()=>RuntimeStore.Now;
+        public Panel(RuntimeStore store,bool preview=false) {
             this.store=store; Window=(Window)XamlReader.Parse(Resources.Text("Panel.xaml"));
             ReadStatus=()=>store.Read<Status>("status.json");
             var preference=store.Read<Preference>("preferences.json");
@@ -40,17 +47,19 @@ namespace Tappo {
             E<Button>("ResetPendingButton").Click+=async(s,e)=>await ResetPending();
             E<Button>("BrowseAppButton").Click+=(s,e)=>ChoosePath(true);
             E<Button>("MinimizeButton").Click+=(s,e)=>Window.WindowState=WindowState.Minimized;
-            E<Button>("CloseButton").Click+=(s,e)=>Window.Close();
-            E<Button>("ExitButton").Click+=async(s,e)=>await Exit();
+            E<Button>("CloseButton").Click+=async(s,e)=>await RequestClose();
             E<MenuItem>("ExitMenuItem").Click+=async(s,e)=>await Exit();
+            E<Button>("UpdateButton").Content="v"+Updates.CurrentVersion+" · 检查更新";
+            E<Button>("UpdateButton").ToolTip="当前构建："+Updates.BuildVersion;
+            E<Button>("UpdateButton").Click+=async(s,e)=>await UpdateAction();
             E<System.Windows.Controls.Grid>("TitleGrip").MouseLeftButtonDown+=(s,e)=>{
                 if(e.ClickCount==2) Window.WindowState=Window.WindowState==WindowState.Maximized?WindowState.Normal:WindowState.Maximized;
                 else if(e.LeftButton==MouseButtonState.Pressed) Window.DragMove();
             };
-            Window.Closing+=(s,e)=>{if(!AllowExit){e.Cancel=true;Window.Hide();Window.ShowInTaskbar=false;Life("hidden-to-tray");}};
+            Window.Closing+=(s,e)=>{if(!AllowExit){e.Cancel=true;Window.Dispatcher.BeginInvoke(new Action(async()=>await RequestClose()));}};
             Window.Closed+=(s,e)=>Life("closed");
-            Window.ContentRendered+=(s,e)=>Life("visible");
-            var path=Platform.Discover(store);SetPath(path);
+            Window.ContentRendered+=async(s,e)=>{Life("visible");if(AutoCheckUpdates&&RuntimeStore.Now>=nextUpdateCheck)await CheckForUpdates();};
+            var path=preview?null:Platform.Discover(store);SetPath(path);
             Refresh();
         }
         public T E<T>(string name) where T:class { var value=Window.FindName(name) as T; if(value==null) throw new InvalidOperationException("界面元素缺失："+name);return value; }
@@ -67,6 +76,16 @@ namespace Tappo {
             if(!ownsMutex) showEvent.Set(); return ownsMutex;
         }
         public void Show() {Window.ShowInTaskbar=true;Window.Show();Window.WindowState=WindowState.Normal;Window.Activate();Life("restored");}
+        internal async Task RequestClose() {
+            if(choosingClose) return;
+            if(Busy) {notice="正在处理操作，请等待完成后关闭。";Refresh();return;}
+            choosingClose=true;
+            try {
+                var choice=ClosePrompt==null?new CloseDialog(Window).Show():ClosePrompt();
+                if(choice==CloseChoice.Tray) {Window.Hide();Window.ShowInTaskbar=false;Life("hidden-to-tray");}
+                else if(choice==CloseChoice.Exit) await Exit();
+            } finally {choosingClose=false;}
+        }
         public void InitializeTray() {
             menu=new Forms.ContextMenuStrip();trayStatus=(Forms.ToolStripMenuItem)menu.Items.Add("后台：未运行");trayStatus.Enabled=false;
             menu.Items.Add("打开控制面板",null,(s,e)=>Show());
@@ -78,7 +97,29 @@ namespace Tappo {
         }
         public void StartTimer() {
             timer=new DispatcherTimer {Interval=TimeSpan.FromSeconds(1)};
-            timer.Tick+=(s,e)=>{if(showEvent!=null&&showEvent.WaitOne(0)) Show();Refresh();};timer.Start();
+            timer.Tick+=async(s,e)=>{if(showEvent!=null&&showEvent.WaitOne(0)) Show();Refresh();if(AutoCheckUpdates&&RuntimeStore.Now>=nextUpdateCheck)await CheckForUpdates();};timer.Start();
+        }
+        internal async Task UpdateAction() {
+            if(checkingUpdates||disposed)return;
+            if(update!=null&&update.available) {
+                try {OpenUpdatePage(update.url);} catch {E<Button>("UpdateButton").ToolTip="无法打开浏览器，请手动访问 GitHub Releases。";}
+            } else await CheckForUpdates();
+        }
+        internal async Task CheckForUpdates() {
+            if(checkingUpdates||disposed)return;
+            checkingUpdates=true;nextUpdateCheck=RuntimeStore.Now+6*60*60*1000L;
+            var button=E<Button>("UpdateButton");button.IsEnabled=false;button.Content="正在检查更新…";
+            try {
+                var result=await UpdateCheck(updateCancellation.Token);
+                if(disposed)return;
+                update=result;button.Content=result.available?"发现新版 v"+result.version:"v"+Updates.CurrentVersion+" · 已是最新";
+                button.ToolTip=result.available?"点击打开 GitHub 发布页；更新前请完全退出助手并保留配置与 runtime。":"当前构建："+Updates.BuildVersion+"；点击重新检查。";
+            } catch(Exception error) {
+                if(disposed)return;
+                update=null;
+                nextUpdateCheck=RuntimeStore.Now+15*60*1000L;
+                button.Content="更新检查失败 · 重试";button.ToolTip=error is InvalidOperationException?error.Message:"暂时无法连接 GitHub，请稍后重试。";
+            } finally {checkingUpdates=false;if(!disposed)button.IsEnabled=true;}
         }
         bool ChoosePath(bool force) {
             try {
@@ -187,7 +228,7 @@ namespace Tappo {
         public void Refresh() {
             try {
                 var s=ReadStatus();var alive=Alive(s);DateTimeOffset at;
-                var stale=alive&&(!DateTimeOffset.TryParse(s.at,out at)||(DateTimeOffset.UtcNow-at).TotalSeconds>45);
+                var stale=alive&&(!DateTimeOffset.TryParse(s.at,out at)||(DateTimeOffset.FromUnixTimeMilliseconds(ReadClock())-at).TotalSeconds>45);
                 var pending=store.Exists("pending.json");
                 string label="未运行",color="#EAE7E1",message="后台助手尚未运行",detail="先退出普通启动的桌宠，再点击“启动后台”。";
                 if(alive) {
@@ -218,7 +259,7 @@ namespace Tappo {
                 var behavior=savedMode=="brute"?"需要补数时一次补足至 2,000 次。":"提前累积至 2,000 次，到期后逐个领取。";
                 Text("ModeHint",!alive?"已选择："+names[savedMode]+"，启动后台后生效。"+behavior:s.mode!=savedMode?"已保存："+names[savedMode]+"，等待后台应用。":"已应用："+names[savedMode]+(s.paused||s.fault!=null||pending?"，当前已暂停或正在确认操作。":"。"+behavior));
                 var clock=s==null?null:s.chestTimes;
-                bool valid=clock!=null&&clock.updatedAt.HasValue&&clock.left.HasValue&&clock.right.HasValue&&clock.error==null&&RuntimeStore.Now-clock.updatedAt>=0&&RuntimeStore.Now-clock.updatedAt<=90000;
+                bool valid=clock!=null&&clock.updatedAt.HasValue&&clock.left.HasValue&&clock.right.HasValue&&clock.error==null&&ReadClock()-clock.updatedAt>=0&&ReadClock()-clock.updatedAt<=90000;
                 Text("SnapshotLabel",!alive||stale?"等待连接":clock!=null&&clock.error!=null?"宝箱时间查询失败":valid?"接口同步 "+DateTimeOffset.FromUnixTimeMilliseconds(clock.updatedAt.Value).ToOffset(TimeSpan.FromHours(8)).ToString("HH:mm:ss"):"等待接口同步");
                 Chest("Left","left",s,alive&&!stale,valid);Chest("Right","right",s,alive&&!stale,valid);
                 Activity();
@@ -239,7 +280,7 @@ namespace Tappo {
             if(alive&&state!=null&&state.loggedIn) {
                 if(!valid) {text="等待同步";tag="接口时间未就绪";hint=s.chestTimes==null?"等待服务端宝箱时间":s.chestTimes.error??"等待服务端宝箱时间，暂不显示旧倒计时";}
                 else {
-                    var target=side=="left"?s.chestTimes.left:s.chestTimes.right;var remaining=Math.Max(0,(long)Math.Ceiling((target.Value-RuntimeStore.Now)/1000.0));
+                    var target=side=="left"?s.chestTimes.left:s.chestTimes.right;var remaining=Math.Max(0,(long)Math.Ceiling((target.Value-ReadClock())/1000.0));
                     if(remaining>0) {text=(remaining/60).ToString("00")+":"+(remaining%60).ToString("00");tag="计时中";hint="服务端冷却时间，每 30 秒同步；显示每秒更新";progress=Math.Max(0,Math.Min(1,1-remaining/1800.0));}
                     else {text=state.Button(side)?"已就绪":"冷却已结束";tag=state.Button(side)?"待领取":"等待同步";hint=s.paused?"恢复运行后继续检查领取":"由后台核对并按顺序领取";progress=1;}
                 }
@@ -285,6 +326,8 @@ namespace Tappo {
             using(var stream=File.Create(path)) encoder.Save(stream);
         }
         public void Dispose() {
+            if(disposed)return;
+            disposed=true;updateCancellation.Cancel();updateCancellation.Dispose();
             if(timer!=null) timer.Stop();if(tray!=null) {tray.Visible=false;tray.Dispose();} if(menu!=null) menu.Dispose();if(icon!=null) icon.Dispose();
             if(showEvent!=null) showEvent.Dispose();if(ownsMutex) {mutex.ReleaseMutex();ownsMutex=false;}if(mutex!=null) mutex.Dispose();
         }

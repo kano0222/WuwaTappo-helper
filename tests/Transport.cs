@@ -48,7 +48,7 @@ namespace Tappo {
                             client.Dispose();await Task.Delay(50).ConfigureAwait(false);
                             if(client.Connected)throw new Exception("disposed transport still connected");
                         } else {
-                            bool failed=false;try{await client.Evaluate("1",1000).ConfigureAwait(false);}catch(IOException){failed=true;}
+                            bool failed=false;try{await client.Evaluate("1",1000).ConfigureAwait(false);}catch(IOException){failed=true;}catch(WebSocketException){failed=true;}
                             if(!failed||client.Connected)throw new Exception("peer close did not fail pending evaluation and invalidate connection");
                             failed=false;try{await client.Evaluate("1",1000).ConfigureAwait(false);}catch(IOException){failed=true;}
                             if(!failed)throw new Exception("dead transport accepted another evaluation");
