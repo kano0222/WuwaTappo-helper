@@ -10,7 +10,7 @@ namespace Tappo {
                 discoveries++;
                 return Task.FromResult(Json.Decode<object>(compatible?
                     Json.Encode(new {profile=new AppProfile {commonPath="/assets/common-"+version+".js"}}):
-                    Json.Encode(new {error="incompatible"})));
+                    Json.Encode(new {error="incompatible",failureKind="incompatible"})));
             },()=>now);
             await session.Ensure();
             if(session.Profile.version!="1.0.1"||discoveries!=1) throw new Exception("initial discovery missing");
@@ -22,7 +22,7 @@ namespace Tappo {
             if(session.Profile.version!=version||!session.Profile.commonPath.Contains(version)||discoveries!=2)
                 throw new Exception("changed version mapping not refreshed");
             now=90000;version="1.0.3";compatible=false;bool failed=false;
-            try {await session.Ensure(true);}catch(InvalidOperationException){failed=true;}
+            try {await session.Ensure(true);}catch(ConnectionFailureException error){failed=error.Kind=="incompatible";}
             if(!failed||session.Profile.version!="1.0.2") throw new Exception("incompatible mapping published");
             compatible=true;await session.Ensure(true);
             if(session.Profile.version!="1.0.3"||discoveries!=4) throw new Exception("failed discovery not retried");

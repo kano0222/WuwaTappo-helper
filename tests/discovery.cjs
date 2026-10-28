@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../src/Bridge/discover.js'), 'utf8');
 const boundary = source.lastIndexOf('try{return {profile:await discoverProfile()}');
 assert(boundary > 0);
-const testSource = source.slice(0, boundary) + 'return {waitForSources,inspectSources,inspectModule,inspectClickModule};})()';
+const testSource = source.slice(0, boundary) + 'return {waitForSources,inspectSources,inspectModule,inspectClickModule,discoveryFailure};})()';
 const main = 'case"boost-local-clicks":{const t=Math.max(0,Math.floor(Number(e.delta)||0));t>0&&(R.addLocalClickCount(t),Sn())}' +
   ' "cat-panel-action"';
 const common = 'function userInfo(){} function isForceUpdateLocked(){}';
@@ -49,7 +49,8 @@ async function fixture(resources, overrides = {}) {
   })()`);
   check(f.api.inspectModule(module).openChest==='d');
   check(f.api.inspectModule({...module,d:undefined,newAlias:module.d}).openChest==='newAlias');
-  assert.throws(()=>f.api.inspectModule({...module,d:undefined}),/宝箱领取接口/);checks++;
+  assert.throws(()=>f.api.inspectModule({...module,d:undefined}),error=>{check(f.api.discoveryFailure(error).failureKind==='incompatible');return /宝箱领取接口/.test(error.message)});checks++;
+  check(f.api.discoveryFailure(new Error('fetch timed out')).failureKind==='connection-failed');
   assert.throws(()=>f.api.inspectModule({...module,duplicate:module.d}),/宝箱领取接口/);checks++;
   assert.throws(()=>f.api.inspectModule({...module,b:{...module.b,applyChestClickConsume:undefined}}),/计数状态/);checks++;
   assert.throws(()=>f.api.inspectModule({...module,b:{...module.b,updateUserInfo:undefined}}),/计数状态/);checks++;
@@ -68,11 +69,11 @@ async function fixture(resources, overrides = {}) {
   check((await f.api.waitForSources()).length === 4 && f.reads.length === 4);
 
   f = await fixture(() => [paths[0]]);
-  await assert.rejects(f.api.waitForSources(), /主界面资源未就绪或版本不兼容/); checks++;
+  await assert.rejects(f.api.waitForSources(), error=>{check(f.api.discoveryFailure(error).failureKind==='main-not-ready');return /主界面资源未就绪或版本不兼容/.test(error.message)}); checks++;
   check(f.ticks() === 32 && f.reads.length === 1);
 
   f = await fixture(() => []);
-  await assert.rejects(f.api.waitForSources(), /主界面资源未就绪或版本不兼容/); checks++;
+  await assert.rejects(f.api.waitForSources(), error=>{check(f.api.discoveryFailure(error).failureKind==='main-not-ready');return /主界面资源未就绪或版本不兼容/.test(error.message)}); checks++;
   check(f.reads.length === 0);
 
   f = await fixture(() => paths.concat('/assets/other-A.js'), { '/assets/other-A.js': main });

@@ -17,7 +17,7 @@ namespace Tappo {
         Task<Snapshot> Recover(Journal journal);
     }
     internal sealed class AppProfile { public string version, commonPath, quitPath, clickPath; public Dictionary<string,string> exports; }
-    internal sealed class DiscoveryResult { public AppProfile profile; public string error; }
+    internal sealed class DiscoveryResult { public AppProfile profile; public string error,failureKind; }
     internal sealed class Target { public string type,url,webSocketDebuggerUrl; }
     internal sealed class QueryReply { public ServerState state; public string errorType; public int httpStatus,code,retryAfterMs; }
     internal sealed class AppQueryException : Exception {
@@ -45,7 +45,7 @@ namespace Tappo {
             while(true) {
                 var result=await inspect().ConfigureAwait(false);
                 if(result!=null) return result;
-                if(now()>=deadline) throw new TimeoutException("桌宠主窗口尚未就绪，请等待桌宠完成启动后再试。");
+                if(now()>=deadline) throw new MainWindowNotReadyException();
                 await delay(400).ConfigureAwait(false);
             }
         }

@@ -49,6 +49,7 @@ namespace Tappo {
             try {
                 Policies();Files();Clocks().GetAwaiter().GetResult();Workers().GetAwaiter().GetResult();WakeReplenishment().GetAwaiter().GetResult();BoostObservations().GetAwaiter().GetResult();Resets().GetAwaiter().GetResult();QueryRetries().GetAwaiter().GetResult();Connections().GetAwaiter().GetResult();ResetPanels();Layouts();CloseChoices();Lifecycle();
                 ServerChestConfirmation().GetAwaiter().GetResult();VersionPreflight().GetAwaiter().GetResult();
+                checks+=ConnectionChecks.Run().GetAwaiter().GetResult();checks+=ConnectionChecks.Panels();
                 checks+=RecoveryChecks.Run().GetAwaiter().GetResult();checks+=TransportChecks.Run().GetAwaiter().GetResult();checks+=CapabilityChecks.Run().GetAwaiter().GetResult();checks+=UpdateChecks.Run().GetAwaiter().GetResult();UpdatePanels();
                 Console.WriteLine("PASS: "+checks+" native checks; no account mutations, app restarts, or system policy changes.");return 0;
             } catch(Exception error) {Console.Error.WriteLine(error);return 1;}

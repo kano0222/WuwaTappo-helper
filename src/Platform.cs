@@ -80,7 +80,7 @@ namespace Tappo {
         }
         public static void CheckListeners() {
             var endpoints=IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Where(p=>p.Port==19222).ToArray();
-            if(endpoints.Length==0) throw new InvalidOperationException("请先从桌宠设置或托盘退出应用，再点击启动后台。");
+            if(endpoints.Length==0) throw new ConnectionFailureException("debug-unavailable","调试入口不存在");
             if(endpoints.Any(p=>!IPAddress.IsLoopback(p.Address))) throw new InvalidOperationException("调试端口并非仅限本机，已停止。");
         }
         public static async Task EnsureDebugSession(RuntimeStore store) {

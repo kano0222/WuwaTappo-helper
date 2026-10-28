@@ -22,6 +22,8 @@ namespace Tappo {
         }
         public void RequestDisconnect() { stop=true; }
         void Publish(string message) {
+            Status.connected=client!=null&&client.Connected;
+            if(Status.connected==false&&!Status.disconnectedSince.HasValue) Status.disconnectedSince=now();
             Status.at=DateTimeOffset.UtcNow.ToString("o"); Status.pid=Process.GetCurrentProcess().Id;
             Status.manuallyPaused=paused;
             Status.paused=paused||Status.fault!=null||store.Exists("pending.json"); Status.message=Status.fault??message; Status.chestTimes=clock.Value;
@@ -39,13 +41,17 @@ namespace Tappo {
             result.Validate();serverCache=result;serverCacheUntil=now()+5000;clock.Accept(result);return result;
         }
         void ResetRetry() {Status.readRetryAt=null;Status.readRetryCount=0;Status.readRetryError=null;}
+        void ConnectionFailed(Exception error) {
+            Status.connectionFailure=Connection.Classify(error);
+            if(!Status.disconnectedSince.HasValue) Status.disconnectedSince=now();
+        }
         void Retry(string operation,string stage,string errorType,int code=0,int httpStatus=0,int minimumMs=0) {
             Status.readRetryCount++;
             var seconds=Math.Min(60,5*(1<<Math.Min(4,Status.readRetryCount-1)));
             var jitter=random.Next(0,1001);var milliseconds=seconds==60?60000-jitter:seconds*1000+jitter;
             milliseconds=Math.Max(milliseconds,Math.Max(minimumMs,(httpStatus==403||httpStatus==429)?60000:0));
             Status.readRetryAt=now()+milliseconds;Status.readRetryError=operation+"，等待自动重试";
-            store.Log("read-query-retry",new {operation=operation,stage=stage,errorType=errorType,code=code,httpStatus=httpStatus,attempt=Status.readRetryCount,backoffSeconds=seconds,retryAfterSeconds=(milliseconds+999)/1000,retryDelayMs=milliseconds});
+            store.Log("read-query-retry",new {operation=operation,stage=stage,errorType=errorType,connectionFailure=Status.connectionFailure,code=code,httpStatus=httpStatus,attempt=Status.readRetryCount,backoffSeconds=seconds,retryAfterSeconds=(milliseconds+999)/1000,retryDelayMs=milliseconds});
             Publish(Status.readRetryError);
         }
         void BoundAccount(Journal journal,Snapshot after,ServerState server) {
@@ -162,15 +168,15 @@ namespace Tappo {
                 try {
                     try {client=await connect().ConfigureAwait(false);store.Log("started",new {mode="background"});}
                     catch(StartupConfigurationException) {throw;}
-                    catch(Exception error) {Retry("重新连接桌宠","connect",error.GetType().Name);}
+                    catch(Exception error) {ConnectionFailed(error);Retry("重新连接桌宠","connect",error.GetType().Name);}
                     if(store.Exists("pending.json")) Status.fault=PendingMessage();
-                    Publish("已连接");
+                    Publish(client!=null?"已连接":"正在等待桌宠重新连接");
                     while(!stop) {
                         int loopDelay=1000;
                         var command=store.Read<Command>("control.json");
                         if(command!=null&&command.id!=lastCommand) {
                             lastCommand=command.id;
-                            if(command.action=="stop"||command.action=="disconnect") { stop=true;restoreRequested=command.action=="stop"; }
+                            if(command.action=="stop"||command.action=="stop-background"||command.action=="disconnect") { stop=true;restoreRequested=command.action=="stop"&&client!=null&&client.Connected; }
                             else if(command.action=="pause") paused=true;
                             else if(command.action=="resume"&&!store.Exists("pending.json")) { paused=false;Status.fault=null; }
                             else if(command.action=="reset") {
@@ -190,9 +196,10 @@ namespace Tappo {
                         }
                         try {
                             if(client==null||!client.Connected) {
+                                if(!Status.disconnectedSince.HasValue) Status.disconnectedSince=now();
                                 if(client!=null) {client.Dispose();client=null;}
-                                try {client=await reconnect().ConfigureAwait(false);serverCache=null;store.Log("connection-restored");}
-                                catch(Exception error) {throw new ReadQueryException("重新连接桌宠",error);}
+                                try {client=await reconnect().ConfigureAwait(false);Status.connectionFailure=null;serverCache=null;store.Log("connection-restored");}
+                                catch(Exception error) {ConnectionFailed(error);throw new ReadQueryException("重新连接桌宠",error);}
                             }
                             var preference=store.Read<Preference>("preferences.json");
                             if(preference!=null) {
@@ -200,6 +207,7 @@ namespace Tappo {
                                 if(Status.mode!=preference.mode) { Status.mode=preference.mode; nextBoost=0;store.Log("mode-changed",new {mode=Status.mode}); }
                             }
                             Status.state=await ReadSnapshot().ConfigureAwait(false);
+                            Status.disconnectedSince=null;Status.connectionFailure=null;
                             if(Status.state.appVersion!=null&&lastAppVersion!=Status.state.appVersion) {
                                 store.Log("app-version-validated",new {previous=lastAppVersion,version=Status.state.appVersion});
                                 lastAppVersion=Status.state.appVersion;
@@ -255,6 +263,8 @@ namespace Tappo {
                             } else Publish(Status.fault??"已暂停");
                         } catch(Exception error) {
                             if(error is ReadQueryException) {
+                                var kind=Connection.Classify(error);
+                                if(client==null||!client.Connected||kind!="connection-failed") ConnectionFailed(error);
                                 var api=error.InnerException as AppQueryException;
                                 Status.recovering=store.Exists("pending.json");
                                 Retry(((ReadQueryException)error).Operation,Status.recovering?"verify":"query",api==null?error.InnerException.GetType().Name:api.ErrorType,
@@ -274,7 +284,8 @@ namespace Tappo {
                     }
                 } catch(Exception error) { Status.fault=error.Message;store.Log("stopped-on-error",new {message=error.Message}); }
                 try {
-                    if(restoreRequested) {
+                    Status.stoppedWithoutRestore=stop&&(!restoreRequested||client==null||!client.Connected);
+                    if(restoreRequested&&!Status.stoppedWithoutRestore) {
                         try { await restore(client).ConfigureAwait(false);Status.normalStartupRestored=true; }
                         catch(Exception error) { Status.fault=error.Message;store.Log("cleanup-needs-attention",new {message=error.Message}); }
                     }

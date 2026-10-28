@@ -1,8 +1,10 @@
 (async()=>{// These checks describe capabilities, not release versions or generated aliases.
+class ContractError extends Error {}
+class MainNotReadyError extends Error {}
 function inspectModule(m) {
   const unique = (predicate, label) => {
     const keys = Object.keys(m).filter(k => predicate(m[k]));
-    if (keys.length !== 1) throw new Error('兼容性检查失败：' + label + '缺失或不唯一');
+    if (keys.length !== 1) throw new ContractError('兼容性检查失败：' + label + '缺失或不唯一');
     return keys[0];
   };
   const fn = (name, pattern) => v => typeof v === 'function' && v.name === name && pattern.test(Function.prototype.toString.call(v));
@@ -17,34 +19,34 @@ function inspectModule(m) {
     decode: unique(fn('unwrapApiData', /Number\(\w+\?\.code\).*Number\.isFinite.*isApiSuccess.*\.data\?\?\w+\.result/s), '响应解码')
   };
   // Probe only local pure functions; never call userInfo or a mutation during discovery.
-  if (typeof m[exports.locked]() !== 'boolean') throw new Error('兼容性检查失败：更新锁返回格式');
+  if (typeof m[exports.locked]() !== 'boolean') throw new ContractError('兼容性检查失败：更新锁返回格式');
   const sample = { probe: true };
-  if (m[exports.decode]({ code: 0, data: sample }) !== sample) throw new Error('兼容性检查失败：响应解码格式');
+  if (m[exports.decode]({ code: 0, data: sample }) !== sample) throw new ContractError('兼容性检查失败：响应解码格式');
   let rejected = false;
   try { m[exports.decode]({}) } catch { rejected = true; }
-  if (!rejected) throw new Error('兼容性检查失败：无效响应未拒绝');
+  if (!rejected) throw new ContractError('兼容性检查失败：无效响应未拒绝');
   return exports;
 }
 
 function inspectSources(sources) {
   const mains = sources.filter(([, s]) => s.includes('case"boost-local-clicks":'));
-  if (mains.length !== 1) throw new Error('兼容性检查失败：补数处理器缺失或不唯一');
+  if (mains.length !== 1) throw new ContractError('兼容性检查失败：补数处理器缺失或不唯一');
   const source = mains[0][1];
   // Require the original event-based boost contract; claiming no longer depends on reward UI.
   if (!/case"boost-local-clicks":\{const (\w+)=Math\.max\(0,Math\.floor\(Number\(\w+\.delta\)\|\|0\)\);\1>0&&\(\w+\.addLocalClickCount\(\1\)/.test(source) ||
       !sources.some(([, s]) => s.includes('"cat-panel-action"'))) {
-    throw new Error('兼容性检查失败：补数或宝箱入口契约已变化');
+    throw new ContractError('兼容性检查失败：补数或宝箱入口契约已变化');
   }
   const quits = sources.filter(([p, s]) => /\/quitApp-[\w-]+\.js$/.test(p) &&
     s.includes('"exit_app"') && /export\{[^}]*\bas quitApp\b/.test(s));
-  if (quits.length !== 1) throw new Error('兼容性检查失败：正常退出能力缺失或不唯一');
+  if (quits.length !== 1) throw new ContractError('兼容性检查失败：正常退出能力缺失或不唯一');
   return quits[0][0];
 }
 
 function inspectClickModule(m) {
   const keys=Object.keys(m).filter(k=>typeof m[k]==='function'&&
     /\b\w+\?\.force\b/.test(String(m[k]))&&String(m[k]).includes('"save_key_press_count"')&&String(m[k]).includes('localClickCount')&&String(m[k]).includes('[localClickCount] save failed'));
-  if(keys.length!==1) throw new Error('兼容性检查失败：本地计数保存能力缺失或不唯一');
+  if(keys.length!==1) throw new ContractError('兼容性检查失败：本地计数保存能力缺失或不唯一');
   return keys[0];
 }
 
@@ -54,16 +56,16 @@ async function discoverProfile() {
   const sources = await waitForSources();
   const quitPath = inspectSources(sources);
   const candidates = sources.filter(([, s]) => s.includes('function userInfo()') && s.includes('function isForceUpdateLocked()'));
-  if (candidates.length !== 1) throw new Error('兼容性检查失败：共享状态模块缺失或不唯一');
+  if (candidates.length !== 1) throw new ContractError('兼容性检查失败：共享状态模块缺失或不唯一');
   const commonPath = candidates[0][0];
   const exports = inspectModule(await import(commonPath));
   const clickSources=sources.filter(([,s])=>s.includes('"save_key_press_count"'));
-  if(clickSources.length!==1) throw new Error('兼容性检查失败：本地计数保存模块缺失或不唯一');
+  if(clickSources.length!==1) throw new ContractError('兼容性检查失败：本地计数保存模块缺失或不唯一');
   const clickPath=clickSources[0][0];
   exports.saveClicks=inspectClickModule(await import(clickPath));
   const quit = await import(quitPath);
   if (typeof quit.quitApp !== 'function' || !Function.prototype.toString.call(quit.quitApp).includes('"exit_app"')) {
-    throw new Error('兼容性检查失败：正常退出接口已变化');
+    throw new ContractError('兼容性检查失败：正常退出接口已变化');
   }
   return { commonPath, quitPath, clickPath, exports };
 }
@@ -88,9 +90,14 @@ async function waitForSources() {
         sources.some(([, s]) => s.includes('"save_key_press_count"')) &&
         sources.some(([, s]) => s.includes('function userInfo()') && s.includes('function isForceUpdateLocked()')) &&
         sources.some(([p]) => /\/quitApp-[\w-]+\.js$/.test(p))) return sources;
-    if (Date.now() >= deadline) throw new Error('兼容性检查失败：主界面资源未就绪或版本不兼容，请等待桌宠启动完成后重试');
+    if (Date.now() >= deadline) throw new MainNotReadyError('兼容性检查失败：主界面资源未就绪或版本不兼容，请等待桌宠启动完成后重试');
     await new Promise(r => setTimeout(r, 250));
   }
 }
 
-try{return {profile:await discoverProfile()}}catch(error){return {error:String(error.message).startsWith('兼容性检查失败：')?error.message:'兼容性检查失败：资源或接口无法确认'}}})()
+function discoveryFailure(error) {
+  return {failureKind:error instanceof ContractError?'incompatible':error instanceof MainNotReadyError?'main-not-ready':'connection-failed',
+    error:String(error.message).startsWith('兼容性检查失败：')?error.message:'兼容性检查失败：资源或接口无法确认'};
+}
+
+try{return {profile:await discoverProfile()}}catch(error){return discoveryFailure(error)}})()

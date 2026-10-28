@@ -113,7 +113,7 @@
           </Grid>
               <Button x:Name="ResetPendingButton" Content="确认并继续" HorizontalAlignment="Left" Height="30" Margin="0,8,0,0" Padding="12,0" Visibility="Collapsed" ToolTip="核对桌宠后继续运行，保留记录，不重发上次操作"/>
               <Expander x:Name="UsageHint" Header="使用说明" IsExpanded="False" FontSize="12" Foreground="#856B46" Margin="0,8,0,0">
-                <TextBlock Text="暂停：暂时停止自动操作，之后可以继续。&#10;停止并恢复桌宠：退出后台模式，让桌宠恢复正常显示和操作。&#10;关闭助手：不会影响已经运行的桌宠。&#10;首次启动后台前，请先从桌宠菜单正常退出桌宠。启动时如果弹出管理员权限提示，请按需确认。" TextWrapping="Wrap" Foreground="#807565" LineHeight="20" Margin="22,6,0,0"/>
+                <TextBlock Text="暂停：暂时停止自动操作，之后可以继续。&#10;停止并恢复桌宠：连接正常时，退出后台模式，让桌宠恢复正常显示和操作。&#10;停止后台：断线时仅停止助手后台；两种停止都会保留待确认记录。&#10;关闭助手：不会影响已经运行的桌宠。&#10;首次启动后台前，请先从桌宠菜单正常退出桌宠。启动时如果弹出管理员权限提示，请按需确认。" TextWrapping="Wrap" Foreground="#807565" LineHeight="20" Margin="22,6,0,0"/>
               </Expander>
             </StackPanel>
           </Border>

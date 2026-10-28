@@ -22,7 +22,8 @@ namespace Tappo {
         readonly RuntimeStore store; public readonly Window Window;
         public bool Busy {get;private set;} public bool AllowExit;
         internal bool TrayExitEnabled {get {return trayExit!=null&&trayExit.Enabled;}}
-        string notice,savedMode="brute"; bool selecting,choosingClose;
+        string notice,savedMode="brute"; bool selecting,choosingClose,noticeIsSuccess;
+        string stopAction="stop";
         Forms.NotifyIcon tray; Forms.ContextMenuStrip menu; Forms.ToolStripMenuItem trayPause,trayStop,trayExit,trayStatus;
         DispatcherTimer timer; Mutex mutex; EventWaitHandle showEvent; bool ownsMutex; System.Drawing.Icon icon;
         public Func<Status> ReadStatus; public Action<string> DispatchOverride;
@@ -43,7 +44,7 @@ namespace Tappo {
             E<ListBox>("ModeSelector").SelectionChanged+=(s,e)=>SaveMode();
             E<Button>("StartButton").Click+=async(s,e)=>await UserAction("start");
             E<Button>("PauseButton").Click+=async(s,e)=>{await UserAction(PauseAction(ReadStatus(),store.Exists("pending.json")));};
-            E<Button>("StopButton").Click+=async(s,e)=>await UserAction("stop");
+            E<Button>("StopButton").Click+=async(s,e)=>await UserAction(stopAction);
             E<Button>("ResetPendingButton").Click+=async(s,e)=>await ResetPending();
             E<Button>("BrowseAppButton").Click+=(s,e)=>ChoosePath(true);
             E<Button>("MinimizeButton").Click+=(s,e)=>Window.WindowState=WindowState.Minimized;
@@ -64,6 +65,7 @@ namespace Tappo {
         }
         public T E<T>(string name) where T:class { var value=Window.FindName(name) as T; if(value==null) throw new InvalidOperationException("界面元素缺失："+name);return value; }
         void Text(string name,string text) { E<TextBlock>(name).Text=text; }
+        void SetNotice(string message,bool success=false) {notice=message;noticeIsSuccess=success;}
         public void SetPath(string path) {Text("AppPathText",path==null?"桌宠：启动时自动查找，也可手动选择":"桌宠："+path);E<TextBlock>("AppPathText").ToolTip=path;}
         void Life(string phase) { RuntimeStore.Append(store.FilePath("panel-lifecycle.log"),DateTimeOffset.Now.ToString("o")+" pid="+Process.GetCurrentProcess().Id+" "+phase+"\n"); }
         public static string InstanceKey(string root) {
@@ -78,7 +80,7 @@ namespace Tappo {
         public void Show() {Window.ShowInTaskbar=true;Window.Show();Window.WindowState=WindowState.Normal;Window.Activate();Life("restored");}
         internal async Task RequestClose() {
             if(choosingClose) return;
-            if(Busy) {notice="正在处理操作，请等待完成后关闭。";Refresh();return;}
+            if(Busy) {SetNotice("正在处理操作，请等待完成后关闭。");Refresh();return;}
             choosingClose=true;
             try {
                 var choice=ClosePrompt==null?new CloseDialog(Window).Show():ClosePrompt();
@@ -90,7 +92,7 @@ namespace Tappo {
             menu=new Forms.ContextMenuStrip();trayStatus=(Forms.ToolStripMenuItem)menu.Items.Add("后台：未运行");trayStatus.Enabled=false;
             menu.Items.Add("打开控制面板",null,(s,e)=>Show());
             trayPause=(Forms.ToolStripMenuItem)menu.Items.Add("暂停自动化",null,async(s,e)=>{await UserAction(PauseAction(ReadStatus(),store.Exists("pending.json")));});
-            trayStop=(Forms.ToolStripMenuItem)menu.Items.Add("停止并恢复普通桌宠",null,async(s,e)=>await UserAction("stop"));
+            trayStop=(Forms.ToolStripMenuItem)menu.Items.Add("停止并恢复普通桌宠",null,async(s,e)=>await UserAction(stopAction));
             menu.Items.Add(new Forms.ToolStripSeparator());trayExit=(Forms.ToolStripMenuItem)menu.Items.Add("退出助手",null,async(s,e)=>await Exit());
             using(var stream=System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream("helper.ico")) icon=new System.Drawing.Icon(stream);
             tray=new Forms.NotifyIcon {Icon=icon,ContextMenuStrip=menu,Text="Wuwa Tappo 助手",Visible=true};tray.DoubleClick+=(s,e)=>Show();
@@ -129,16 +131,16 @@ namespace Tappo {
                     if(dialog.ShowDialog(Window)!=true) return false;path=dialog.FileName;
                 }
                 Platform.SavePath(store,path);SetPath(path);return true;
-            } catch(Exception error) {notice=error.Message;Refresh();return false;}
+            } catch(Exception error) {SetNotice(error.Message);Refresh();return false;}
         }
         void SaveMode() {
             if(selecting) return;
             try {
                 var item=E<ListBox>("ModeSelector").SelectedItem as ListBoxItem;var mode=item==null?null:item.Tag as string;
                 if(!Policy.Modes.Contains(mode)) throw new InvalidOperationException("请选择有效模式。");
-                store.Write("preferences.json",new Preference {mode=mode});savedMode=mode;notice="模式已保存。";
+                store.Write("preferences.json",new Preference {mode=mode});savedMode=mode;SetNotice("模式已保存。",true);
             } catch(Exception error) {
-                notice="模式保存失败："+error.Message;selecting=true;
+                SetNotice("模式保存失败："+error.Message);selecting=true;
                 try {foreach(ListBoxItem item in E<ListBox>("ModeSelector").Items) if((string)item.Tag==savedMode) E<ListBox>("ModeSelector").SelectedItem=item;}
                 finally {selecting=false;}
             }
@@ -155,12 +157,12 @@ namespace Tappo {
             if(Busy) return;
             if(DispatchOverride!=null) {DispatchOverride(action);return;}
             if(action=="start"&&!ChoosePath(false)) return;
-            Busy=true;notice=null;Refresh();var requested=DateTimeOffset.UtcNow;
+            Busy=true;SetNotice(null);Refresh();var requested=DateTimeOffset.UtcNow;
             string commandId=Guid.NewGuid().ToString();
             try {
                 if(action=="reset"&&!Alive(ReadStatus())) {
                     using(var guard=new FileStream(store.FilePath("worker.guard"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None)) store.ResolvePending(pendingHash);
-                    notice="记录已保留，请点击启动后台。";return;
+                    SetNotice("记录已保留，请点击启动后台。",true);return;
                 }
                 if(action=="start") {
                     PrepareStart(store);
@@ -184,18 +186,19 @@ namespace Tappo {
                     if(status==null||!DateTimeOffset.TryParse(status.at,out at)||at<requested) continue;
                     if(action=="reset"&&status.resetCommandId==commandId) {
                         if(status.resetError!=null) throw new InvalidOperationException(status.resetError);
-                        notice="已继续运行，上次操作不会重发。";return;
+                        SetNotice("已继续运行，上次操作不会重发。",true);return;
                     }
                     if(action=="start"&&Alive(status)||action=="pause"&&Alive(status)&&status.manuallyPaused||action=="resume"&&Alive(status)&&!status.paused) return;
-                    if((action=="stop"||action=="disconnect")&&!status.running) {
+                    if((action=="stop"||action=="stop-background"||action=="disconnect")&&!status.running) {
                         if(action=="disconnect"&&!status.automationDisconnected) throw new InvalidOperationException("自动化停止尚未确认。");
-                        if(action=="stop"&&!status.normalStartupRestored) throw new InvalidOperationException(status.fault??"后台已停止，但桌宠未恢复普通启动。");
+                        if(action=="stop"&&!status.normalStartupRestored&&!status.stoppedWithoutRestore) throw new InvalidOperationException(status.fault??"后台已停止，但桌宠未恢复普通启动。");
+                        if(!status.normalStartupRestored) SetNotice("后台已停止。请从桌宠菜单正常退出，再点击“启动后台”。",true);
                         return;
                     }
                     if(action=="start"&&!status.running&&status.fault!=null) throw new InvalidOperationException(status.fault);
                 }
                 throw new TimeoutException("操作尚未确认完成，请核对管理员提示与后台状态，不要重复启动。");
-            } catch(Exception error) {notice=error.Message;throw;}
+            } catch(Exception error) {SetNotice(error.Message);throw;}
             finally {Busy=false;Refresh();}
         }
         async Task UserAction(string action) {
@@ -209,22 +212,22 @@ namespace Tappo {
             if(Busy) return;
             try {
                 var status=ReadStatus();
-                if(!store.Exists("pending.json")) {notice="当前没有待确认操作。";return;}
+                if(!store.Exists("pending.json")) {SetNotice("当前没有待确认操作。",true);return;}
                 if(Alive(status)&&(!status.paused||status.fault==null)) throw new InvalidOperationException("操作仍在确认中，请等待完成后再处理。");
                 var hash=store.PendingHash();
                 var confirmed=ConfirmReset!=null?ConfirmReset():MessageBox.Show(Window,
                     "已核对桌宠，要继续运行吗？\n\n上次操作不会重发，记录会保留。\n后台未运行时，请再点击启动后台。",
                     "确认并继续",MessageBoxButton.YesNo,MessageBoxImage.Warning,MessageBoxResult.No)==MessageBoxResult.Yes;
                 if(confirmed) await Act("reset",hash);
-            } catch(Exception error) {notice=error.Message;}
+            } catch(Exception error) {SetNotice(error.Message);}
             finally {Refresh();}
         }
         public async Task Exit() {
-            if(Busy) {notice="正在处理操作，请等待完成后退出。";Show();return;}
+            if(Busy) {SetNotice("正在处理操作，请等待完成后退出。");Show();return;}
             try {
                 if(Alive(ReadStatus())) await Act("disconnect");
                 AllowExit=true;Window.Close();if(Application.Current!=null) Application.Current.Shutdown();
-            } catch(Exception error) {notice="退出未完成："+error.Message;Refresh();Show();}
+            } catch(Exception error) {SetNotice("退出未完成："+error.Message);Refresh();Show();}
         }
         public void Refresh() {
             try {
@@ -239,14 +242,26 @@ namespace Tappo {
                     if(pending&&!s.paused&&s.fault==null) {label="处理中";color="#FFF0D1";message="正在确认操作结果";detail="等待桌宠与服务器同步，期间不会重复提交。";}
                     if(s.fault!=null||pending&&s.paused) {label="需处理";color="#F8E0D8";message="后台已暂停，等待确认";detail=s.fault??"上次操作结果待确认，请先停止并核对桌宠。";}
                     if(s.recovering) {label="核对中";color="#FFF0D1";message="正在自动核对操作结果";detail=s.fault??"连接或查询恢复后继续确认，不会重复执行操作。";if(s.manuallyPaused)detail+=" 新操作保持暂停。";}
+                    var connectionHint=Connection.Hint(s,ReadClock());
+                    if(connectionHint!=null) {
+                        if(pending||s.manuallyPaused||s.fault!=null||s.recovering) detail=connectionHint+" "+detail;
+                        else {label=s.connectionFailure=="incompatible"?"需处理":s.connected!=false&&s.state!=null&&s.state.locked?"等待更新":"等待连接";color="#FFF0D1";message=s.connected!=false&&s.state!=null&&s.state.locked?"等待桌宠更新完成":"正在等待桌宠重新连接";detail=connectionHint;}
+                    }
                     if(stale) {label="状态未更新";color="#FFF0D1";message="暂时没有收到新的后台状态";detail="以下数值是上次记录，不代表当前状态。";}
-                } else if(s!=null&&s.fault!=null) {label="启动或运行失败";color="#F8E0D8";message="后台已停止";detail=s.fault;}
+                } else if(s!=null&&s.stoppedWithoutRestore) {message="后台已停止";detail="请从桌宠菜单正常退出，再点击“启动后台”。";if(pending)detail+=" 待确认记录已保留，启动后继续核对。";}
+                else if(s!=null&&s.fault!=null) {label="启动或运行失败";color="#F8E0D8";message="后台已停止";detail=s.fault;}
                 else if(s!=null&&s.normalStartupRestored) {message="桌宠已恢复普通运行";detail="要重新开启助手，请先从桌宠设置或托盘退出应用，再点击启动。";}
                 else if(s!=null&&s.running) {message="后台进程已退出";detail="当前显示上次记录，请核对桌宠状态。";}
                 if(Busy) {label="处理中";message="正在等待后台完成操作";detail="请按需处理管理员提示，不要重复启动。";}
                 Text("StatusLabel",label);E<Border>("StatusPill").Background=(Brush)new BrushConverter().ConvertFromString(color);
+                var statusNeedsAttention=pending||stale||s!=null&&s.fault!=null||
+                    alive&&(s.paused||s.manuallyPaused||s.recovering||s.readRetryAt.HasValue||Connection.Hint(s,ReadClock())!=null);
+                if(statusNeedsAttention&&noticeIsSuccess) SetNotice(null);
                 Text("MainMessage",message);Text("DetailMessage",notice??detail);
                 var pauseAction=PauseAction(s,pending);var pauseEnabled=alive&&!Busy&&(!pending||!s.manuallyPaused);
+                stopAction=s!=null&&s.connected==false?"stop-background":"stop";
+                var stopText=stopAction=="stop-background"?"停止后台":"停止并恢复桌宠";
+                E<Button>("StopButton").Content=stopText;
                 E<Button>("StartButton").IsEnabled=!alive&&!Busy;E<Button>("PauseButton").IsEnabled=pauseEnabled;
                 E<Button>("PauseButton").Content=pauseAction=="resume"?"继续运行":"暂停";
                 E<Button>("StopButton").IsEnabled=alive&&!Busy;E<Button>("BrowseAppButton").IsEnabled=!alive&&!Busy;
@@ -269,7 +284,7 @@ namespace Tappo {
                 if(tray!=null) {
                     tray.Text="Wuwa Tappo 助手 · "+label;trayStatus.Text="后台："+label;
                     trayPause.Text=pauseAction=="resume"?"继续运行":"暂停自动化";trayPause.Enabled=pauseEnabled;
-                    trayStop.Enabled=alive&&!Busy;trayExit.Enabled=true;trayExit.Text=alive?"停止自动化并退出助手":"退出助手";
+                    trayStop.Text=stopText;trayStop.Enabled=alive&&!Busy;trayExit.Enabled=true;trayExit.Text=alive?"停止自动化并退出助手":"退出助手";
                 }
             } catch(Exception error) {
                 Text("MainMessage","状态暂时无法读取");Text("DetailMessage",error is IOException?"正在等待状态文件更新；不会自动重试领取。":error.Message);
