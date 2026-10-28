@@ -1,8 +1,6 @@
 param([switch]$Test,[string]$OutputDirectory,[string]$Version)
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
-if (-not $OutputDirectory) { $OutputDirectory=Join-Path $root 'build' }
-[void][IO.Directory]::CreateDirectory($OutputDirectory)
 $framework=Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319'
 $compiler=Join-Path $framework 'csc.exe'
 if (-not (Test-Path -LiteralPath $compiler)) { throw 'Windows with .NET Framework 4.8 build tools is required.' }
@@ -16,9 +14,33 @@ else {
 }
 if ($Version -notmatch '^v?(\d+)\.(\d+)\.(\d+)$') { throw 'Version must use vX.Y.Z or X.Y.Z format.' }
 $buildVersion=$Version.TrimStart('v')
+if (-not $releaseBuild) {
+    $parts=$buildVersion.Split('.')
+    $buildVersion=$parts[0]+'.'+$parts[1]+'.'+([int]$parts[2]+1)
+}
+$assemblyVersion=$buildVersion+'.0'
+$localBuild=-not $releaseBuild -and $env:GITHUB_ACTIONS -ne 'true'
+if ($localBuild) {
+    $buildRoot=Join-Path $root 'build'
+    $pattern='^'+[Regex]::Escape($buildVersion)+'\.(\d+)$'
+    $revision=0
+    if (Test-Path -LiteralPath $buildRoot) {
+        foreach ($directory in Get-ChildItem -LiteralPath $buildRoot -Directory) {
+            if ($directory.Name -match $pattern) { $revision=[Math]::Max($revision,[int]$Matches[1]) }
+        }
+    }
+    $buildVersion=$buildVersion+'.'+($revision+1)
+    $assemblyVersion=$buildVersion
+}
+if (-not $OutputDirectory) {
+    $OutputDirectory=Join-Path $root 'build'
+    # Keep the CI packaging contract; local development builds have their own revision.
+    if ($env:GITHUB_ACTIONS -ne 'true') { $OutputDirectory=Join-Path $OutputDirectory $buildVersion }
+}
+[void][IO.Directory]::CreateDirectory($OutputDirectory)
 $displayVersion=if ($releaseBuild) { $buildVersion } else { $buildVersion+'-dev' }
 $versionSource=Join-Path $OutputDirectory 'Version.cs'
-[IO.File]::WriteAllText($versionSource,('[assembly:System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8")][assembly:System.Reflection.AssemblyVersion("'+$buildVersion+'.0")][assembly:System.Reflection.AssemblyInformationalVersion("'+$displayVersion+'")]'))
+[IO.File]::WriteAllText($versionSource,('[assembly:System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8")][assembly:System.Reflection.AssemblyVersion("'+$assemblyVersion+'")][assembly:System.Reflection.AssemblyInformationalVersion("'+$displayVersion+'")]'))
 $sources+=$versionSource
 # JSON models are populated by JavaScriptSerializer rather than C# assignments.
 $arguments=@('/nologo','/target:winexe','/platform:x64','/optimize+','/warn:4','/nowarn:0649','/main:Tappo.Program',('/out:'+(Join-Path $OutputDirectory 'WuwaTappoHelper.exe')),('/win32icon:'+(Join-Path $root 'assets\helper.ico')),('/win32manifest:'+(Join-Path $root 'src\app.manifest')))

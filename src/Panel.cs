@@ -42,7 +42,7 @@ namespace Tappo {
             selecting=true; foreach(ListBoxItem item in E<ListBox>("ModeSelector").Items) if((string)item.Tag==savedMode) E<ListBox>("ModeSelector").SelectedItem=item; selecting=false;
             E<ListBox>("ModeSelector").SelectionChanged+=(s,e)=>SaveMode();
             E<Button>("StartButton").Click+=async(s,e)=>await UserAction("start");
-            E<Button>("PauseButton").Click+=async(s,e)=>{var status=ReadStatus();await UserAction(status!=null&&status.paused?"resume":"pause");};
+            E<Button>("PauseButton").Click+=async(s,e)=>{await UserAction(PauseAction(ReadStatus(),store.Exists("pending.json")));};
             E<Button>("StopButton").Click+=async(s,e)=>await UserAction("stop");
             E<Button>("ResetPendingButton").Click+=async(s,e)=>await ResetPending();
             E<Button>("BrowseAppButton").Click+=(s,e)=>ChoosePath(true);
@@ -89,7 +89,7 @@ namespace Tappo {
         public void InitializeTray() {
             menu=new Forms.ContextMenuStrip();trayStatus=(Forms.ToolStripMenuItem)menu.Items.Add("后台：未运行");trayStatus.Enabled=false;
             menu.Items.Add("打开控制面板",null,(s,e)=>Show());
-            trayPause=(Forms.ToolStripMenuItem)menu.Items.Add("暂停自动化",null,async(s,e)=>{var status=ReadStatus();await UserAction(status!=null&&status.paused?"resume":"pause");});
+            trayPause=(Forms.ToolStripMenuItem)menu.Items.Add("暂停自动化",null,async(s,e)=>{await UserAction(PauseAction(ReadStatus(),store.Exists("pending.json")));});
             trayStop=(Forms.ToolStripMenuItem)menu.Items.Add("停止并恢复普通桌宠",null,async(s,e)=>await UserAction("stop"));
             menu.Items.Add(new Forms.ToolStripSeparator());trayExit=(Forms.ToolStripMenuItem)menu.Items.Add("退出助手",null,async(s,e)=>await Exit());
             using(var stream=System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream("helper.ico")) icon=new System.Drawing.Icon(stream);
@@ -145,6 +145,7 @@ namespace Tappo {
             Refresh();
         }
         public static bool Alive(Status status) {return status!=null&&status.running&&RuntimeStore.Alive(status.pid);}
+        static string PauseAction(Status status,bool pending) {return status!=null&&(pending||status.recovering?status.manuallyPaused:status.paused)?"resume":"pause";}
         internal static void PrepareStart(RuntimeStore store) {
             var old=store.Read<Status>("lock.json");
             if(old!=null&&RuntimeStore.Alive(old.pid)) throw new InvalidOperationException("自动化已运行，请先停止现有后台。");
@@ -159,7 +160,7 @@ namespace Tappo {
             try {
                 if(action=="reset"&&!Alive(ReadStatus())) {
                     using(var guard=new FileStream(store.FilePath("worker.guard"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None)) store.ResolvePending(pendingHash);
-                    notice="未确认记录已归档，原操作不会重发；可点击启动后台。";return;
+                    notice="记录已保留，请点击启动后台。";return;
                 }
                 if(action=="start") {
                     PrepareStart(store);
@@ -183,9 +184,9 @@ namespace Tappo {
                     if(status==null||!DateTimeOffset.TryParse(status.at,out at)||at<requested) continue;
                     if(action=="reset"&&status.resetCommandId==commandId) {
                         if(status.resetError!=null) throw new InvalidOperationException(status.resetError);
-                        notice="未确认记录已归档，已恢复自动化。";return;
+                        notice="已继续运行，上次操作不会重发。";return;
                     }
-                    if(action=="start"&&Alive(status)||action=="pause"&&Alive(status)&&status.paused||action=="resume"&&Alive(status)&&!status.paused) return;
+                    if(action=="start"&&Alive(status)||action=="pause"&&Alive(status)&&status.manuallyPaused||action=="resume"&&Alive(status)&&!status.paused) return;
                     if((action=="stop"||action=="disconnect")&&!status.running) {
                         if(action=="disconnect"&&!status.automationDisconnected) throw new InvalidOperationException("自动化停止尚未确认。");
                         if(action=="stop"&&!status.normalStartupRestored) throw new InvalidOperationException(status.fault??"后台已停止，但桌宠未恢复普通启动。");
@@ -212,8 +213,8 @@ namespace Tappo {
                 if(Alive(status)&&(!status.paused||status.fault==null)) throw new InvalidOperationException("操作仍在确认中，请等待完成后再处理。");
                 var hash=store.PendingHash();
                 var confirmed=ConfirmReset!=null?ConfirmReset():MessageBox.Show(Window,
-                    "结束这笔待确认操作？\n\n原记录会保留，不会重复执行。\n后台已连接时会自动继续。",
-                    "结束待确认操作",MessageBoxButton.YesNo,MessageBoxImage.Warning,MessageBoxResult.No)==MessageBoxResult.Yes;
+                    "已核对桌宠，要继续运行吗？\n\n上次操作不会重发，记录会保留。\n后台未运行时，请再点击启动后台。",
+                    "确认并继续",MessageBoxButton.YesNo,MessageBoxImage.Warning,MessageBoxResult.No)==MessageBoxResult.Yes;
                 if(confirmed) await Act("reset",hash);
             } catch(Exception error) {notice=error.Message;}
             finally {Refresh();}
@@ -237,6 +238,7 @@ namespace Tappo {
                     if(s.paused) {label="已暂停";color="#FFF0D1";message="自动操作已暂停";detail="计数与领取已暂停，连接仍保留。";}
                     if(pending&&!s.paused&&s.fault==null) {label="处理中";color="#FFF0D1";message="正在确认操作结果";detail="等待桌宠与服务器同步，期间不会重复提交。";}
                     if(s.fault!=null||pending&&s.paused) {label="需处理";color="#F8E0D8";message="后台已暂停，等待确认";detail=s.fault??"上次操作结果待确认，请先停止并核对桌宠。";}
+                    if(s.recovering) {label="核对中";color="#FFF0D1";message="正在自动核对操作结果";detail=s.fault??"连接或查询恢复后继续确认，不会重复执行操作。";if(s.manuallyPaused)detail+=" 新操作保持暂停。";}
                     if(stale) {label="状态未更新";color="#FFF0D1";message="暂时没有收到新的后台状态";detail="以下数值是上次记录，不代表当前状态。";}
                 } else if(s!=null&&s.fault!=null) {label="启动或运行失败";color="#F8E0D8";message="后台已停止";detail=s.fault;}
                 else if(s!=null&&s.normalStartupRestored) {message="桌宠已恢复普通运行";detail="要重新开启助手，请先从桌宠设置或托盘退出应用，再点击启动。";}
@@ -244,8 +246,9 @@ namespace Tappo {
                 if(Busy) {label="处理中";message="正在等待后台完成操作";detail="请按需处理管理员提示，不要重复启动。";}
                 Text("StatusLabel",label);E<Border>("StatusPill").Background=(Brush)new BrushConverter().ConvertFromString(color);
                 Text("MainMessage",message);Text("DetailMessage",notice??detail);
-                E<Button>("StartButton").IsEnabled=!alive&&!Busy;E<Button>("PauseButton").IsEnabled=alive&&!Busy&&!pending;
-                E<Button>("PauseButton").Content=s!=null&&s.paused?"继续运行":"暂停";
+                var pauseAction=PauseAction(s,pending);var pauseEnabled=alive&&!Busy&&(!pending||!s.manuallyPaused);
+                E<Button>("StartButton").IsEnabled=!alive&&!Busy;E<Button>("PauseButton").IsEnabled=pauseEnabled;
+                E<Button>("PauseButton").Content=pauseAction=="resume"?"继续运行":"暂停";
                 E<Button>("StopButton").IsEnabled=alive&&!Busy;E<Button>("BrowseAppButton").IsEnabled=!alive&&!Busy;
                 E<Button>("ResetPendingButton").Visibility=pending?Visibility.Visible:Visibility.Collapsed;
                 E<Button>("ResetPendingButton").IsEnabled=pending&&!Busy&&(!alive||!stale&&s.paused&&s.fault!=null);
@@ -265,7 +268,7 @@ namespace Tappo {
                 Activity();
                 if(tray!=null) {
                     tray.Text="Wuwa Tappo 助手 · "+label;trayStatus.Text="后台："+label;
-                    trayPause.Text=s!=null&&s.paused?"继续运行":"暂停自动化";trayPause.Enabled=alive&&!Busy&&!pending;
+                    trayPause.Text=pauseAction=="resume"?"继续运行":"暂停自动化";trayPause.Enabled=pauseEnabled;
                     trayStop.Enabled=alive&&!Busy;trayExit.Enabled=true;trayExit.Text=alive?"停止自动化并退出助手":"退出助手";
                 }
             } catch(Exception error) {
@@ -297,14 +300,26 @@ namespace Tappo {
                         if(name=="started") text="后台已连接";
                         else if(name=="claim-confirmed") text="已领取"+((string)ev["side"]=="left"?"宝箱一":"宝箱二")+" · 消耗 1,000 次";
                         else if(name=="boost-confirmed") text="已补充 "+ev["delta"]+" 次";
+                        else if(name=="boost-recovered") {
+                            var after=ev.ContainsKey("after")?Json.Convert<Snapshot>(ev["after"]):null;
+                            text=after!=null&&after.boostOverwritten?"本次补数被旧上报覆盖，按最新计数继续":"已补充 "+ev["delta"]+" 次";
+                        }
                         else if(name=="paused-on-error") text="后台暂停，等待处理";
-                        else if(name=="pending-resolved") text="已归档待确认操作，原操作不重发";
-                        else if(name=="read-query-retry") text="状态查询失败，等待自动重试";
+                        else if(name=="pending-resolved") text="已确认继续，上次操作不重发";
+                        else if(name=="read-query-retry") {
+                            object stage;ev.TryGetValue("stage",out stage);
+                            text=(string)stage=="rejected"?"服务器暂未允许领取，等待重试":(string)stage=="local-save"?"计数保存失败，等待重试":(string)stage=="verify"?"领取结果查询失败，正在自动核对":"状态查询失败，等待自动重试";
+                        }
+                        else if(name=="operation-state") {
+                            object stage;ev.TryGetValue("stage",out stage);object error;ev.TryGetValue("errorType",out error);
+                            if(error!=null)text=(string)stage=="local-save"?"计数保存失败，正在重试":(string)stage=="request"?"领取回执未确认，正在核对":(string)stage=="verify"?"领取结果查询失败，正在重试":"领取结果仍在核对中";
+                        }
                         else if(name=="read-query-recovered") text="状态查询已恢复";
                         else if(name=="connection-restored") text="桌宠连接已恢复";
+                        else if(name=="app-version-validated") text="已校验桌宠 "+ev["version"]+" 接口";
                         else if(name=="boost-overwritten") text="本次补数被旧上报覆盖，按最新计数继续";
                         else if(name=="cleanup-needs-attention") text="停止后需要检查桌宠状态";
-                        if(text!=null) lines.Add(DateTimeOffset.Parse((string)ev["at"]).ToOffset(TimeSpan.FromHours(8)).ToString("MM-dd HH:mm")+"    "+text);
+                        if(text!=null) lines.Add(DateTimeOffset.Parse((string)ev["at"]).ToOffset(TimeSpan.FromHours(8)).ToString("MM-dd HH:mm:ss")+"    "+text);
                         if(lines.Count>=3) break;
                     } catch { }
                 }

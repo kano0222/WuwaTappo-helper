@@ -12,7 +12,16 @@ using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
 namespace Tappo {
+    internal sealed class StartupConfigurationException : Exception {
+        public StartupConfigurationException(Exception inner) : base("桌宠启动配置恢复未完成，已停止后台。请核对 runtime/debug-policy-session.json 和启动配置后再启动。",inner) { }
+    }
     internal static class Platform {
+        internal static void CompleteStartup(Action restore,Action persist) {
+            Exception failure=null;
+            try {restore();} catch(Exception error) {failure=error;}
+            try {persist();} catch(Exception error) {failure=failure==null?error:new AggregateException(failure,error);}
+            if(failure!=null)throw new StartupConfigurationException(failure);
+        }
         public static string Executable { get { return System.Reflection.Assembly.GetExecutingAssembly().Location; } }
         public static bool Administrator { get { using(var identity=WindowsIdentity.GetCurrent()) return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator); } }
         public static bool ValidPath(string path) {
@@ -105,7 +114,7 @@ namespace Tappo {
                     }
                 } catch(Exception error) { record["error"]=error.Message; throw; }
                 finally {
-                    try {
+                    CompleteStartup(()=> {try {
                         if(modified) {
                             using(var key=root.OpenSubKey(policy,true)) {
                                 if(key==null||!object.Equals(key.GetValue(keyName),value)) throw new InvalidOperationException("启动配置被同时修改，已停止自动覆盖，请核对 debug-policy-session.json。");
@@ -118,7 +127,7 @@ namespace Tappo {
                         }
                         record["policyRestored"]=true;
                     } catch(Exception error) { record["restoreError"]=error.Message; throw; }
-                    finally { record["finishedAt"]=DateTimeOffset.UtcNow.ToString("o"); store.Write("debug-policy-session.json",record); }
+                    },()=> { record["finishedAt"]=DateTimeOffset.UtcNow.ToString("o"); store.Write("debug-policy-session.json",record); });
                 }
             }
         }

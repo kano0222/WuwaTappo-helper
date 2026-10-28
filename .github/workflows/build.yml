@@ -34,6 +34,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Discovery tests failed.' }
           node ./tests/boost.cjs
           if ($LASTEXITCODE -ne 0) { throw 'Boost receipt tests failed.' }
+          node ./tests/claim.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'Claim confirmation tests failed.' }
+          node ./tests/state.cjs
+          if ($LASTEXITCODE -ne 0) { throw 'State query tests failed.' }
       - name: Stage portable distribution
         run: |
           $stage = Join-Path $PWD 'dist/WuwaTappoHelper-win-x64'

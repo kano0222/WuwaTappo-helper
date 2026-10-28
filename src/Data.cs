@@ -26,6 +26,10 @@ namespace Tappo {
         }
     }
     internal sealed class Snapshot {
+        public string appVersion;
+        public string accountKey, operationId, outcome, failureStage, errorType;
+        public int httpStatus, retryAfterMs;
+        public ServerState confirmedServer;
         public long time; public bool loggedIn, locked, claimBusy, skipped, rejected;
         public long? available, cumulative, local, consumed, serverTotal, left, right;
         public bool boostOverwritten; public long? boostAppliedTotal,boostReportTotal;
@@ -35,6 +39,7 @@ namespace Tappo {
         public bool Button(string side) { return buttons != null && buttons.ContainsKey(side) && buttons[side]; }
     }
     internal sealed class ServerState {
+        public string accountKey;
         public long? total, consumed, left, right;
         public long? Slot(string side) { return side == "left" ? left : right; }
         public void Validate() {
@@ -45,6 +50,7 @@ namespace Tappo {
     internal sealed class Status {
         public string at, fault, mode, message, resetCommandId, resetError; public int pid, claimsThisRun;
         public bool running, paused, normalStartupRestored, automationDisconnected;
+        public bool recovering,manuallyPaused; public string recoveryStage;
         public long? readRetryAt; public int readRetryCount; public string readRetryError;
         public Snapshot state; public ChestTimes chestTimes;
     }
@@ -52,7 +58,7 @@ namespace Tappo {
     internal sealed class Settings { public string appPath; }
     internal sealed class Command { public string id, action, pendingHash; }
     internal sealed class LauncherStatus { public string failedAt, error, requestedAt; public int runnerId; }
-    internal sealed class Journal { public string at; public Plan action; public Snapshot before; public ServerState server; }
+    internal sealed class Journal { public string id, at; public Plan action; public Snapshot before; public ServerState server; }
     internal sealed class RuntimeStore {
         public readonly string Root, Runtime;
         static readonly UTF8Encoding Utf8 = new UTF8Encoding(false);
@@ -77,12 +83,15 @@ namespace Tappo {
             } finally { if(File.Exists(temp)) File.Delete(temp); }
         }
         public void Write(string name, object value) { AtomicWrite(FilePath(name),value); }
-        public void Begin(Plan action, Snapshot before, ServerState server) {
+        public Journal Begin(Plan action, Snapshot before, ServerState server) {
+            before.operationId=Guid.NewGuid().ToString("N");
+            var journal=new Journal {id=before.operationId,at=DateTimeOffset.UtcNow.ToString("o"),action=action,before=before,server=server};
             // CreateNew protects an existing journal, including records from the previous implementation.
             using(var stream=new FileStream(FilePath("pending.json"),FileMode.CreateNew,FileAccess.Write,FileShare.Read)) {
-                var bytes=Utf8.GetBytes(Json.Encode(new Journal {at=DateTimeOffset.UtcNow.ToString("o"),action=action,before=before,server=server})+"\n");
+                var bytes=Utf8.GetBytes(Json.Encode(journal)+"\n");
                 stream.Write(bytes,0,bytes.Length); stream.Flush(true);
             }
+            return journal;
         }
         public void ClearPending() { File.Delete(FilePath("pending.json")); }
         public string PendingHash() {

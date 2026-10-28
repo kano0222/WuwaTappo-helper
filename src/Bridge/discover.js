@@ -10,9 +10,10 @@ function inspectModule(m) {
     environment: unique(v => v === 'cn-cn-prod', '应用环境'),
     store: unique(v => v && typeof v === 'object' && typeof v.isLoggedIn === 'boolean' &&
       ['totalClickCount','cumulativeClickCount','localClickCount','serverClickConsume','serverClickTotal'].every(k => Number.isSafeInteger(v[k]) && v[k] >= 0) &&
-      typeof v.addLocalClickCount === 'function' && typeof v.applyClickReportSuccess === 'function' && typeof v.$onAction === 'function' && 'userInfo' in v, '计数状态'),
+      typeof v.addLocalClickCount === 'function' && typeof v.applyClickReportSuccess === 'function' && typeof v.applyChestClickConsume === 'function' && typeof v.updateUserInfo === 'function' && typeof v.$onAction === 'function' && 'userInfo' in v, '计数状态'),
     locked: unique(fn('isForceUpdateLocked', /^function isForceUpdateLocked\(\)\{return \w+\.value\}$/), '更新锁'),
     userInfo: unique(fn('userInfo', /^function userInfo\(\)\{return \w+\.get\("api\/frontend\/user\/me",\{\},\{\}\)\}$/), '只读用户接口'),
+    openChest: unique(fn('openChest', /^function openChest\((\w+)\)\{return \w+\.post\("api\/frontend\/chests\/open",\{place:\1\.place,click_num:\1\.click_num\},\{\}\)\}$/), '宝箱领取接口'),
     decode: unique(fn('unwrapApiData', /Number\(\w+\?\.code\).*Number\.isFinite.*isApiSuccess.*\.data\?\?\w+\.result/s), '响应解码')
   };
   // Probe only local pure functions; never call userInfo or a mutation during discovery.
@@ -29,9 +30,8 @@ function inspectSources(sources) {
   const mains = sources.filter(([, s]) => s.includes('case"boost-local-clicks":'));
   if (mains.length !== 1) throw new Error('兼容性检查失败：补数处理器缺失或不唯一');
   const source = mains[0][1];
-  // Require delta normalization and the existing store increment, plus original reward UI.
+  // Require the original event-based boost contract; claiming no longer depends on reward UI.
   if (!/case"boost-local-clicks":\{const (\w+)=Math\.max\(0,Math\.floor\(Number\(\w+\.delta\)\|\|0\)\);\1>0&&\(\w+\.addLocalClickCount\(\1\)/.test(source) ||
-      !['reward-anchor--left','reward-anchor--right','reward-btn','[chest] openChest failed'].every(t => source.includes(t)) ||
       !sources.some(([, s]) => s.includes('"cat-panel-action"'))) {
     throw new Error('兼容性检查失败：补数或宝箱入口契约已变化');
   }
@@ -39,6 +39,13 @@ function inspectSources(sources) {
     s.includes('"exit_app"') && /export\{[^}]*\bas quitApp\b/.test(s));
   if (quits.length !== 1) throw new Error('兼容性检查失败：正常退出能力缺失或不唯一');
   return quits[0][0];
+}
+
+function inspectClickModule(m) {
+  const keys=Object.keys(m).filter(k=>typeof m[k]==='function'&&
+    /\b\w+\?\.force\b/.test(String(m[k]))&&String(m[k]).includes('"save_key_press_count"')&&String(m[k]).includes('localClickCount')&&String(m[k]).includes('[localClickCount] save failed'));
+  if(keys.length!==1) throw new Error('兼容性检查失败：本地计数保存能力缺失或不唯一');
+  return keys[0];
 }
 
 async function discoverProfile() {
@@ -50,11 +57,15 @@ async function discoverProfile() {
   if (candidates.length !== 1) throw new Error('兼容性检查失败：共享状态模块缺失或不唯一');
   const commonPath = candidates[0][0];
   const exports = inspectModule(await import(commonPath));
+  const clickSources=sources.filter(([,s])=>s.includes('"save_key_press_count"'));
+  if(clickSources.length!==1) throw new Error('兼容性检查失败：本地计数保存模块缺失或不唯一');
+  const clickPath=clickSources[0][0];
+  exports.saveClicks=inspectClickModule(await import(clickPath));
   const quit = await import(quitPath);
   if (typeof quit.quitApp !== 'function' || !Function.prototype.toString.call(quit.quitApp).includes('"exit_app"')) {
     throw new Error('兼容性检查失败：正常退出接口已变化');
   }
-  return { commonPath, quitPath, exports };
+  return { commonPath, quitPath, clickPath, exports };
 }
 
 async function waitForSources() {
@@ -74,6 +85,7 @@ async function waitForSources() {
     }));
     const sources = [...cache];
     if (sources.some(([, s]) => s.includes('case"boost-local-clicks":')) &&
+        sources.some(([, s]) => s.includes('"save_key_press_count"')) &&
         sources.some(([, s]) => s.includes('function userInfo()') && s.includes('function isForceUpdateLocked()')) &&
         sources.some(([p]) => /\/quitApp-[\w-]+\.js$/.test(p))) return sources;
     if (Date.now() >= deadline) throw new Error('兼容性检查失败：主界面资源未就绪或版本不兼容，请等待桌宠启动完成后重试');

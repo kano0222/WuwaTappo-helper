@@ -6,12 +6,12 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../src/Bridge/discover.js'), 'utf8');
 const boundary = source.lastIndexOf('try{return {profile:await discoverProfile()}');
 assert(boundary > 0);
-const testSource = source.slice(0, boundary) + 'return {waitForSources,inspectSources};})()';
+const testSource = source.slice(0, boundary) + 'return {waitForSources,inspectSources,inspectModule,inspectClickModule};})()';
 const main = 'case"boost-local-clicks":{const t=Math.max(0,Math.floor(Number(e.delta)||0));t>0&&(R.addLocalClickCount(t),Sn())}' +
-  ' reward-anchor--left reward-anchor--right reward-btn [chest] openChest failed "cat-panel-action"';
+  ' "cat-panel-action"';
 const common = 'function userInfo(){} function isForceUpdateLocked(){}';
 const quit = 'function q(){invoke("exit_app")}export{q as quitApp}';
-const assets = { '/assets/common-A.js': common, '/assets/main-A.js': main, '/assets/quitApp-A.js': quit };
+const assets = { '/assets/common-A.js': common, '/assets/main-A.js': main, '/assets/quitApp-A.js': quit, '/assets/count-A.js':'"save_key_press_count"' };
 const paths = Object.keys(assets);
 let checks = 0;
 function check(value) { assert(value); checks++; }
@@ -35,14 +35,37 @@ async function fixture(resources, overrides = {}) {
   check(f.api.inspectSources(await f.api.waitForSources()) === '/assets/quitApp-A.js');
   check(f.ticks() === 0);
 
+  const module=vm.runInNewContext(`(()=>{
+    const transport={get(){throw Error('must not request')},post(){throw Error('must not claim')}};
+    const lock={value:false};
+    function userInfo(){return transport.get("api/frontend/user/me",{},{})}
+    function openChest(e){return transport.post("api/frontend/chests/open",{place:e.place,click_num:e.click_num},{})}
+    function isForceUpdateLocked(){return lock.value}
+    function isApiSuccess(c){return c===0}
+    function unwrapApiData(e){const c=Number(e?.code);if(!Number.isFinite(c)||!isApiSuccess(c))throw Error('invalid');return e.data??e.result}
+    return {a:'cn-cn-prod',b:{isLoggedIn:true,totalClickCount:0,cumulativeClickCount:0,localClickCount:0,serverClickConsume:0,serverClickTotal:0,
+      userInfo:{},addLocalClickCount(){},applyClickReportSuccess(){},applyChestClickConsume(){},updateUserInfo(){},$onAction(){}},
+      c:userInfo,d:openChest,e:isForceUpdateLocked,f:unwrapApiData};
+  })()`);
+  check(f.api.inspectModule(module).openChest==='d');
+  check(f.api.inspectModule({...module,d:undefined,newAlias:module.d}).openChest==='newAlias');
+  assert.throws(()=>f.api.inspectModule({...module,d:undefined}),/宝箱领取接口/);checks++;
+  assert.throws(()=>f.api.inspectModule({...module,duplicate:module.d}),/宝箱领取接口/);checks++;
+  assert.throws(()=>f.api.inspectModule({...module,b:{...module.b,applyChestClickConsume:undefined}}),/计数状态/);checks++;
+  assert.throws(()=>f.api.inspectModule({...module,b:{...module.b,updateUserInfo:undefined}}),/计数状态/);checks++;
+  const persistence=vm.runInNewContext(`({async save(e,n){const count=e??store.localClickCount;try{if(n?.force)await invoke("save_key_press_count",{count})}catch(e){console.warn('[localClickCount] save failed',e)}}})`);
+  check(f.api.inspectClickModule(persistence)==='save');
+  assert.throws(()=>f.api.inspectClickModule({}),/保存能力/);checks++;
+  assert.throws(()=>f.api.inspectClickModule({...persistence,duplicate:persistence.save}),/保存能力/);checks++;
+
   // CDP is ready but the lazy main module and its dependencies arrive later.
   f = await fixture(t => t < 4 ? [paths[0]] : paths);
   check(f.api.inspectSources(await f.api.waitForSources()) === '/assets/quitApp-A.js');
-  check(f.ticks() === 4 && f.reads.length === 3);
+  check(f.ticks() === 4 && f.reads.length === 4);
 
   f = await fixture(() => paths.flatMap(p => [p, 'http://tauri.localhost' + p + '?cached=1'])
     .concat('http://other.local/assets/main-A.js', '/api/account'));
-  check((await f.api.waitForSources()).length === 3 && f.reads.length === 3);
+  check((await f.api.waitForSources()).length === 4 && f.reads.length === 4);
 
   f = await fixture(() => [paths[0]]);
   await assert.rejects(f.api.waitForSources(), /主界面资源未就绪或版本不兼容/); checks++;

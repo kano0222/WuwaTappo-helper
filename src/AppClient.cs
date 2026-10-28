@@ -11,12 +11,19 @@ using System.Threading.Tasks;
 namespace Tappo {
     internal interface IAppClient : IDisposable {
         bool Connected { get; }
+        Task<string> CheckVersion();
         Task<Snapshot> Snapshot(); Task<ServerState> Server(); Task<Snapshot> Boost(int delta,Snapshot before);
         Task<Snapshot> Claim(string side,Snapshot before); Task Quit();
+        Task<Snapshot> Recover(Journal journal);
     }
-    internal sealed class AppProfile { public string version, commonPath, quitPath; public Dictionary<string,string> exports; }
+    internal sealed class AppProfile { public string version, commonPath, quitPath, clickPath; public Dictionary<string,string> exports; }
     internal sealed class DiscoveryResult { public AppProfile profile; public string error; }
     internal sealed class Target { public string type,url,webSocketDebuggerUrl; }
+    internal sealed class QueryReply { public ServerState state; public string errorType; public int httpStatus,code,retryAfterMs; }
+    internal sealed class AppQueryException : Exception {
+        public readonly string ErrorType; public readonly int HttpStatus,Code,RetryAfterMs;
+        public AppQueryException(QueryReply reply):base("服务器状态查询失败") {ErrorType=reply.errorType;HttpStatus=reply.httpStatus;Code=reply.code;RetryAfterMs=reply.retryAfterMs;}
+    }
     internal sealed class AppClient : IAppClient {
         readonly ClientWebSocket socket;
         readonly CancellationTokenSource lifetime=new CancellationTokenSource();
@@ -24,9 +31,10 @@ namespace Tappo {
         readonly SemaphoreSlim sends=new SemaphoreSlim(1,1);
         int sequence; bool disposed; volatile bool disconnected;
         public bool Connected { get {return !disposed&&!disconnected&&socket.State==WebSocketState.Open;} }
-        public AppProfile Profile { get; private set; }
+        readonly Capabilities capabilities;
+        public AppProfile Profile { get {return capabilities.Profile;} }
         static readonly string[] KnownErrors={"未确认领取结果，不自动重试","领取期间出现其他计数或槽位变化，已暂停且不会自动重发","补数期间账号变化，结果未确认，不自动重发"};
-        AppClient(ClientWebSocket socket) { this.socket=socket; }
+        AppClient(ClientWebSocket socket) { this.socket=socket;capabilities=new Capabilities(Evaluate,()=>RuntimeStore.Now); }
         public static async Task<string> LocalGet(string suffix,int timeout) {
             using(var handler=new HttpClientHandler {UseProxy=false})
             using(var http=new HttpClient(handler) {Timeout=TimeSpan.FromMilliseconds(timeout)})
@@ -44,10 +52,7 @@ namespace Tappo {
         public static async Task<AppClient> Connect(int mainWaitMs=25000) {
             var selected=await WaitForMain(FindMain,Task.Delay,()=>RuntimeStore.Now,mainWaitMs).ConfigureAwait(false);
             try {
-                var version=await selected.Evaluate("window.__TAURI_INTERNALS__.invoke('plugin:app|version')").ConfigureAwait(false) as string;
-                var found=Json.Convert<DiscoveryResult>(await selected.Evaluate(Resources.Text("bridge.discover.js"),15000).ConfigureAwait(false));
-                if(found==null||found.profile==null) throw new InvalidOperationException(found==null?"兼容性检查失败":found.error);
-                selected.Profile=found.profile; selected.Profile.version=version;
+                await selected.capabilities.Ensure().ConfigureAwait(false);
                 return selected;
             } catch {selected.Dispose();throw;}
         }
@@ -144,21 +149,39 @@ namespace Tappo {
         }
         string Script(string name,Snapshot before) {
             var text=Resources.Text("bridge."+name+".js").Replace("__STATE__",StateSource());
+            text=text.Replace("__CLICKMODULE__",Json.Encode(Profile.clickPath));
+            foreach(var pair in Profile.exports) text=text.Replace("__"+pair.Key.ToUpperInvariant()+"__",Json.Encode(pair.Value));
             if(before!=null) foreach(var pair in Json.Decode<Dictionary<string,object>>(Json.Encode(before)))
                 text=text.Replace("__BEFORE_"+pair.Key.ToUpperInvariant()+"__",Json.Encode(pair.Value));
             return text;
         }
-        public async Task<Snapshot> Snapshot() { return Json.Convert<Snapshot>(await Evaluate("(async()=>{"+StateSource()+"return snapshot();})()").ConfigureAwait(false)); }
+        public async Task<Snapshot> Snapshot() {
+            await capabilities.Ensure().ConfigureAwait(false);
+            var state=Json.Convert<Snapshot>(await Evaluate("(async()=>{"+StateSource()+"return snapshot();})()").ConfigureAwait(false));
+            state.appVersion=Profile.version;return state;
+        }
+        public async Task<string> CheckVersion() {
+            await capabilities.Ensure(true).ConfigureAwait(false);return Profile.version;
+        }
         public async Task<ServerState> Server() {
-            return Json.Convert<ServerState>(await Evaluate("(async()=>{"+StateSource()+"const d=await readServer();return {total:Number(d.total_click_count??NaN),consumed:Number(d.total_click_consume??NaN),left:Number(d.left_treasure_chest??NaN),right:Number(d.right_treasure_chest??NaN)};})()",15000).ConfigureAwait(false));
+            var reply=Json.Convert<QueryReply>(await Evaluate("(async()=>{"+StateSource()+"try{const d=await readServer();return {state:{accountKey,total:Number(d.total_click_count??NaN),consumed:Number(d.total_click_consume??NaN),left:Number(d.left_treasure_chest??NaN),right:Number(d.right_treasure_chest??NaN)}}}catch(e){return failure(e,'query')}})()",12000).ConfigureAwait(false));
+            if(reply==null||reply.state==null)throw new AppQueryException(reply??new QueryReply {errorType="InvalidReply"});
+            return reply.state;
         }
         public async Task<Snapshot> Boost(int delta,Snapshot before) {
             if(delta<1||delta>2000) throw new InvalidOperationException("补充次数超出范围");
-            return Json.Convert<Snapshot>(await Evaluate(Script("boost",before).Replace("__DELTA__",delta.ToString())).ConfigureAwait(false));
+            return Json.Convert<Snapshot>(await Evaluate(Script("boost",before).Replace("__DELTA__",delta.ToString()).Replace("__RECOVER__","false")).ConfigureAwait(false));
         }
         public async Task<Snapshot> Claim(string side,Snapshot before) {
             if(side!="left"&&side!="right") throw new InvalidOperationException("槽位不匹配");
-            return Json.Convert<Snapshot>(await Evaluate(Script("claim",before).Replace("__SIDE__",Json.Encode(side)),25000).ConfigureAwait(false));
+            return Json.Convert<Snapshot>(await Evaluate(Script("claim",before).Replace("__SIDE__",Json.Encode(side)).Replace("__RECOVER__","false"),12000).ConfigureAwait(false));
+        }
+        public async Task<Snapshot> Recover(Journal journal) {
+            if(journal==null||journal.action==null||(journal.action.kind!="claim"&&journal.action.kind!="boost")||journal.before==null||string.IsNullOrEmpty(journal.id)||journal.before.operationId!=journal.id||string.IsNullOrEmpty(journal.before.accountKey)||
+               (journal.action.kind=="claim"&&(journal.action.side!="left"&&journal.action.side!="right")))
+                return new Snapshot {outcome="unknown",failureStage="legacy-journal"};
+            if(journal.action.kind=="boost")return Json.Convert<Snapshot>(await Evaluate(Script("boost",journal.before).Replace("__DELTA__",journal.action.delta.ToString()).Replace("__RECOVER__","true")).ConfigureAwait(false));
+            return Json.Convert<Snapshot>(await Evaluate(Script("claim",journal.before).Replace("__SIDE__",Json.Encode(journal.action.side)).Replace("__RECOVER__","true"),12000).ConfigureAwait(false));
         }
         public async Task Quit() { await Evaluate("(async()=>{await(await import("+Json.Encode(Profile.quitPath)+")).quitApp();return true;})()",15000).ConfigureAwait(false); }
         public void Dispose() {
