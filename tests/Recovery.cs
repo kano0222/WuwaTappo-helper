@@ -59,25 +59,25 @@ namespace Tappo {
                     if(scenario=="disconnect"||scenario=="startup-disconnect")Check(reconnections==1,"pending prevented reconnect");
                     if(scenario=="query"||scenario=="save")Check(old.Recoveries==2,"transient recovery stage did not retry");
                 }
-                foreach(var scenario in new[]{"restore","persist","both"})foreach(var pending in new[]{false,true}) {
-                    var store=new RuntimeStore(Path.Combine(root,"startup-fatal-"+scenario+pending));var client=new FakeClient();int restores=0,persists=0,reconnections=0,waits=0;
+                foreach(var pending in new[]{false,true}) {
+                    var store=new RuntimeStore(Path.Combine(root,"startup-fatal-"+pending));var client=new FakeClient();int persists=0,reconnections=0,waits=0;
                     if(pending)store.Begin(new Plan {kind="claim",side="left"},Tests.Copy(client.State),Server(client.State));
                     StartupConfigurationException failure=null;
                     var worker=new Worker(store,()=> {
-                        try {Platform.CompleteStartup(()=>{restores++;if(scenario!="persist")throw new IOException("restore failed");},()=>{persists++;if(scenario!="restore")throw new IOException("record failed");});}
+                        try {Platform.SaveStartupRecord(()=>{persists++;throw new IOException("record failed");});}
                         catch(StartupConfigurationException error) {failure=error;throw;}
                         return Task.FromResult<IAppClient>(client);
                     },c=>{throw new Exception("fatal startup must not restart the pet");},ms=>{waits++;return Task.FromResult(0);},()=>100000,
                     ()=>{reconnections++;return Task.FromResult<IAppClient>(client);});
                     var exit=await worker.Run();
                     Check(exit==1&&!worker.Status.running&&worker.Status.fault==failure.Message,"startup configuration failure did not stop worker");
-                    Check(restores==1&&persists==1&&waits==0&&reconnections==0,"startup configuration failure entered retry");
+                    Check(persists==1&&waits==0&&reconnections==0,"startup configuration failure entered retry");
                     Check(client.Boosts==0&&client.Claims==0&&client.Reads==0,"fatal startup allowed account access");
                     Check(store.Exists("pending.json")==pending,"fatal startup changed pending record");
-                    Check((failure.InnerException is AggregateException)==(scenario=="both"),"startup failure lost original causes");
+                    Check(failure.InnerException is IOException,"startup failure lost original cause");
                 }
                 {
-                    int callbacks=0;Platform.CompleteStartup(()=>callbacks++,()=>callbacks++);Check(callbacks==2,"successful startup finalization failed");
+                    int callbacks=0;Platform.SaveStartupRecord(()=>callbacks++);Check(callbacks==1,"successful startup record failed");
                 }
                 {
                     var store=new RuntimeStore(Path.Combine(root,"startup-without-pending"));var client=new FakeClient();long now=100000;int attempts=0,loops=0;

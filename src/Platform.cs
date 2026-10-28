@@ -13,14 +13,20 @@ using System.Threading.Tasks;
 
 namespace Tappo {
     internal sealed class StartupConfigurationException : Exception {
-        public StartupConfigurationException(Exception inner) : base("桌宠启动配置恢复未完成，已停止后台。请核对 runtime/debug-policy-session.json 和启动配置后再启动。",inner) { }
+        public StartupConfigurationException(Exception inner) : base("桌宠启动诊断保存失败，已停止后台。请检查 runtime/ 的写入权限后再启动。",inner) { }
     }
     internal static class Platform {
-        internal static void CompleteStartup(Action restore,Action persist) {
-            Exception failure=null;
-            try {restore();} catch(Exception error) {failure=error;}
-            try {persist();} catch(Exception error) {failure=failure==null?error:new AggregateException(failure,error);}
-            if(failure!=null)throw new StartupConfigurationException(failure);
+        internal static ProcessStartInfo AppStartInfo(string app,bool debug) {
+            var info=new ProcessStartInfo(app) {WorkingDirectory=Path.GetDirectoryName(app),UseShellExecute=false,WindowStyle=ProcessWindowStyle.Hidden};
+            // WebView2 reads this host command-line switch for every environment.
+            // The pet does not enable CDP from the environment variable alone.
+            // Preserve user environment options. Host switches are processed last,
+            // so only our debug address and port override conflicting user switches.
+            if(debug) info.Arguments="--edge-webview-switches=\"--remote-debugging-address=127.0.0.1 --remote-debugging-port=19222\"";
+            return info;
+        }
+        internal static void SaveStartupRecord(Action persist) {
+            try {persist();} catch(Exception error) {throw new StartupConfigurationException(error);}
         }
         public static string Executable { get { return System.Reflection.Assembly.GetExecutingAssembly().Location; } }
         public static bool Administrator { get { using(var identity=WindowsIdentity.GetCurrent()) return new WindowsPrincipal(identity).IsInRole(WindowsBuiltInRole.Administrator); } }
@@ -90,45 +96,23 @@ namespace Tappo {
             if(running) { CheckListeners(); return; }
             if(!Administrator) throw new InvalidOperationException("启动桌宠连接需要管理员权限。");
             var test=new TcpListener(IPAddress.Loopback,19222); try { test.Start(); } finally { test.Stop(); }
-            const string policy=@"Software\Policies\Microsoft\Edge\WebView2\AdditionalBrowserArguments";
-            const string keyName="WuwaTappo.exe", value="--remote-debugging-address=127.0.0.1 --remote-debugging-port=19222";
-            using(var root=RegistryKey.OpenBaseKey(RegistryHive.LocalMachine,RegistryView.Registry64)) {
-                bool existed=false, modified=false; object original=null; RegistryValueKind kind=RegistryValueKind.String;
-                var created=new List<string>(); var record=new Dictionary<string,object>{{"startedAt",DateTimeOffset.UtcNow.ToString("o")}};
-                try {
-                    using(var key=root.OpenSubKey(policy)) if(key!=null&&key.GetValueNames().Contains(keyName)) {
-                        existed=true; original=key.GetValue(keyName,null,RegistryValueOptions.DoNotExpandEnvironmentNames); kind=key.GetValueKind(keyName);
-                    }
-                    string current="";
-                    foreach(var part in policy.Split('\\')) { current=current.Length==0?part:current+"\\"+part; using(var key=root.OpenSubKey(current)) if(key==null) created.Add(current); }
-                    record["originalPolicy"]=new {exists=existed,value=original,kind=kind.ToString()}; record["createdKeys"]=created; store.Write("debug-policy-session.json",record);
-                    using(var key=root.CreateSubKey(policy)) { modified=true; key.SetValue(keyName,value,RegistryValueKind.String); }
-                    using(var child=Process.Start(new ProcessStartInfo(app) {WorkingDirectory=Path.GetDirectoryName(app),UseShellExecute=false,WindowStyle=ProcessWindowStyle.Hidden})) {
-                        record["launched"]=true; record["processId"]=child.Id;
-                    }
-                    var until=RuntimeStore.Now+25000;
-                    while(true) {
-                        try { CheckListeners(); await AppClient.LocalGet("/json/version",1000).ConfigureAwait(false); record["debugReady"]=true; break; }
-                        catch { if(RuntimeStore.Now>=until) throw new InvalidOperationException("桌宠连接未就绪，请检查桌宠状态。"); }
-                        await Task.Delay(400).ConfigureAwait(false);
-                    }
-                } catch(Exception error) { record["error"]=error.Message; throw; }
-                finally {
-                    CompleteStartup(()=> {try {
-                        if(modified) {
-                            using(var key=root.OpenSubKey(policy,true)) {
-                                if(key==null||!object.Equals(key.GetValue(keyName),value)) throw new InvalidOperationException("启动配置被同时修改，已停止自动覆盖，请核对 debug-policy-session.json。");
-                                if(existed) key.SetValue(keyName,original,kind); else key.DeleteValue(keyName,false);
-                            }
-                            for(int i=created.Count-1;i>=0;i--) {
-                                bool empty; using(var key=root.OpenSubKey(created[i])) empty=key!=null&&key.SubKeyCount==0&&key.ValueCount==0;
-                                if(empty) root.DeleteSubKey(created[i],false);
-                            }
-                        }
-                        record["policyRestored"]=true;
-                    } catch(Exception error) { record["restoreError"]=error.Message; throw; }
-                    },()=> { record["finishedAt"]=DateTimeOffset.UtcNow.ToString("o"); store.Write("debug-policy-session.json",record); });
+            var record=new Dictionary<string,object>{{"startedAt",DateTimeOffset.UtcNow.ToString("o")},{"argumentSource","host-command-line"}};
+            SaveStartupRecord(()=>store.Write("debug-startup-session.json",record));
+            try {
+                using(var child=Process.Start(AppStartInfo(app,true))) {
+                    if(child==null) throw new InvalidOperationException("桌宠启动失败。");
+                    record["launched"]=true; record["processId"]=child.Id;
                 }
+                var until=RuntimeStore.Now+25000;
+                while(true) {
+                    try { CheckListeners(); await AppClient.LocalGet("/json/version",1000).ConfigureAwait(false); record["debugReady"]=true; break; }
+                    catch { if(RuntimeStore.Now>=until) throw new InvalidOperationException("桌宠连接未就绪，请检查桌宠状态。"); }
+                    await Task.Delay(400).ConfigureAwait(false);
+                }
+            } catch(Exception error) {record["error"]=error.Message;throw;}
+            finally {
+                record["finishedAt"]=DateTimeOffset.UtcNow.ToString("o");
+                SaveStartupRecord(()=>store.Write("debug-startup-session.json",record));
             }
         }
         public static async Task Restore(IAppClient client,RuntimeStore store) {
@@ -138,8 +122,7 @@ namespace Tappo {
                 bool open=IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Any(p=>p.Port==19222);
                 if(!open) {
                     await Task.Delay(1000).ConfigureAwait(false);
-                    var app=LoadPath(store); var info=new ProcessStartInfo(app) {WorkingDirectory=Path.GetDirectoryName(app),UseShellExecute=false,WindowStyle=ProcessWindowStyle.Hidden};
-                    info.EnvironmentVariables.Remove("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS");
+                    var app=LoadPath(store); var info=AppStartInfo(app,false);
                     using(var child=Process.Start(info)) { if(child==null) throw new InvalidOperationException("普通桌宠启动失败。"); }
                     return;
                 }

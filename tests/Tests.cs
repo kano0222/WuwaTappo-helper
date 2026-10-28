@@ -37,6 +37,14 @@ namespace Tappo {
         static void Reject(Action action,string message) {bool rejected=false;try{action();}catch{rejected=true;}Check(rejected,message);}
         static RuntimeStore Store() {return new RuntimeStore(Path.Combine(root,Guid.NewGuid().ToString("N")));}
         [STAThread] public static int Main(string[] args) {
+            var startupCheck=Array.IndexOf(args,"--startup-args-check");
+            if(startupCheck>=0&&startupCheck+2<args.Length) {
+                var debug=args[startupCheck+1]=="debug";
+                var expected=args[startupCheck+2]=="-"?null:Encoding.UTF8.GetString(Convert.FromBase64String(args[startupCheck+2]));
+                var switches=args.Where(a=>a.StartsWith("--edge-webview-switches=",StringComparison.Ordinal)).ToArray();
+                return Environment.GetEnvironmentVariable(StartupChecks.ArgumentsVariable)==expected&&
+                    (debug?switches.Length==1&&switches[0]=="--edge-webview-switches="+StartupChecks.DebugArguments:switches.Length==0)?0:1;
+            }
             if(args.Length==2&&args[0]=="--update-probe") {
                 try {var update=Updates.Check(CancellationToken.None).GetAwaiter().GetResult();File.WriteAllText(args[1],Json.Encode(new {current=Updates.CurrentVersion,build=Updates.BuildVersion,latest=update.version,available=update.available,url=update.url}));return 0;}
                 catch(Exception error){Console.Error.WriteLine("TLS="+System.Net.ServicePointManager.SecurityProtocol);while(error!=null){Console.Error.WriteLine(error.GetType().Name+": "+error.Message);error=error.InnerException;}return 1;}
@@ -50,7 +58,7 @@ namespace Tappo {
                 Policies();Files();Clocks().GetAwaiter().GetResult();Workers().GetAwaiter().GetResult();WakeReplenishment().GetAwaiter().GetResult();BoostObservations().GetAwaiter().GetResult();Resets().GetAwaiter().GetResult();QueryRetries().GetAwaiter().GetResult();Connections().GetAwaiter().GetResult();ResetPanels();Layouts();CloseChoices();Lifecycle();
                 ServerChestConfirmation().GetAwaiter().GetResult();VersionPreflight().GetAwaiter().GetResult();
                 checks+=ConnectionChecks.Run().GetAwaiter().GetResult();checks+=ConnectionChecks.Panels();
-                checks+=RecoveryChecks.Run().GetAwaiter().GetResult();checks+=TransportChecks.Run().GetAwaiter().GetResult();checks+=CapabilityChecks.Run().GetAwaiter().GetResult();checks+=UpdateChecks.Run().GetAwaiter().GetResult();UpdatePanels();
+                checks+=StartupChecks.Run();checks+=RecoveryChecks.Run().GetAwaiter().GetResult();checks+=TransportChecks.Run().GetAwaiter().GetResult();checks+=CapabilityChecks.Run().GetAwaiter().GetResult();checks+=UpdateChecks.Run().GetAwaiter().GetResult();UpdatePanels();
                 Console.WriteLine("PASS: "+checks+" native checks; no account mutations, app restarts, or system policy changes.");return 0;
             } catch(Exception error) {Console.Error.WriteLine(error);return 1;}
             finally {
