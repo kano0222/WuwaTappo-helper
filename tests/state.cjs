@@ -26,6 +26,8 @@ const drain=async()=>{for(let i=0;i<20;i++)await Promise.resolve()};
  now=2000;for(const [id,t]of [...timers])if(t.at<=now){timers.delete(id);t.fn()};await delayed;assert.equal(calls,2);
  now=4000;mode='limited';let error;try{await api.readServer()}catch(e){error=e};assert(error);assert.equal(api.failure(error,'query').httpStatus,429);
  assert(error.retryAfterMs>=120000);const count=calls;await assert.rejects(api.readServer());assert.equal(calls,count,'retry-after ignored');
+ const limitedFailure=api.failure(error,'query');assert(limitedFailure.retryAfterMs>=limitedFailure.requiredRetryAfterMs,'required wait exceeds automatic query delay');
+ await assert.rejects(api.readServer(),e=>{const waitingFailure=api.failure(e,'query');assert(waitingFailure.retryAfterMs>=waitingFailure.requiredRetryAfterMs,'cached query wait omitted required deadline');return true});
  assert.equal(api.retryQuery(),120000,'manual retry bypassed rate limit');await assert.rejects(api.readServer());assert.equal(calls,count);
  now=124000;mode='success';await api.readServer();assert.equal(calls,count+1);
  now=126000;mode='hang';const hung=api.readServer();const rejected=assert.rejects(hung);await drain();const hangingCalls=calls;

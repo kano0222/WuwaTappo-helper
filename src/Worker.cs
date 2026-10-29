@@ -216,6 +216,7 @@ namespace Tappo {
                                 if(!Policy.Modes.Contains(preference.mode)) throw new InvalidOperationException("增加模式配置无效，请在面板重新选择。");
                                 if(Status.mode!=preference.mode) { Status.mode=preference.mode; nextBoost=0;store.Log("mode-changed",new {mode=Status.mode}); }
                             }
+                            if(retryCommand!=null)await ReadVersion().ConfigureAwait(false);
                             Status.state=await ReadSnapshot().ConfigureAwait(false);
                             Status.disconnectedSince=null;Status.connectionFailure=null;
                             if(Status.state.appVersion!=null&&lastAppVersion!=Status.state.appVersion) {
