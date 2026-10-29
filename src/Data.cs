@@ -52,6 +52,7 @@ namespace Tappo {
         public bool running, paused, normalStartupRestored, automationDisconnected;
         public bool recovering,manuallyPaused; public string recoveryStage;
         public long? readRetryAt; public int readRetryCount; public string readRetryError;
+        public long? readRetryNotBefore; public string retryCommandId; public bool retrying;
         public bool? connected; public long? disconnectedSince; public string connectionFailure;
         public bool stoppedWithoutRestore;
         public Snapshot state; public ChestTimes chestTimes;

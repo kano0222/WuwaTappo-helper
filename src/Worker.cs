@@ -40,17 +40,18 @@ namespace Tappo {
             catch(Exception error) {throw new ReadQueryException("读取服务器状态",error);}
             result.Validate();serverCache=result;serverCacheUntil=now()+5000;clock.Accept(result);return result;
         }
-        void ResetRetry() {Status.readRetryAt=null;Status.readRetryCount=0;Status.readRetryError=null;}
+        void ResetRetry() {Status.readRetryAt=null;Status.readRetryNotBefore=null;Status.readRetryCount=0;Status.readRetryError=null;}
         void ConnectionFailed(Exception error) {
             Status.connectionFailure=Connection.Classify(error);
             if(!Status.disconnectedSince.HasValue) Status.disconnectedSince=now();
         }
-        void Retry(string operation,string stage,string errorType,int code=0,int httpStatus=0,int minimumMs=0) {
+        void Retry(string operation,string stage,string errorType,int code=0,int httpStatus=0,int minimumMs=0,int requiredMs=-1) {
             Status.readRetryCount++;
             var seconds=Math.Min(60,5*(1<<Math.Min(4,Status.readRetryCount-1)));
             var jitter=random.Next(0,1001);var milliseconds=seconds==60?60000-jitter:seconds*1000+jitter;
             milliseconds=Math.Max(milliseconds,Math.Max(minimumMs,(httpStatus==403||httpStatus==429)?60000:0));
             Status.readRetryAt=now()+milliseconds;Status.readRetryError=operation+"，等待自动重试";
+            Status.readRetryNotBefore=now()+Math.Max(requiredMs<0?minimumMs:requiredMs,(httpStatus==403||httpStatus==429)?60000:0);
             store.Log("read-query-retry",new {operation=operation,stage=stage,errorType=errorType,connectionFailure=Status.connectionFailure,code=code,httpStatus=httpStatus,attempt=Status.readRetryCount,backoffSeconds=seconds,retryAfterSeconds=(milliseconds+999)/1000,retryDelayMs=milliseconds});
             Publish(Status.readRetryError);
         }
@@ -173,12 +174,17 @@ namespace Tappo {
                     Publish(client!=null?"已连接":"正在等待桌宠重新连接");
                     while(!stop) {
                         int loopDelay=1000;
+                        string retryCommand=null;
                         var command=store.Read<Command>("control.json");
                         if(command!=null&&command.id!=lastCommand) {
                             lastCommand=command.id;
                             if(command.action=="stop"||command.action=="stop-background"||command.action=="disconnect") { stop=true;restoreRequested=command.action=="stop"&&client!=null&&client.Connected; }
                             else if(command.action=="pause") paused=true;
                             else if(command.action=="resume"&&!store.Exists("pending.json")) { paused=false;Status.fault=null; }
+                            else if(command.action=="retry") {
+                                if(Status.readRetryAt.HasValue&&(!Status.readRetryNotBefore.HasValue||now()>=Status.readRetryNotBefore.Value)) retryCommand=command.id;
+                                else Status.retryCommandId=command.id;
+                            }
                             else if(command.action=="reset") {
                                 Status.resetCommandId=command.id;Status.resetError=null;
                                 try {
@@ -191,10 +197,14 @@ namespace Tappo {
                             }
                         }
                         if(stop) break;
-                        if(Status.readRetryAt.HasValue&&now()<Status.readRetryAt.Value) {
+                        if(retryCommand==null&&Status.readRetryAt.HasValue&&now()<Status.readRetryAt.Value) {
                             Publish("状态查询失败，等待自动重试");await delay(1000).ConfigureAwait(false);continue;
                         }
                         try {
+                            if(retryCommand!=null) {
+                                Status.retrying=true;Publish("正在重试连接与状态查询…");
+                                Status.readRetryAt=now();serverCache=null;
+                            }
                             if(client==null||!client.Connected) {
                                 if(!Status.disconnectedSince.HasValue) Status.disconnectedSince=now();
                                 if(client!=null) {client.Dispose();client=null;}
@@ -211,6 +221,12 @@ namespace Tappo {
                             if(Status.state.appVersion!=null&&lastAppVersion!=Status.state.appVersion) {
                                 store.Log("app-version-validated",new {previous=lastAppVersion,version=Status.state.appVersion});
                                 lastAppVersion=Status.state.appVersion;
+                            }
+                            if(retryCommand!=null) {
+                                int wait;
+                                try {wait=await client.RetryQuery().ConfigureAwait(false);}
+                                catch(Exception error) {throw new ReadQueryException("准备重新查询",error);}
+                                if(wait>0) {Status.readRetryNotBefore=now()+wait;Status.readRetryAt=now()+wait;Publish("等待服务器查询间隔结束");continue;}
                             }
                             if(store.Exists("pending.json")) {
                                 if(Status.state.loggedIn&&!Status.state.locked)await RecoverPending().ConfigureAwait(false);
@@ -268,7 +284,7 @@ namespace Tappo {
                                 var api=error.InnerException as AppQueryException;
                                 Status.recovering=store.Exists("pending.json");
                                 Retry(((ReadQueryException)error).Operation,Status.recovering?"verify":"query",api==null?error.InnerException.GetType().Name:api.ErrorType,
-                                    api==null?0:api.Code,api==null?0:api.HttpStatus,api==null?0:api.RetryAfterMs);
+                                    api==null?0:api.Code,api==null?0:api.HttpStatus,api==null?0:api.RetryAfterMs,api==null?0:api.RequiredRetryAfterMs);
                             } else {
                                 var pending=store.Exists("pending.json")?store.Read<Journal>("pending.json"):null;
                                 if(pending!=null&&pending.action!=null&&(pending.action.kind=="claim"||pending.action.kind=="boost")&&!string.IsNullOrEmpty(pending.id)) {
@@ -279,6 +295,9 @@ namespace Tappo {
                                     Status.fault=error.Message;Publish(Status.fault);
                                 }
                             }
+                        }
+                        finally {
+                            if(retryCommand!=null) {Status.retrying=false;Status.retryCommandId=retryCommand;Publish(Status.message);}
                         }
                         await delay(loopDelay).ConfigureAwait(false);
                     }

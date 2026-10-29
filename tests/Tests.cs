@@ -19,6 +19,8 @@ namespace Tappo {
         public Func<ServerState> ServerResult;
         public Func<string> VersionResult;
         public Func<Journal,Snapshot> RecoveryResult;
+        public int QueryRetries; public Func<int> RetryQueryResult;
+        public Task<int> RetryQuery() {QueryRetries++;return Task.FromResult(RetryQueryResult==null?0:RetryQueryResult());}
         public Task<Snapshot> Recover(Journal journal) {Recoveries++;return Task.FromResult(RecoveryResult==null?new Snapshot {accountKey=State.accountKey,operationId=journal.id,outcome="unknown",failureStage="receipt-missing"}:RecoveryResult(journal));}
         public Task<string> CheckVersion() {return Task.FromResult(VersionResult==null?State.appVersion:VersionResult());}
         public Func<int,Snapshot,Snapshot> BoostResult;
@@ -58,6 +60,7 @@ namespace Tappo {
                 Policies();Files();Clocks().GetAwaiter().GetResult();Workers().GetAwaiter().GetResult();WakeReplenishment().GetAwaiter().GetResult();BoostObservations().GetAwaiter().GetResult();Resets().GetAwaiter().GetResult();QueryRetries().GetAwaiter().GetResult();Connections().GetAwaiter().GetResult();ResetPanels();Layouts();CloseChoices();Lifecycle();
                 ServerChestConfirmation().GetAwaiter().GetResult();VersionPreflight().GetAwaiter().GetResult();
                 checks+=ConnectionChecks.Run().GetAwaiter().GetResult();checks+=ConnectionChecks.Panels();
+                checks+=RetryChecks.Run().GetAwaiter().GetResult();
                 checks+=StartupChecks.Run();checks+=RecoveryChecks.Run().GetAwaiter().GetResult();checks+=TransportChecks.Run().GetAwaiter().GetResult();checks+=CapabilityChecks.Run().GetAwaiter().GetResult();checks+=UpdateChecks.Run().GetAwaiter().GetResult();UpdatePanels();
                 Console.WriteLine("PASS: "+checks+" native checks; no account mutations, app restarts, or system policy changes.");return 0;
             } catch(Exception error) {Console.Error.WriteLine(error);return 1;}
@@ -422,8 +425,16 @@ namespace Tappo {
                 Check(!panel.E<Button>("StartButton").IsEnabled&&panel.E<Button>("PauseButton").IsEnabled,"running controls");
                 status.readRetryAt=RuntimeStore.Now+10000;status.readRetryError="读取服务器状态失败";panel.Refresh();
                 Check(panel.E<TextBlock>("StatusLabel").Text=="等待重试"&&panel.E<TextBlock>("DetailMessage").Text.Contains("不补数、不领取"),"retry status missing");
+                Check(panel.E<Button>("RetryButton").Visibility==Visibility.Visible&&panel.E<Button>("RetryButton").IsEnabled,"retry button missing");
+                string retryAction=null;panel.DispatchOverride=action=>retryAction=action;
+                panel.E<Button>("RetryButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Check(retryAction=="retry","retry button sent wrong command");panel.DispatchOverride=null;
+                status.readRetryNotBefore=RuntimeStore.Now+60000;panel.Refresh();
+                Check(!panel.E<Button>("RetryButton").IsEnabled,"server wait allowed retry");status.readRetryNotBefore=null;
+                status.retrying=true;panel.Refresh();Check(!panel.E<Button>("RetryButton").IsEnabled&&(string)panel.E<Button>("RetryButton").Content=="正在重试…","retry in progress allowed duplicate");status.retrying=false;
                 status.paused=true;panel.Refresh();Check(panel.E<TextBlock>("StatusLabel").Text=="已暂停","retry hid manual pause");
                 status.paused=false;status.readRetryAt=null;status.readRetryError=null;panel.Refresh();
+                Check(panel.E<Button>("RetryButton").Visibility==Visibility.Collapsed,"healthy state retained retry button");
                 Check(panel.Window.FindName("ExitButton")==null,"unexpected title exit button");
                 Check(panel.E<MenuItem>("ExitMenuItem").IsEnabled&&panel.TrayExitEnabled,"exit entry unavailable");
                 panel.ReadStatus=()=>{throw new UnauthorizedAccessException("模拟读取失败");};panel.Refresh();

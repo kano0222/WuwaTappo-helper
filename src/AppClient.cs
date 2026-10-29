@@ -15,14 +15,15 @@ namespace Tappo {
         Task<Snapshot> Snapshot(); Task<ServerState> Server(); Task<Snapshot> Boost(int delta,Snapshot before);
         Task<Snapshot> Claim(string side,Snapshot before); Task Quit();
         Task<Snapshot> Recover(Journal journal);
+        Task<int> RetryQuery();
     }
     internal sealed class AppProfile { public string version, commonPath, quitPath, clickPath; public Dictionary<string,string> exports; }
     internal sealed class DiscoveryResult { public AppProfile profile; public string error,failureKind; }
     internal sealed class Target { public string type,url,webSocketDebuggerUrl; }
-    internal sealed class QueryReply { public ServerState state; public string errorType; public int httpStatus,code,retryAfterMs; }
+    internal sealed class QueryReply { public ServerState state; public string errorType; public int httpStatus,code,retryAfterMs,requiredRetryAfterMs; }
     internal sealed class AppQueryException : Exception {
-        public readonly string ErrorType; public readonly int HttpStatus,Code,RetryAfterMs;
-        public AppQueryException(QueryReply reply):base("服务器状态查询失败") {ErrorType=reply.errorType;HttpStatus=reply.httpStatus;Code=reply.code;RetryAfterMs=reply.retryAfterMs;}
+        public readonly string ErrorType; public readonly int HttpStatus,Code,RetryAfterMs,RequiredRetryAfterMs;
+        public AppQueryException(QueryReply reply):base("服务器状态查询失败") {ErrorType=reply.errorType;HttpStatus=reply.httpStatus;Code=reply.code;RetryAfterMs=reply.retryAfterMs;RequiredRetryAfterMs=reply.requiredRetryAfterMs;}
     }
     internal sealed class AppClient : IAppClient {
         readonly ClientWebSocket socket;
@@ -167,6 +168,9 @@ namespace Tappo {
             var reply=Json.Convert<QueryReply>(await Evaluate("(async()=>{"+StateSource()+"try{const d=await readServer();return {state:{accountKey,total:Number(d.total_click_count??NaN),consumed:Number(d.total_click_consume??NaN),left:Number(d.left_treasure_chest??NaN),right:Number(d.right_treasure_chest??NaN)}}}catch(e){return failure(e,'query')}})()",12000).ConfigureAwait(false));
             if(reply==null||reply.state==null)throw new AppQueryException(reply??new QueryReply {errorType="InvalidReply"});
             return reply.state;
+        }
+        public async Task<int> RetryQuery() {
+            return Convert.ToInt32(await Evaluate("(async()=>{"+StateSource()+"return retryQuery();})()").ConfigureAwait(false));
         }
         public async Task<Snapshot> Boost(int delta,Snapshot before) {
             if(delta<1||delta>2000) throw new InvalidOperationException("补充次数超出范围");
