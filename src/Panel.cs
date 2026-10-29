@@ -24,6 +24,7 @@ namespace Tappo {
         internal bool TrayExitEnabled {get {return trayExit!=null&&trayExit.Enabled;}}
         string notice,savedMode="brute"; bool selecting,choosingClose,noticeIsSuccess;
         string stopAction="stop";
+        bool retryRequested;
         Forms.NotifyIcon tray; Forms.ContextMenuStrip menu; Forms.ToolStripMenuItem trayPause,trayStop,trayExit,trayStatus;
         DispatcherTimer timer; Mutex mutex; EventWaitHandle showEvent; bool ownsMutex; System.Drawing.Icon icon;
         public Func<Status> ReadStatus; public Action<string> DispatchOverride;
@@ -45,6 +46,7 @@ namespace Tappo {
             E<Button>("StartButton").Click+=async(s,e)=>await UserAction("start");
             E<Button>("PauseButton").Click+=async(s,e)=>{await UserAction(PauseAction(ReadStatus(),store.Exists("pending.json")));};
             E<Button>("StopButton").Click+=async(s,e)=>await UserAction(stopAction);
+            E<Button>("RetryButton").Click+=async(s,e)=>await UserAction("retry");
             E<Button>("ResetPendingButton").Click+=async(s,e)=>await ResetPending();
             E<Button>("BrowseAppButton").Click+=(s,e)=>ChoosePath(true);
             E<Button>("MinimizeButton").Click+=(s,e)=>Window.WindowState=WindowState.Minimized;
@@ -157,7 +159,7 @@ namespace Tappo {
             if(Busy) return;
             if(DispatchOverride!=null) {DispatchOverride(action);return;}
             if(action=="start"&&!ChoosePath(false)) return;
-            Busy=true;SetNotice(null);Refresh();var requested=DateTimeOffset.UtcNow;
+            Busy=true;retryRequested=action=="retry";SetNotice(null);Refresh();var requested=DateTimeOffset.UtcNow;
             string commandId=Guid.NewGuid().ToString();
             try {
                 if(action=="reset"&&!Alive(ReadStatus())) {
@@ -184,6 +186,7 @@ namespace Tappo {
                     if(launcher!=null&&launcher.error!=null&&DateTimeOffset.TryParse(launcher.failedAt,out failed)&&failed>=requested) throw new InvalidOperationException(launcher.error);
                     DateTimeOffset at;
                     if(status==null||!DateTimeOffset.TryParse(status.at,out at)||at<requested) continue;
+                    if(action=="retry"&&status.retryCommandId==commandId&&!status.retrying) return;
                     if(action=="reset"&&status.resetCommandId==commandId) {
                         if(status.resetError!=null) throw new InvalidOperationException(status.resetError);
                         SetNotice("已继续运行，上次操作不会重发。",true);return;
@@ -199,7 +202,7 @@ namespace Tappo {
                 }
                 throw new TimeoutException("操作尚未确认完成，请核对管理员提示与后台状态，不要重复启动。");
             } catch(Exception error) {SetNotice(error.Message);throw;}
-            finally {Busy=false;Refresh();}
+            finally {Busy=false;retryRequested=false;Refresh();}
         }
         async Task UserAction(string action) {
             try {await Act(action);}
@@ -252,12 +255,17 @@ namespace Tappo {
                 else if(s!=null&&s.fault!=null) {label="启动或运行失败";color="#F8E0D8";message="后台已停止";detail=s.fault;}
                 else if(s!=null&&s.normalStartupRestored) {message="桌宠已恢复普通运行";detail="要重新开启助手，请先从桌宠设置或托盘退出应用，再点击启动。";}
                 else if(s!=null&&s.running) {message="后台进程已退出";detail="当前显示上次记录，请核对桌宠状态。";}
-                if(Busy) {label="处理中";message="正在等待后台完成操作";detail="请按需处理管理员提示，不要重复启动。";}
+                if(Busy) {label="处理中";message=retryRequested?"正在重试连接与状态查询…":"正在等待后台完成操作";detail=retryRequested?"正在检查连接与最新状态，请稍候。":"请按需处理管理员提示，不要重复启动。";}
                 Text("StatusLabel",label);E<Border>("StatusPill").Background=(Brush)new BrushConverter().ConvertFromString(color);
                 var statusNeedsAttention=pending||stale||s!=null&&s.fault!=null||
                     alive&&(s.paused||s.manuallyPaused||s.recovering||s.readRetryAt.HasValue||Connection.Hint(s,ReadClock())!=null);
                 if(statusNeedsAttention&&noticeIsSuccess) SetNotice(null);
                 Text("MainMessage",message);Text("DetailMessage",notice??detail);
+                var retryButton=E<Button>("RetryButton");
+                retryButton.Visibility=alive&&(s.readRetryAt.HasValue||s.retrying||retryRequested)?Visibility.Visible:Visibility.Collapsed;
+                retryButton.IsEnabled=alive&&!stale&&!Busy&&!s.retrying&&s.readRetryAt.HasValue&&(!s.readRetryNotBefore.HasValue||ReadClock()>=s.readRetryNotBefore.Value);
+                retryButton.Content=retryRequested||s!=null&&s.retrying?"正在重试…":"立即重试";
+                retryButton.ToolTip=s!=null&&s.readRetryNotBefore.HasValue&&ReadClock()<s.readRetryNotBefore.Value?"需等待服务器或操作核对的安全间隔结束。":"立即检查连接与状态，保留手动暂停，不重发未确认操作。";
                 var pauseAction=PauseAction(s,pending);var pauseEnabled=alive&&!Busy&&(!pending||!s.manuallyPaused);
                 stopAction=s!=null&&s.connected==false?"stop-background":"stop";
                 var stopText=stopAction=="stop-background"?"停止后台":"停止并恢复桌宠";

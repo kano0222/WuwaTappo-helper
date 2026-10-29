@@ -13,12 +13,19 @@ const failure=(error,stage)=>{
   return {failureStage:stage,errorType:['Error','TypeError','TimeoutError','AbortError'].includes(error?.name)?error.name:'Error',
     httpStatus:Number.isInteger(status)&&status>=400&&status<=599?status:0,
     code:Number.isSafeInteger(Number(error?.code))?Number(error.code):0,
-    retryAfterMs:Math.min(2147480000,Math.max(0,Number.isFinite(retry)?retry:0))};
+    retryAfterMs:Math.min(2147480000,Math.max(0,Number.isFinite(retry)?retry:0)),
+    requiredRetryAfterMs:Math.min(2147480000,Math.max(0,Number(error?.requiredRetryAfterMs??(Number.isFinite(retry)?retry:0))))};
 };
 const bounded=async(promise,ms)=>{
   let timer;
   try{return await Promise.race([promise,new Promise((_,reject)=>{timer=setTimeout(()=>{const e=new Error('状态查询超时');e.name='TimeoutError';reject(e)},ms)})]);}
   finally{clearTimeout(timer);}
+};
+const retryQuery=()=>{
+  const q=globalThis.__TAPPO_HELPER_QUERY__;
+  if(!q||q.accountKey!==accountKey)return 0;
+  q.nextAt=Math.max(Date.now(),q.requiredAt??0);
+  return Math.max(0,q.nextAt-Date.now());
 };
 const readServer=async()=>{
   if(!sameAccount()||locked())throw new Error('账号或更新状态已变化');
@@ -26,11 +33,12 @@ const readServer=async()=>{
   if(!q||q.accountKey!==accountKey)q=globalThis.__TAPPO_HELPER_QUERY__={accountKey,nextAt:0,failures:0,promise:null};
   if(!q.promise){
     const wait=q.nextAt-Date.now();
-    if(wait>2000){const e=new Error('等待服务器查询重试');e.retryAfterMs=wait;throw e;}
+    if(wait>2000){const e=new Error('等待服务器查询重试');e.retryAfterMs=wait;e.requiredRetryAfterMs=Math.max(0,(q.requiredAt??0)-Date.now());throw e;}
     // Reserve before yielding, so concurrent observers share one request.
     q.promise=(async()=>{
       if(wait>0)await new Promise(r=>setTimeout(r,wait));
       q.nextAt=Date.now()+2000;
+      q.requiredAt=q.nextAt;
       try{
         if(!sameAccount()||locked())throw new Error('账号或更新状态已变化');
         // Bound the shared read itself, not just each observer. A late reply is discarded.
@@ -41,6 +49,8 @@ const readServer=async()=>{
         const info=failure(error,'query');q.failures++;
         const backoff=Math.min(60000,5000*2**Math.min(4,q.failures-1))+Math.floor(Math.random()*1000);
         q.nextAt=Date.now()+Math.max(backoff,info.retryAfterMs,[403,429].includes(info.httpStatus)?60000:0);
+        q.requiredAt=Math.max(q.requiredAt??0,Date.now()+Math.max(info.requiredRetryAfterMs,[403,429].includes(info.httpStatus)?60000:0));
+        error.requiredRetryAfterMs=Math.max(0,q.requiredAt-Date.now());
         error.retryAfterMs=Math.max(info.retryAfterMs,q.nextAt-Date.now());throw error;
       }
     })();

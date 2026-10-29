@@ -99,6 +99,7 @@
             <StackPanel>
               <TextBlock x:Name="MainMessage" FontWeight="SemiBold" TextWrapping="Wrap"/>
               <TextBlock x:Name="DetailMessage" Foreground="#807565" FontSize="12" TextWrapping="Wrap" Margin="0,5,0,0" LineHeight="21"/>
+              <Button x:Name="RetryButton" Content="立即重试" HorizontalAlignment="Left" Height="30" Margin="0,8,0,0" Padding="12,0" Visibility="Collapsed"/>
               <Grid Margin="0,6,0,0">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="12"/><ColumnDefinition Width="90"/></Grid.ColumnDefinitions>
                 <TextBlock x:Name="AppPathText" Text="桌宠：启动时自动查找，也可手动选择" FontSize="11" Foreground="#9B9186" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/>
