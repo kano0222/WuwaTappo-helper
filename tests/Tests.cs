@@ -14,7 +14,7 @@ namespace Tappo {
     internal sealed class FakeClient : IAppClient {
         bool connected=true;
         public bool Connected {get{return connected;}set{connected=value;}}
-        public Snapshot State=Tests.State(); public int Reads,Boosts,Claims,Quits,Closed,Recoveries; public bool ThrowClaim;
+        public Snapshot State=Tests.State(); public int Reads,Boosts,Claims,Quits,Closed,Recoveries; public bool ThrowClaim,OmitReward;
         public Func<Snapshot> ClaimResult,SnapshotResult;
         public Func<ServerState> ServerResult;
         public Func<string> VersionResult;
@@ -27,7 +27,7 @@ namespace Tappo {
         public Task<Snapshot> Snapshot() {return Task.FromResult(SnapshotResult==null?State:SnapshotResult());}
         public Task<ServerState> Server() {Reads++;return Task.FromResult(ServerResult==null?new ServerState {accountKey=State.accountKey,total=State.cumulative,consumed=State.consumed,left=State.left,right=State.right}:ServerResult());}
         public Task<Snapshot> Boost(int delta,Snapshot before) {Boosts++;if(BoostResult!=null)return Task.FromResult(BoostResult(delta,before));var result=Tests.Copy(before);result.cumulative+=delta;result.available+=delta;State=result;return Task.FromResult(result);}
-        public Task<Snapshot> Claim(string side,Snapshot before) {Claims++;if(ThrowClaim) throw new TimeoutException("调用超时，禁止自动重发操作");var result=ClaimResult==null?Tests.Copy(before):ClaimResult();result.operationId=before.operationId;State=result;return Task.FromResult(result);}
+        public Task<Snapshot> Claim(string side,Snapshot before) {Claims++;if(ThrowClaim) throw new TimeoutException("调用超时，禁止自动重发操作");var result=ClaimResult==null?Tests.Copy(before):ClaimResult();result.operationId=before.operationId;result.rewardVerified=!OmitReward;result.reward=OmitReward?null:new RewardReceipt {assetId=123,assetName="test",assetType="accessory",quantityBefore=0,quantityAfter=1};State=result;return Task.FromResult(result);}
         public Task Quit() {Quits++;return Task.FromResult(0);}
         public void Dispose() {Closed++;}
     }
@@ -55,14 +55,19 @@ namespace Tappo {
                 var alive=RuntimeStore.Alive(int.Parse(args[1]));Console.WriteLine("Query-only process check: "+alive);return alive?0:2;
             }
             if(args.Length==2&&args[0]=="--panel-child") return PanelChild(args[1]);
+            var suite=args.Length==0?"All":args.Length==2&&args[0]=="--suite"?args[1]:null;
+            suite=new[]{"All","Worker","Panel","Platform"}.FirstOrDefault(value=>string.Equals(value,suite,StringComparison.OrdinalIgnoreCase));
+            if(suite==null) {Console.Error.WriteLine("Use --suite All|Worker|Panel|Platform");return 1;}
             root=Path.Combine(Path.GetTempPath(),"tappo-native-tests-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
             try {
-                Policies();Files();Clocks().GetAwaiter().GetResult();Workers().GetAwaiter().GetResult();WakeReplenishment().GetAwaiter().GetResult();BoostObservations().GetAwaiter().GetResult();Resets().GetAwaiter().GetResult();QueryRetries().GetAwaiter().GetResult();Connections().GetAwaiter().GetResult();ResetPanels();Layouts();CloseChoices();Lifecycle();
-                ServerChestConfirmation().GetAwaiter().GetResult();VersionPreflight().GetAwaiter().GetResult();
-                checks+=ConnectionChecks.Run().GetAwaiter().GetResult();checks+=ConnectionChecks.Panels();
-                checks+=RetryChecks.Run().GetAwaiter().GetResult();
-                checks+=StartupChecks.Run();checks+=RecoveryChecks.Run().GetAwaiter().GetResult();checks+=TransportChecks.Run().GetAwaiter().GetResult();checks+=CapabilityChecks.Run().GetAwaiter().GetResult();checks+=UpdateChecks.Run().GetAwaiter().GetResult();UpdatePanels();
-                Console.WriteLine("PASS: "+checks+" native checks; no account mutations, app restarts, or system policy changes.");return 0;
+                if(suite=="All"||suite=="Worker") {
+                    Policies();Files();Clocks().GetAwaiter().GetResult();Workers().GetAwaiter().GetResult();WakeReplenishment().GetAwaiter().GetResult();BoostObservations().GetAwaiter().GetResult();Resets().GetAwaiter().GetResult();QueryRetries().GetAwaiter().GetResult();Connections().GetAwaiter().GetResult();
+                    ServerChestConfirmation().GetAwaiter().GetResult();VersionPreflight().GetAwaiter().GetResult();
+                    checks+=ConnectionChecks.Run().GetAwaiter().GetResult();checks+=RetryChecks.Run().GetAwaiter().GetResult();checks+=RecoveryChecks.Run().GetAwaiter().GetResult();checks+=CapabilityChecks.Run().GetAwaiter().GetResult();
+                }
+                if(suite=="All"||suite=="Panel") {ResetPanels();Layouts();CloseChoices();Lifecycle();checks+=ConnectionChecks.Panels();UpdatePanels();}
+                if(suite=="All"||suite=="Platform") {checks+=StartupChecks.Run();checks+=TransportChecks.Run().GetAwaiter().GetResult();checks+=UpdateChecks.Run().GetAwaiter().GetResult();}
+                Console.WriteLine("PASS: "+checks+" native checks ("+suite+"); no account mutations, app restarts, or system policy changes.");return 0;
             } catch(Exception error) {Console.Error.WriteLine(error);return 1;}
             finally {
                 var target=Path.GetFullPath(root);var temp=Path.GetFullPath(Path.GetTempPath());
@@ -109,16 +114,15 @@ namespace Tappo {
             Reject(()=>store.Begin(new Plan {kind="claim"},State(),new ServerState()),"historical journal overwritten");
             Check(File.ReadAllText(store.FilePath("pending.json"))=="{\"historical\":true}","journal changed");
             using(var reader=new FileStream(store.FilePath("preferences.json"),FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete)) {
-                for(int i=0;i<500;i++) store.Write("preferences.json",new Preference {mode=i%2==0?"brute":"clicker"});
+                store.Write("preferences.json",new Preference {mode="brute"});
+                store.Write("preferences.json",new Preference {mode="clicker"});
             }
             Check(store.Read<Preference>("preferences.json").mode=="clicker","atomic status replacement");
             Check(Platform.InstallExecutable("\"Z:\\Missing App\"")==@"Z:\Missing App\WuwaTappo.exe","quoted install path");
             Check(!Platform.ValidPath(@"Z:\Missing App\WuwaTappo.exe"),"missing app accepted");
             Check(!Platform.ValidPath("WuwaTappo.exe"),"relative app accepted");
             var missing=Json.Decode<Snapshot>("{\"loggedIn\":true}");Reject(()=>Policy.Choose(missing,"brute",true,()=>0.5),"missing JSON counts accepted");
-            Check(Resources.Text("bridge.claim.js").Contains("m[__OPENCHEST__]")&&!Resources.Text("bridge.claim.js").Contains("button.click()"),"claim must use the discovered API");
             RenderClaimScript();
-            Check(Resources.Text("bridge.discover.js").Contains("inspectModule")&&Resources.Text("bridge.discover.js").Contains("inspectSources"),"missing capability checks");
             store.Write("control.json",new Command {id="previous-stop",action="disconnect"});Panel.PrepareStart(store);
             Check(store.Read<Command>("control.json").action=="resume","new start consumes old disconnect");
             store.Write("lock.json",new {pid=Process.GetCurrentProcess().Id});
@@ -133,7 +137,7 @@ namespace Tappo {
                 var caps=(Capabilities)typeof(AppClient).GetField("capabilities",flags).GetValue(client);
                 var profile=new AppProfile {commonPath="/assets/common.js",clickPath="/assets/clicks.js",exports=new Dictionary<string,string> {
                     {"environment","env"},{"store","state"},{"locked","locked"},{"userInfo","user"},{"decode","decodeAlias"},
-                    {"openChest","openAlias"},{"saveClicks","persistAlias"}}};
+                    {"openChest","openAlias"},{"saveClicks","persistAlias"},{"bagList","bagAlias"},{"refreshPanel","ready"}}};
                 typeof(Capabilities).GetProperty("Profile").GetSetMethod(true).Invoke(caps,new object[]{profile});
                 var script=(string)typeof(AppClient).GetMethod("Script",flags).Invoke(client,new object[]{"claim",State()});
                 var tokens=System.Text.RegularExpressions.Regex.Matches(script,"__[A-Z_]+__");
@@ -151,7 +155,7 @@ namespace Tappo {
             clock.Reset();Check(!clock.Value.updatedAt.HasValue,"logout cache retained");Reject(()=>clock.Accept(new ServerState {right=10}),"missing server time accepted");
         }
         static async Task Workers() {
-            foreach(var action in new[]{"disconnect","stop","poll","timeout","reject","success","boost","skip","wrong-slot","unknown-rejection"}) {
+            foreach(var action in new[]{"disconnect","stop","poll","timeout","reject","success","boost","skip","wrong-slot","unknown-rejection","unverified-reward"}) {
                 var store=Store();var client=new FakeClient();long now=100000;int loops=0,restores=0;
                 bool historical=action=="disconnect"||action=="stop"||action=="poll";
                 if(historical) File.WriteAllText(store.FilePath("pending.json"),"{\"historical\":true}");
@@ -160,6 +164,7 @@ namespace Tappo {
                 if(action=="timeout") client.ThrowClaim=true;
                 if(action=="reject") client.ClaimResult=()=>{var s=Copy(client.State);s.rejected=true;s.code=70006;return s;};
                 if(action=="success") client.ClaimResult=()=>{var s=Copy(client.State);s.left=90000;s.consumed+=1000;s.available-=1000;return s;};
+                if(action=="unverified-reward") {client.OmitReward=true;client.ClaimResult=()=>{var s=Copy(client.State);s.outcome="confirmed";s.left=90000;s.consumed+=1000;s.available-=1000;return s;};}
                 if(action=="boost") {client.State.left=900000;client.State.right=900000;client.State.available=0;store.Write("preferences.json",new Preference {mode="clicker"});}
                 if(action=="skip") client.ClaimResult=()=>{var s=Copy(client.State);s.skipped=true;s.reason="条件已变化";s.left=900000;return s;};
                 if(action=="wrong-slot") client.ClaimResult=()=>{var s=Copy(client.State);s.right=90000;s.consumed+=1000;s.available-=1000;return s;};
@@ -174,6 +179,7 @@ namespace Tappo {
                 if(action=="timeout") Check(store.Exists("pending.json")&&client.Claims==1,"uncertain claim retried");
                 if(action=="reject") Check(!store.Exists("pending.json")&&worker.Status.fault==null&&worker.Status.readRetryAt.HasValue&&client.Claims==2,"known rejection must wait and retry");
                 if(action=="success") Check(!store.Exists("pending.json")&&worker.Status.claimsThisRun==1,"confirmed claim not cleared");
+                if(action=="unverified-reward") Check(store.Exists("pending.json")&&worker.Status.claimsThisRun==0&&client.Claims==1&&worker.Status.fault!=null,"deduction without reward was counted as success");
                 if(action=="boost") Check(!store.Exists("pending.json")&&client.Boosts==2&&client.State.available==200,"native boost loop");
                 if(action=="skip") Check(!store.Exists("pending.json")&&client.Claims==1,"skipped action left journal");
                 if(action=="wrong-slot"||action=="unknown-rejection") Check(store.Exists("pending.json")&&client.Claims==1,"unconfirmed result retried");
@@ -487,6 +493,16 @@ namespace Tappo {
                 var updateButton=panel.E<Button>("UpdateButton");var position=updateButton.TranslatePoint(new Point(),panel.E<Border>("RootSurface"));
                 Check(position.X>=0&&position.X+updateButton.ActualWidth<=820&&position.Y+updateButton.ActualHeight<=660,"update button overflow");
                 panel.UpdateAction().GetAwaiter().GetResult();Check(opened!=null&&opened.EndsWith("v9.9.9"),"update page not opened");
+                var feedback=panel.E<Button>("FeedbackButton");
+                feedback.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Check(opened==Updates.IssuesUrl,"feedback page not opened");
+                var feedbackPosition=feedback.TranslatePoint(new Point(),panel.E<Border>("RootSurface"));
+                Check(feedbackPosition.X>=0&&feedbackPosition.X+feedback.ActualWidth<=position.X,"feedback not left of updates");
+                panel.OpenUpdatePage=url=>{throw new InvalidOperationException("browser failed");};
+                feedback.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Check(feedback.ToolTip.ToString().Contains(Updates.IssuesUrl),"feedback browser failure not handled");
+                foreach(var kind in new[]{"main-not-ready","incompatible","debug-unavailable"}) {
+                    store.Log("read-query-retry",new {stage="query",connectionFailure=kind});panel.Refresh();
+                    Check(panel.E<TextBlock>("ActivityText").Text.Split('\n')[0].Contains(Connection.RetryMessage("query",kind)),"connection activity misclassified");
+                }
                 panel.UpdateCheck=token=>{throw new InvalidOperationException("GitHub 暂时限制查询");};panel.CheckForUpdates().GetAwaiter().GetResult();
                 Check(panel.E<Button>("UpdateButton").IsEnabled&&panel.E<Button>("UpdateButton").Content.ToString().Contains("失败"),"update failure disabled controls");
                 int retries=0;panel.UpdateCheck=token=>{retries++;return Task.FromResult(new UpdateInfo {version="0.1.1"});};

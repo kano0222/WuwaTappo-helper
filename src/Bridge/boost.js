@@ -1,14 +1,22 @@
 (async()=>{ __STATE__
   const id=__BEFORE_OPERATIONID__,expectedAccount=__BEFORE_ACCOUNTKEY__,delta=__DELTA__,incremental=__COUNTMODE__==='increment';
   let tx=globalThis.__TAPPO_HELPER_BOOST__;
-  const answer=()=>({...snapshot(),operationId:id,outcome:tx.result?.outcome??(tx.busy?'pending':'unknown'),failureStage:'boost-receipt',...(tx.result??{})});
+  const answer=()=>({...snapshot(),operationId:id,outcome:tx.result?.outcome??(tx.busy?'pending':'unknown'),failureStage:tx.stage??'boost-receipt',...(tx.result??{})});
+  const saveFailed=()=>{tx.result={outcome:'unknown'};tx.nextRetryAt=Date.now()+Math.min(60000,5000*2**Math.min(4,tx.failures??0));tx.failures=(tx.failures??0)+1;};
   if(__RECOVER__){
     if(!tx||tx.id!==id||tx.accountKey!==expectedAccount||tx.store!==s||!sameAccount()||accountKey!==expectedAccount)
       return {...snapshot(),operationId:id,outcome:'unknown',failureStage:'receipt-missing'};
-    return answer();
+    const observed=answer();
+    if(tx.save&&!tx.busy&&tx.result?.outcome==='unknown'&&(!tx.saveTask||tx.saveSettled)&&Date.now()>=(tx.nextRetryAt??0)) {
+      tx.busy=true;tx.result=null;
+      tx.task=tx.save().then(value=>{tx.result={...value,outcome:'confirmed'};},saveFailed).finally(()=>{tx.busy=false;if(tx.result?.outcome==='confirmed')tx.unsubscribe?.();});
+    }
+    return observed;
   }
   if(tx?.id===id)return answer();
   if(tx?.busy)throw new Error('上次补数仍在处理中');
+  if(tx?.saveTask&&!tx.saveSettled)throw new Error('上次计数仍在保存，禁止重复计数');
+  tx?.unsubscribe?.();
   tx={id,accountKey:expectedAccount,store:s,busy:true,result:null};globalThis.__TAPPO_HELPER_BOOST__=tx;
   const perform=async()=>{
   const clicks=incremental?await import(__CLICKMODULE__):null;
@@ -52,15 +60,28 @@
           throw new Error('原生计数结果未确认');
       }
       appliedTotal=before.cumulative+delta;
-      let failed=false;const original=console.warn,saving=snapshot();
-      const observe=function(...args){if(args[0]==='[localClickCount] save failed')failed=true;return Reflect.apply(original,console,args);};
-      console.warn=observe;
-      try{await bounded(clicks[__SAVECLICKS__](undefined,{force:true}),8000);}
-      finally{if(console.warn===observe)console.warn=original;}
-      const value=result();
-      if(failed||!sameContext(value)||value.local!==saving.local||value.cumulative!==saving.cumulative||value.available!==saving.available)
-        throw new Error('计数保存结果未确认');
-      return value;
+      tx.unsubscribe=unsubscribe;
+      tx.save=async()=>{
+        tx.stage='boost-save';
+        for(let attempt=0;attempt<3;attempt++) {
+          const saving=result();
+          if(!sameContext(saving)||(!saving.boostOverwritten&&(saving.cumulative<appliedTotal||saving.available<before.available+delta)))throw new Error('计数归属无法确认');
+          let failed=false;const original=console.warn;
+          const observe=function(...args){if(args[0]==='[localClickCount] save failed')failed=true;return Reflect.apply(original,console,args);};
+          console.warn=observe;tx.saveSettled=false;
+          tx.saveTask=Promise.resolve().then(()=>clicks[__SAVECLICKS__](undefined,{force:true}));
+          tx.saveTask.then(()=>{tx.saveSettled=true},()=>{tx.saveSettled=true});
+          try{await bounded(tx.saveTask,8000);}
+          finally{if(console.warn===observe)console.warn=original;}
+          if(failed)throw new Error('计数保存失败');
+          const value=result();
+          if(!sameContext(value))throw new Error('计数期间状态变化');
+          if(value.local===saving.local&&value.cumulative===saving.cumulative&&value.available===saving.available)return value;
+          // A report or real input changed the counters while saving. Persist the latest state, never recount.
+        }
+        throw new Error('等待计数稳定后重新保存');
+      };
+      return await tx.save();
     }
     // A lost invoke reply does not prove the event was not delivered. Observe its receipt once.
     Promise.resolve().then(()=>window.__TAURI_INTERNALS__.invoke('plugin:event|emit',{event:'cat-panel-action',payload:{type:'boost-local-clicks',delta}})).catch(()=>{});
@@ -71,8 +92,8 @@
       if(appliedTotal===before.cumulative+delta&&value.cumulative>=before.cumulative+delta&&value.available>=before.available+delta)return value;
     }
     throw new Error('补数回执未确认');
-  } finally {unsubscribe();}
+  } finally {if(!incremental||!tx.save)unsubscribe();}
   };
-  tx.task=perform().then(value=>{tx.result={...value,outcome:value.skipped?'skipped':'confirmed'};},()=>{tx.result={outcome:'unknown'};}).finally(()=>{tx.busy=false;});
+  tx.task=perform().then(value=>{tx.result={...value,outcome:value.skipped?'skipped':'confirmed'};},saveFailed).finally(()=>{tx.busy=false;if(tx.result?.outcome==='confirmed')tx.unsubscribe?.();});
   await bounded(tx.task,4000).catch(()=>{});return answer();
 })()

@@ -40,13 +40,14 @@ namespace Tappo {
             catch(Exception error) {throw new ReadQueryException("读取服务器状态",error);}
             result.Validate();serverCache=result;serverCacheUntil=now()+5000;clock.Accept(result);return result;
         }
-        void ResetRetry() {Status.readRetryAt=null;Status.readRetryNotBefore=null;Status.readRetryCount=0;Status.readRetryError=null;}
+        void ResetRetry() {Status.readRetryAt=null;Status.readRetryNotBefore=null;Status.readRetryCount=0;Status.readRetryError=null;Status.readRetryStage=null;}
         void ConnectionFailed(Exception error) {
             Status.connectionFailure=Connection.Classify(error);
             if(!Status.disconnectedSince.HasValue) Status.disconnectedSince=now();
         }
         void Retry(string operation,string stage,string errorType,int code=0,int httpStatus=0,int minimumMs=0,int requiredMs=-1) {
             Status.readRetryCount++;
+            Status.readRetryStage=stage;
             var seconds=Math.Min(60,5*(1<<Math.Min(4,Status.readRetryCount-1)));
             var jitter=random.Next(0,1001);var milliseconds=seconds==60?60000-jitter:seconds*1000+jitter;
             milliseconds=Math.Max(milliseconds,Math.Max(minimumMs,(httpStatus==403||httpStatus==429)?60000:0));
@@ -62,6 +63,10 @@ namespace Tappo {
         }
         async Task AcceptClaim(Journal journal,Snapshot after,bool recovery) {
             var action=journal.action;var before=journal.before;
+            if((after.outcome=="confirmed"||after.outcome==null&&!after.skipped&&!after.rejected)&&
+               (!after.rewardVerified||after.reward==null||after.reward.assetId<=0||after.reward.quantityAfter<=after.reward.quantityBefore)) {
+                after.outcome="unknown";after.failureStage="reward-receipt";
+            }
             if(after.operationId!=journal.id) {after=new Snapshot {outcome="unknown",failureStage="receipt-missing"};}
             var key=journal.id+":"+after.outcome+":"+after.failureStage+":"+after.code+":"+after.httpStatus;
             if(lastOperationState!=key&&after.outcome!=null) {
@@ -83,7 +88,7 @@ namespace Tappo {
                 claimRejections++;Status.readRetryCount=claimRejections-1;
                 Retry("服务器暂未允许领取，稍后重新同步","rejected","BusinessError",after.code,0,after.code==70006?5000:10000);return;
             }
-            if(after.outcome=="confirmed"||(!recovery&&after.outcome==null)) {
+            if((after.outcome=="confirmed"||(!recovery&&after.outcome==null))&&after.rewardVerified&&after.reward!=null&&after.reward.assetId>0&&after.reward.quantityAfter>after.reward.quantityBefore) {
                 var serverAfter=after.confirmedServer??await ReadServer(true).ConfigureAwait(false);
                 BoundAccount(journal,after,serverAfter);
                 Policy.Confirm(action.side,before,after,journal.server,serverAfter);
@@ -92,7 +97,7 @@ namespace Tappo {
                 serverCache=serverAfter;serverCacheUntil=now()+5000;clock.Accept(serverAfter);Publish("领取已确认");return;
             }
             Status.recovering=true;Status.recoveryStage=after.failureStage;
-            if(after.outcome=="unknown")Status.fault="领取结果尚无法归属，已保留记录并自动核对；可核对桌宠后点击“确认并继续”。";
+            if(after.outcome=="unknown"||after.outcome=="confirmed")Status.fault="奖励到账尚未确认，已保留记录并自动核对；可核对桌宠后点击“确认并继续”。";
             else Status.fault=null;
             if(after.errorType!=null||after.outcome=="unknown")Retry("核对领取结果",after.failureStage,after.errorType??"Unverifiable",after.code,after.httpStatus,Math.Max(after.retryAfterMs,after.outcome=="unknown"?30000:0));
             else {Status.readRetryAt=now()+1000;Status.readRetryError="正在核对领取结果";Publish("正在核对领取结果");}
@@ -198,7 +203,7 @@ namespace Tappo {
                         }
                         if(stop) break;
                         if(retryCommand==null&&Status.readRetryAt.HasValue&&now()<Status.readRetryAt.Value) {
-                            Publish("状态查询失败，等待自动重试");await delay(1000).ConfigureAwait(false);continue;
+                            Publish(Connection.RetryMessage(Status.readRetryStage,Status.connectionFailure));await delay(1000).ConfigureAwait(false);continue;
                         }
                         try {
                             if(retryCommand!=null) {

@@ -10,6 +10,7 @@ namespace Tappo {
     internal sealed class ReleaseInfo { public string tag_name,html_url; public bool draft,prerelease; }
     internal sealed class UpdateInfo { public string version,url; public bool available; }
     internal static class Updates {
+        internal const string IssuesUrl="https://github.com/kano0222/WuwaTappo-helper/issues";
         internal const string LatestUrl="https://api.github.com/repos/kano0222/WuwaTappo-helper/releases/latest";
         internal static string CurrentVersion {get{return Assembly.GetExecutingAssembly().GetName().Version.ToString(3);}}
         internal static string BuildVersion {

@@ -55,6 +55,10 @@ namespace Tappo {
             E<Button>("UpdateButton").Content="v"+Updates.CurrentVersion+" · 检查更新";
             E<Button>("UpdateButton").ToolTip="当前构建："+Updates.BuildVersion;
             E<Button>("UpdateButton").Click+=async(s,e)=>await UpdateAction();
+            E<Button>("FeedbackButton").Click+=(s,e)=>{
+                try {OpenUpdatePage(Updates.IssuesUrl);}
+                catch {E<Button>("FeedbackButton").ToolTip="无法打开浏览器，请手动访问 "+Updates.IssuesUrl;}
+            };
             E<System.Windows.Controls.Grid>("TitleGrip").MouseLeftButtonDown+=(s,e)=>{
                 if(e.ClickCount==2) Window.WindowState=Window.WindowState==WindowState.Maximized?WindowState.Normal:WindowState.Maximized;
                 else if(e.LeftButton==MouseButtonState.Pressed) Window.DragMove();
@@ -240,7 +244,7 @@ namespace Tappo {
                 string label="未运行",color="#EAE7E1",message="后台助手尚未运行",detail="先退出普通启动的桌宠，再点击“启动后台”。";
                 if(alive) {
                     label="运行中";color="#E2EFDD";message="后台正在照看桌宠";detail="自动补足领取所需次数，并按原有冷却检查宝箱。";
-                    if(s.readRetryAt.HasValue) {label="等待重试";color="#FFF0D1";message="状态查询失败，正在等待自动重试";detail=(s.readRetryError??"状态暂时无法读取")+"；约 "+Math.Max(0,(long)Math.Ceiling((s.readRetryAt.Value-RuntimeStore.Now)/1000.0))+" 秒后重试，期间不补数、不领取。";}
+                    if(s.readRetryAt.HasValue) {label="等待重试";color="#FFF0D1";message=Connection.RetryMessage(s.readRetryStage,s.connectionFailure);detail=(s.readRetryError??"状态暂时无法读取")+"；约 "+Math.Max(0,(long)Math.Ceiling((s.readRetryAt.Value-ReadClock())/1000.0))+" 秒后重试，期间不补数、不领取。";}
                     if(s.paused) {label="已暂停";color="#FFF0D1";message="自动操作已暂停";detail="计数与领取已暂停，连接仍保留。";}
                     if(pending&&!s.paused&&s.fault==null) {label="处理中";color="#FFF0D1";message="正在确认操作结果";detail="等待桌宠与服务器同步，期间不会重复提交。";}
                     if(s.fault!=null||pending&&s.paused) {label="需处理";color="#F8E0D8";message="后台已暂停，等待确认";detail=s.fault??"上次操作结果待确认，请先停止并核对桌宠。";}
@@ -248,7 +252,7 @@ namespace Tappo {
                     var connectionHint=Connection.Hint(s,ReadClock());
                     if(connectionHint!=null) {
                         if(pending||s.manuallyPaused||s.fault!=null||s.recovering) detail=connectionHint+" "+detail;
-                        else {label=s.connectionFailure=="incompatible"?"需处理":s.connected!=false&&s.state!=null&&s.state.locked?"等待更新":"等待连接";color="#FFF0D1";message=s.connected!=false&&s.state!=null&&s.state.locked?"等待桌宠更新完成":"正在等待桌宠重新连接";detail=connectionHint;}
+                        else {label=s.connectionFailure=="incompatible"?"需处理":s.connected!=false&&s.state!=null&&s.state.locked?"等待更新":"等待连接";color="#FFF0D1";message=s.connectionFailure=="incompatible"?"桌宠接口不兼容":s.connectionFailure=="main-not-ready"?"正在等待桌宠主窗口就绪":s.connected!=false&&s.state!=null&&s.state.locked?"等待桌宠更新完成":"正在等待桌宠重新连接";detail=connectionHint;}
                     }
                     if(stale) {label="状态未更新";color="#FFF0D1";message="暂时没有收到新的后台状态";detail="以下数值是上次记录，不代表当前状态。";}
                 } else if(s!=null&&s.stoppedWithoutRestore) {message="后台已停止";detail="请从桌宠菜单正常退出，再点击“启动后台”。";if(pending)detail+=" 待确认记录已保留，启动后继续核对。";}
@@ -330,8 +334,8 @@ namespace Tappo {
                         else if(name=="paused-on-error") text="后台暂停，等待处理";
                         else if(name=="pending-resolved") text="已确认继续，上次操作不重发";
                         else if(name=="read-query-retry") {
-                            object stage;ev.TryGetValue("stage",out stage);
-                            text=(string)stage=="rejected"?"服务器暂未允许领取，等待重试":(string)stage=="local-save"?"计数保存失败，等待重试":(string)stage=="verify"?"领取结果查询失败，正在自动核对":"状态查询失败，等待自动重试";
+                            object stage,kind;ev.TryGetValue("stage",out stage);ev.TryGetValue("connectionFailure",out kind);
+                            text=Connection.RetryMessage(stage as string,kind as string);
                         }
                         else if(name=="operation-state") {
                             object stage;ev.TryGetValue("stage",out stage);object error;ev.TryGetValue("errorType",out error);
