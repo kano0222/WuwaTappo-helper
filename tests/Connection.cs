@@ -18,7 +18,7 @@ namespace Tappo {
                     var store=new RuntimeStore(Path.Combine(root,scenario+pending));
                     if(pending)store.Write("pending.json",new {historical=true});
                     var client=new FakeClient();client.State.loggedIn=false;
-                    long now=100000;int loops=0,restores=0;bool sawWait=false,sawGuidance=false,sawCategory=false,sawRecovered=false,sawSpecific=false;
+                    long now=100000;int loops=0,restores=0;bool sawWait=false,sawGuidance=false,sawEarlyGuidance=false,sawCategory=false,sawRecovered=false,sawSpecific=false;
                     var kind=scenario=="main"?"main-not-ready":scenario=="incompatible"?"incompatible":"debug-unavailable";
                     Func<Task<IAppClient>> connect=()=> {
                         if(now<100000+(scenario=="short"?15000:90000)) throw new ConnectionFailureException(kind,"test failure");
@@ -30,7 +30,7 @@ namespace Tappo {
                         if(hint=="正在等待桌宠重新连接")sawWait=true;
                         if(scenario=="main"&&now-100000>60000&&hint=="桌宠主窗口尚未就绪，正在等待桌宠完成启动。")sawSpecific=true;
                         if(scenario=="incompatible"&&hint=="当前桌宠版本暂不兼容，请检查助手更新。")sawSpecific=true;
-                        if(hint!=null&&hint.Contains("先点击“停止后台”")) {sawGuidance=true;Check(now-100000>60000,"early restart guidance");}
+                        if(hint!=null&&hint.Contains("先点击“停止后台”")) {sawGuidance=true;if(now-100000<=60000)sawEarlyGuidance=true;}
                         if(status.connectionFailure==kind)sawCategory=true;
                         if(status.connected==true&&status.disconnectedSince==null&&status.connectionFailure==null) {
                             sawRecovered=true;Check(Connection.Hint(status,now)==null,"connection hint survived recovery");
@@ -40,6 +40,7 @@ namespace Tappo {
                         now+=ms;if(++loops>220)worker.RequestDisconnect();return Task.FromResult(0);
                     },()=>now,connect);
                     await worker.Run();
+                    Check(!sawEarlyGuidance,"early restart guidance");
                     Check(sawCategory&&sawRecovered&&loops<=220,"failure classification or recovery missing: "+scenario);
                     Check(sawGuidance==(scenario=="long"),"wrong prolonged failure guidance: "+scenario);
                     Check(scenario=="incompatible"||sawWait,"missing initial wait");

@@ -9,6 +9,16 @@ namespace Tappo {
         public MainWindowNotReadyException() : base("桌宠主窗口尚未就绪，请等待桌宠完成启动后再试。") {}
     }
     internal static class Connection {
+        public static string RetryMessage(string stage,string kind=null) {
+            if(kind=="incompatible")return "桌宠接口不兼容，等待重新检查";
+            if(kind=="main-not-ready")return "桌宠主窗口尚未就绪，等待重试";
+            if(kind!=null||stage=="connect")return "桌宠连接失败，等待自动重连";
+            if(stage=="rejected")return "服务器暂未允许领取，等待重试";
+            if(stage=="local-save"||stage=="boost-save")return "计数保存失败，等待重试";
+            if(stage=="verify"||stage=="reward-verify"||stage=="reward-receipt")return "奖励结果待确认，正在自动核对";
+            if(stage=="boost-receipt")return "计数结果待确认，正在自动核对";
+            return "状态查询失败，等待自动重试";
+        }
         public static string Classify(Exception error) {
             while(error is ReadQueryException&&error.InnerException!=null) error=error.InnerException;
             var failure=error as ConnectionFailureException;

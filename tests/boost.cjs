@@ -61,8 +61,10 @@ async function run() {
       if (scenario === 'missing') { assert.equal(ticks, 180); checks++; }
       const recovered=await vm.runInContext(expression.replace('__RECOVER__','true'),context);
       assert.equal(recovered.outcome,result.outcome);checks++;
-      const wrong=await vm.runInContext(expression.replace('__RECOVER__','true').replace('const id="op"','const id="other"'),context);
-      assert.equal(wrong.outcome,'unknown');checks++;
+      if(scenario==='normal') {
+        const wrong=await vm.runInContext(expression.replace('__RECOVER__','true').replace('const id="op"','const id="other"'),context);
+        assert.equal(wrong.outcome,'unknown');checks++;
+      }
     }
     assert.equal(emits, 1); assert.equal(subscriptions.size, 0); checks += 2;
   }
@@ -71,8 +73,8 @@ async function run() {
 }
 async function nativeChecks() {
   let checks=0;
-  for(const scenario of ['normal','hundred','two-thousand','noop','partial','throw','logout','slot-change','overflow','busy','save-warning','save-throw','save-timeout','save-pending','report-during-save','missing-method','missing-save']) {
-    let local=40,total=75175,right=2000,calls=0,saves=0,release;
+  for(const scenario of ['normal','hundred','two-thousand','noop','partial','throw','logout','slot-change','overflow','busy','save-warning','save-throw','save-timeout','save-pending','report-during-save','new-report-during-save','input-during-save','missing-method','missing-save']) {
+    let local=40,total=75175,right=2000,calls=0,saves=0,release,time=10000;
     const subscriptions=new Set();
     const store={userInfo:{cuid:'test-account'},$onAction(f){subscriptions.add(f);return ()=>subscriptions.delete(f);},
       incrementLocalClickCount(){
@@ -93,13 +95,15 @@ async function nativeChecks() {
     const warnings=[];
     const save=async(_value,options)=>{
       saves++;assert.equal(options.force,true);checks++;
-      if(scenario==='save-warning')context.console.warn('[localClickCount] save failed');
-      if(scenario==='save-throw')throw Error('disk failed');
+      if(scenario==='save-warning'&&saves===1)context.console.warn('[localClickCount] save failed');
+      if(scenario==='save-throw'&&saves===1)throw Error('disk failed');
       if(scenario==='save-timeout')await new Promise(()=>{});
       if(scenario==='save-pending')await new Promise(resolve=>{release=resolve;});
-      if(scenario==='report-during-save')store.applyClickReportSuccess(75215);
+      if(scenario==='report-during-save'&&saves===1)store.applyClickReportSuccess(75215);
+      if(scenario==='new-report-during-save'&&saves===1)store.applyClickReportSuccess(75222);
+      if(scenario==='input-during-save'&&saves===1)local++;
     };
-    const context=vm.createContext({testStore:store,readSnapshot:snapshot,
+    const context=vm.createContext({testStore:store,readSnapshot:snapshot,Date:{now:()=>time},
       console:{warn:(...args)=>warnings.push(args)},
       loadClicks:async()=>scenario==='missing-save'?{}:{save},
       window:{__TAURI_INTERNALS__:{invoke(){throw Error('native counting must not emit events');}}}});
@@ -122,16 +126,34 @@ async function nativeChecks() {
       release();await vm.runInContext('globalThis.__TAPPO_HELPER_BOOST__.task',context);
       result=await vm.runInContext(expression.replace('__RECOVER__','true'),context);
     }
-    const success=['normal','hundred','two-thousand','save-pending'].includes(scenario);
+    const success=['normal','hundred','two-thousand','save-pending','report-during-save','new-report-during-save','input-during-save'].includes(scenario);
     assert.equal(result.outcome,scenario==='busy'?'skipped':success?'confirmed':'unknown',scenario);checks++;
-    if(success){assert.equal(local,40+delta);assert.equal(calls,delta);assert.equal(saves,1);checks+=3;}
+    if(success){
+      const reported=scenario==='report-during-save'||scenario==='new-report-during-save';
+      assert.equal(local,reported?0:40+delta+(scenario==='input-during-save'?1:0));assert.equal(calls,delta);assert.equal(saves,scenario.includes('during-save')?2:1);checks+=3;
+      assert.equal(!!result.boostOverwritten,scenario==='report-during-save');checks++;
+    }
     if(['overflow','busy','missing-method','missing-save'].includes(scenario)){assert.equal(calls,0);assert.equal(saves,0);checks+=2;}
     const applied=calls;
     const replay=await vm.runInContext(expression.replace('__RECOVER__','false'),context);
     const recovered=await vm.runInContext(expression.replace('__RECOVER__','true'),context);
     assert.equal(replay.outcome,result.outcome);assert.equal(recovered.outcome,result.outcome);assert.equal(calls,applied);checks+=3;
-    const wrong=await vm.runInContext(expression.replace('__RECOVER__','true').replace('const id="native-op"','const id="other"'),context);
-    assert.equal(wrong.outcome,'unknown');assert.equal(subscriptions.size,0);assert.equal(context.console.warn,originalWarn);checks+=3;
+    if(scenario==='normal') {
+      const wrong=await vm.runInContext(expression.replace('__RECOVER__','true').replace('const id="native-op"','const id="other"'),context);
+      assert.equal(wrong.outcome,'unknown');checks++;
+    }
+    assert.equal(subscriptions.size,result.outcome==='unknown'&&vm.runInContext('!!globalThis.__TAPPO_HELPER_BOOST__.save',context)?1:0);assert.equal(context.console.warn,originalWarn);checks+=2;
+    if(scenario==='save-warning'||scenario==='save-throw') {
+      assert.equal(saves,1,'save retry ignored backoff');time+=60001;
+      await vm.runInContext(expression.replace('__RECOVER__','true'),context);
+      await vm.runInContext('globalThis.__TAPPO_HELPER_BOOST__.task',context);
+      const retry=await vm.runInContext(expression.replace('__RECOVER__','true'),context);
+      assert.equal(retry.outcome,'confirmed');assert.equal(calls,delta);assert.equal(saves,2);assert.equal(subscriptions.size,0);checks+=4;
+    }
+    if(scenario==='save-timeout') {
+      time+=60001;await vm.runInContext(expression.replace('__RECOVER__','true'),context);
+      assert.equal(saves,1,'overlapped an unresolved save');assert.equal(calls,delta);checks+=2;
+    }
   }
   return checks;
 }

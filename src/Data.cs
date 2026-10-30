@@ -25,11 +25,16 @@ namespace Tappo {
             }
         }
     }
+    internal sealed class RewardReceipt {
+        public long assetId,quantityBefore,quantityAfter;
+        public string assetName,assetType;
+    }
     internal sealed class Snapshot {
         public string appVersion;
         public string accountKey, operationId, outcome, failureStage, errorType;
         public int httpStatus, retryAfterMs;
         public ServerState confirmedServer;
+        public RewardReceipt reward; public bool rewardVerified,uiRefreshRequested;
         public long time; public bool loggedIn, locked, claimBusy, skipped, rejected;
         public long? available, cumulative, local, consumed, serverTotal, left, right;
         public bool boostOverwritten; public long? boostAppliedTotal,boostReportTotal;
@@ -51,7 +56,7 @@ namespace Tappo {
         public string at, fault, mode, message, resetCommandId, resetError; public int pid, claimsThisRun;
         public bool running, paused, normalStartupRestored, automationDisconnected;
         public bool recovering,manuallyPaused; public string recoveryStage;
-        public long? readRetryAt; public int readRetryCount; public string readRetryError;
+        public long? readRetryAt; public int readRetryCount; public string readRetryError,readRetryStage;
         public long? readRetryNotBefore; public string retryCommandId; public bool retrying;
         public bool? connected; public long? disconnectedSince; public string connectionFailure;
         public bool stoppedWithoutRestore;

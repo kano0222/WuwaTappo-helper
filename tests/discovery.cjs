@@ -49,15 +49,18 @@ async function fixture(resources, overrides = {}) {
     const transport={get(){throw Error('must not request')},post(){throw Error('must not claim')}};
     const lock={value:false};
     function userInfo(){return transport.get("api/frontend/user/me",{},{})}
+    function getBagList(){return transport.post("api/frontend/bags/list",{},{})}
     function openChest(e){return transport.post("api/frontend/chests/open",{place:e.place,click_num:e.click_num},{})}
     function isForceUpdateLocked(){return lock.value}
     function isApiSuccess(c){return c===0}
     function unwrapApiData(e){const c=Number(e?.code);if(!Number.isFinite(c)||!isApiSuccess(c))throw Error('invalid');return e.data??e.result}
     return {a:'cn-cn-prod',b:{isLoggedIn:true,totalClickCount:0,cumulativeClickCount:0,localClickCount:0,serverClickConsume:0,serverClickTotal:0,
       userInfo:{},addLocalClickCount(){},applyClickReportSuccess(){},applyChestClickConsume(){},updateUserInfo(){},$onAction(){}},
-      c:userInfo,d:openChest,e:isForceUpdateLocked,f:unwrapApiData};
+      c:userInfo,d:openChest,e:isForceUpdateLocked,f:unwrapApiData,g:getBagList};
   })()`);
   check(f.api.inspectModule(module).openChest==='d');
+  assert.throws(()=>f.api.inspectModule({...module,g:undefined}),/背包查询接口/);checks++;
+  check(f.api.inspectModule({...module,g:undefined,bagAlias:module.g}).bagList==='bagAlias');
   check(f.api.inspectModule({...module,b:{...module.b,addLocalClickCount:undefined,incrementLocalClickCount(){}}}).store==='b');
   assert.throws(()=>f.api.inspectModule({...module,b:{...module.b,addLocalClickCount:undefined}}),/计数状态/);checks++;
   check(f.api.inspectModule({...module,d:undefined,newAlias:module.d}).openChest==='newAlias');

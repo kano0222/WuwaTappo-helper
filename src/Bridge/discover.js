@@ -15,6 +15,7 @@ function inspectModule(m) {
       (typeof v.addLocalClickCount === 'function' || typeof v.incrementLocalClickCount === 'function') && typeof v.applyClickReportSuccess === 'function' && typeof v.applyChestClickConsume === 'function' && typeof v.updateUserInfo === 'function' && typeof v.$onAction === 'function' && 'userInfo' in v, '计数状态'),
     locked: unique(fn('isForceUpdateLocked', /^function isForceUpdateLocked\(\)\{return \w+\.value\}$/), '更新锁'),
     userInfo: unique(fn('userInfo', /^function userInfo\(\)\{return \w+\.get\("api\/frontend\/user\/me",\{\},\{\}\)\}$/), '只读用户接口'),
+    bagList: unique(fn('getBagList', /^function getBagList\(\)\{return \w+\.post\("api\/frontend\/bags\/list",\{\},\{\}\)\}$/), '背包查询接口'),
     openChest: unique(fn('openChest', /^function openChest\((\w+)\)\{return \w+\.post\("api\/frontend\/chests\/open",\{place:\1\.place,click_num:\1\.click_num\},\{\}\)\}$/), '宝箱领取接口'),
     decode: unique(fn('unwrapApiData', /Number\(\w+\?\.code\).*Number\.isFinite.*isApiSuccess.*\.data\?\?\w+\.result/s), '响应解码')
   };
@@ -72,6 +73,7 @@ async function discoverProfile() {
   const commonPath = candidates[0][0];
   const exports = inspectModule(await import(commonPath));
   exports.countMode=inspectCountMode(sources);
+  exports.refreshPanel=sources.some(([,s])=>/case"ready":\w+\(\w+\.value\),\w+\(\);break/.test(s))?'ready':'';
   const store=(await import(commonPath))[exports.store];
   if(typeof store[exports.countMode==='increment'?'incrementLocalClickCount':'addLocalClickCount']!=='function')
     throw new ContractError('兼容性检查失败：计数动作缺失');

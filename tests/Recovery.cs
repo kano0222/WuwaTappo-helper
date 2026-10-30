@@ -10,6 +10,7 @@ namespace Tappo {
         static ServerState Server(Snapshot s) {return new ServerState {accountKey=s.accountKey,total=s.cumulative,consumed=s.consumed,left=s.left,right=s.right};}
         static Snapshot Confirm(FakeClient client,Journal journal) {
             var after=Tests.Copy(journal.before);after.operationId=journal.id;after.outcome="confirmed";after.consumed+=1000;after.available-=1000;
+            after.rewardVerified=true;after.reward=new RewardReceipt {assetId=123,assetName="test",assetType="accessory",quantityBefore=0,quantityAfter=1};
             if(journal.action.side=="left")after.left=900000;else after.right=900000;
             after.confirmedServer=Server(after);client.State=Tests.Copy(after);return after;
         }
