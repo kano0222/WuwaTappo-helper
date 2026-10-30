@@ -12,7 +12,7 @@ function inspectModule(m) {
     environment: unique(v => v === 'cn-cn-prod', '应用环境'),
     store: unique(v => v && typeof v === 'object' && typeof v.isLoggedIn === 'boolean' &&
       ['totalClickCount','cumulativeClickCount','localClickCount','serverClickConsume','serverClickTotal'].every(k => Number.isSafeInteger(v[k]) && v[k] >= 0) &&
-      typeof v.addLocalClickCount === 'function' && typeof v.applyClickReportSuccess === 'function' && typeof v.applyChestClickConsume === 'function' && typeof v.updateUserInfo === 'function' && typeof v.$onAction === 'function' && 'userInfo' in v, '计数状态'),
+      (typeof v.addLocalClickCount === 'function' || typeof v.incrementLocalClickCount === 'function') && typeof v.applyClickReportSuccess === 'function' && typeof v.applyChestClickConsume === 'function' && typeof v.updateUserInfo === 'function' && typeof v.$onAction === 'function' && 'userInfo' in v, '计数状态'),
     locked: unique(fn('isForceUpdateLocked', /^function isForceUpdateLocked\(\)\{return \w+\.value\}$/), '更新锁'),
     userInfo: unique(fn('userInfo', /^function userInfo\(\)\{return \w+\.get\("api\/frontend\/user\/me",\{\},\{\}\)\}$/), '只读用户接口'),
     openChest: unique(fn('openChest', /^function openChest\((\w+)\)\{return \w+\.post\("api\/frontend\/chests\/open",\{place:\1\.place,click_num:\1\.click_num\},\{\}\)\}$/), '宝箱领取接口'),
@@ -28,15 +28,27 @@ function inspectModule(m) {
   return exports;
 }
 
-function inspectSources(sources) {
-  const mains = sources.filter(([, s]) => s.includes('case"boost-local-clicks":'));
+function inspectCountMode(sources) {
+  const mains = sources.filter(([, s]) => s.includes('case"boost-local-clicks":') || s.includes('case"pet-clap":'));
   if (mains.length !== 1) throw new ContractError('兼容性检查失败：补数处理器缺失或不唯一');
   const source = mains[0][1];
-  // Require the original event-based boost contract; claiming no longer depends on reward UI.
-  if (!/case"boost-local-clicks":\{const (\w+)=Math\.max\(0,Math\.floor\(Number\(\w+\.delta\)\|\|0\)\);\1>0&&\(\w+\.addLocalClickCount\(\1\)/.test(source) ||
-      !sources.some(([, s]) => s.includes('"cat-panel-action"'))) {
+  if (!sources.some(([, s]) => s.includes('"cat-panel-action"'))) {
     throw new ContractError('兼容性检查失败：补数或宝箱入口契约已变化');
   }
+  if (source.includes('case"boost-local-clicks":')) {
+    if (!/case"boost-local-clicks":\{const (\w+)=Math\.max\(0,Math\.floor\(Number\(\w+\.delta\)\|\|0\)\);\1>0&&\(\w+\.addLocalClickCount\(\1\)/.test(source))
+      throw new ContractError('兼容性检查失败：补数入口契约已变化');
+    return 'event';
+  }
+  if (!/case"pet-clap":if\(\w+\(\)\)break;\w+\.incrementLocalClickCount\(\)/.test(source) ||
+      sources.filter(([, s]) => s.includes('function userInfo()') && s.includes('function isForceUpdateLocked()') &&
+        s.includes('incrementLocalClickCount(){this.localClickCount>=Number.MAX_SAFE_INTEGER||(this.localClickCount+=1)}')).length !== 1)
+    throw new ContractError('兼容性检查失败：原生计数契约已变化');
+  return 'increment';
+}
+
+function inspectSources(sources) {
+  inspectCountMode(sources);
   const quits = sources.filter(([p, s]) => /\/quitApp-[\w-]+\.js$/.test(p) &&
     s.includes('"exit_app"') && /export\{[^}]*\bas quitApp\b/.test(s));
   if (quits.length !== 1) throw new ContractError('兼容性检查失败：正常退出能力缺失或不唯一');
@@ -59,6 +71,10 @@ async function discoverProfile() {
   if (candidates.length !== 1) throw new ContractError('兼容性检查失败：共享状态模块缺失或不唯一');
   const commonPath = candidates[0][0];
   const exports = inspectModule(await import(commonPath));
+  exports.countMode=inspectCountMode(sources);
+  const store=(await import(commonPath))[exports.store];
+  if(typeof store[exports.countMode==='increment'?'incrementLocalClickCount':'addLocalClickCount']!=='function')
+    throw new ContractError('兼容性检查失败：计数动作缺失');
   const clickSources=sources.filter(([,s])=>s.includes('"save_key_press_count"'));
   if(clickSources.length!==1) throw new ContractError('兼容性检查失败：本地计数保存模块缺失或不唯一');
   const clickPath=clickSources[0][0];
@@ -86,7 +102,7 @@ async function waitForSources() {
       cache.set(p, s);
     }));
     const sources = [...cache];
-    if (sources.some(([, s]) => s.includes('case"boost-local-clicks":')) &&
+    if (sources.some(([, s]) => s.includes('case"boost-local-clicks":') || s.includes('case"pet-clap":')) &&
         sources.some(([, s]) => s.includes('"save_key_press_count"')) &&
         sources.some(([, s]) => s.includes('function userInfo()') && s.includes('function isForceUpdateLocked()')) &&
         sources.some(([p]) => /\/quitApp-[\w-]+\.js$/.test(p))) return sources;

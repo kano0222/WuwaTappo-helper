@@ -78,7 +78,7 @@ Windows 上的 Wuwa Tappo 后台助手，提供次数统计、宝箱倒计时、
 
 ## 使用限制与验证边界
 
-已对桌宠 1.0.2 完成只读接口校验，但这不能证明真实领取和所有恢复场景都已验证。当前接口领取、运行期间升级、锁屏及休眠恢复等完整流程仍需实测；自动测试通过不等于账号操作已通过真实验证。具体记录见[测试与验证说明](https://github.com/kano0222/WuwaTappo-helper/blob/main/docs/TESTING.md)。
+已对桌宠 1.0.3 完成只读接口校验，以及增加 1 次的本地计数和保存验证。服务器结算、批量计数竞争、完整领取、运行期间升级、锁屏及休眠恢复等流程仍需实测；自动测试通过不等于账号操作已通过真实验证。具体记录见[测试与验证说明](https://github.com/kano0222/WuwaTappo-helper/blob/main/docs/TESTING.md)。
 
 库洛用户协议对第三方工具及软件数据操作有限制，技术可用不代表获得官方许可。使用前请自行确认协议和账号风险：[官方用户协议](https://sdk.kurogames.com/pro/agreement/common/language_zh-Hans/terms_of_service)。
 

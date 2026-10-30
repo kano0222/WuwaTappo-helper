@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const source = fs.readFileSync(path.join(__dirname, '../src/Bridge/discover.js'), 'utf8');
 const boundary = source.lastIndexOf('try{return {profile:await discoverProfile()}');
 assert(boundary > 0);
-const testSource = source.slice(0, boundary) + 'return {waitForSources,inspectSources,inspectModule,inspectClickModule,discoveryFailure};})()';
+const testSource = source.slice(0, boundary) + 'return {waitForSources,inspectSources,inspectCountMode,inspectModule,inspectClickModule,discoveryFailure};})()';
 const main = 'case"boost-local-clicks":{const t=Math.max(0,Math.floor(Number(e.delta)||0));t>0&&(R.addLocalClickCount(t),Sn())}' +
   ' "cat-panel-action"';
 const common = 'function userInfo(){} function isForceUpdateLocked(){}';
@@ -34,6 +34,16 @@ async function fixture(resources, overrides = {}) {
   let f = await fixture(() => paths);
   check(f.api.inspectSources(await f.api.waitForSources()) === '/assets/quitApp-A.js');
   check(f.ticks() === 0);
+  check(f.api.inspectCountMode(Object.entries(assets))==='event');
+  const nativeMain='case"pet-clap":if(locked())break;store.incrementLocalClickCount(),animate(); "cat-panel-action"';
+  const nativeCommon=common+' incrementLocalClickCount(){this.localClickCount>=Number.MAX_SAFE_INTEGER||(this.localClickCount+=1)}';
+  const nativeAssets={...assets,'/assets/main-A.js':nativeMain,'/assets/common-A.js':nativeCommon};
+  f=await fixture(()=>paths,nativeAssets);
+  check(f.api.inspectSources(await f.api.waitForSources())==='/assets/quitApp-A.js');
+  check(f.api.inspectCountMode(Object.entries(nativeAssets))==='increment');
+  assert.throws(()=>f.api.inspectSources(Object.entries({...nativeAssets,'/assets/common-A.js':common})),/原生计数契约/);checks++;
+  assert.throws(()=>f.api.inspectSources(Object.entries({...nativeAssets,'/assets/common-A.js':nativeCommon.replace('+=1','+=2')})),/原生计数契约/);checks++;
+  assert.throws(()=>f.api.inspectSources(Object.entries({...nativeAssets,'/assets/main-A.js':nativeMain.replace('incrementLocalClickCount()','setLocalClickCount(1)')})),/原生计数契约/);checks++;
 
   const module=vm.runInNewContext(`(()=>{
     const transport={get(){throw Error('must not request')},post(){throw Error('must not claim')}};
@@ -48,6 +58,8 @@ async function fixture(resources, overrides = {}) {
       c:userInfo,d:openChest,e:isForceUpdateLocked,f:unwrapApiData};
   })()`);
   check(f.api.inspectModule(module).openChest==='d');
+  check(f.api.inspectModule({...module,b:{...module.b,addLocalClickCount:undefined,incrementLocalClickCount(){}}}).store==='b');
+  assert.throws(()=>f.api.inspectModule({...module,b:{...module.b,addLocalClickCount:undefined}}),/计数状态/);checks++;
   check(f.api.inspectModule({...module,d:undefined,newAlias:module.d}).openChest==='newAlias');
   assert.throws(()=>f.api.inspectModule({...module,d:undefined}),error=>{check(f.api.discoveryFailure(error).failureKind==='incompatible');return /宝箱领取接口/.test(error.message)});checks++;
   check(f.api.discoveryFailure(new Error('fetch timed out')).failureKind==='connection-failed');
