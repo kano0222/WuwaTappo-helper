@@ -6,6 +6,7 @@
 /node_modules/
 /dependencies/
 /build/
+/video/
 /WuwaTappoHelper.exe
 /WuwaTappoHelper.exe.config
 npm-debug.log*
