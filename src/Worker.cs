@@ -218,8 +218,9 @@ namespace Tappo {
                             }
                             var preference=store.Read<Preference>("preferences.json");
                             if(preference!=null) {
-                                if(!Policy.Modes.Contains(preference.mode)) throw new InvalidOperationException("增加模式配置无效，请在面板重新选择。");
+                                preference.Validate();
                                 if(Status.mode!=preference.mode) { Status.mode=preference.mode; nextBoost=0;store.Log("mode-changed",new {mode=Status.mode}); }
+                                Status.reserveTarget=preference.reserveTarget;Status.clickerRate=preference.clickerRate;
                             }
                             if(retryCommand!=null)await ReadVersion().ConfigureAwait(false);
                             Status.state=await ReadSnapshot().ConfigureAwait(false);
@@ -252,7 +253,7 @@ namespace Tappo {
                                     decision=Json.Decode<Snapshot>(Json.Encode(Status.state));
                                     decision.left=clock.Value.left;decision.right=clock.Value.right;
                                 }
-                                var action=Policy.Choose(decision,Status.mode,now()>=nextBoost,random.NextDouble);
+                                var action=Policy.Choose(decision,Status.mode,now()>=nextBoost,random.NextDouble,Status.reserveTarget,Status.clickerRate);
                                 if(action.kind=="wait") { if(action.delayMs>0) nextBoost=now()+action.delayMs;Publish(action.reason); }
                                 else {
                                     if(await ReadVersion().ConfigureAwait(false)!=Status.state.appVersion) {

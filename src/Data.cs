@@ -53,6 +53,7 @@ namespace Tappo {
     }
     internal sealed class ChestTimes { public long? updatedAt, left, right; public string error; }
     internal sealed class Status {
+        public int reserveTarget=2000,clickerRate=100;
         public string at, fault, mode, message, resetCommandId, resetError; public int pid, claimsThisRun;
         public bool running, paused, normalStartupRestored, automationDisconnected;
         public bool recovering,manuallyPaused; public string recoveryStage;
@@ -62,7 +63,15 @@ namespace Tappo {
         public bool stoppedWithoutRestore;
         public Snapshot state; public ChestTimes chestTimes;
     }
-    internal sealed class Preference { public string mode; }
+    internal sealed class Preference {
+        public string mode;
+        public int reserveTarget=2000,clickerRate=100;
+        public static readonly int[] ReserveTargets={2000,5000,10000,20000,50000},ClickerRates={100,500,1000};
+        public void Validate() {
+            if(!Policy.Modes.Contains(mode)||!ReserveTargets.Contains(reserveTarget)||!ClickerRates.Contains(clickerRate))
+                throw new InvalidOperationException("增加模式或参数配置无效，请在面板重新选择。");
+        }
+    }
     internal sealed class Settings { public string appPath; }
     internal sealed class Command { public string id, action, pendingHash; }
     internal sealed class LauncherStatus { public string failedAt, error, requestedAt; public int runnerId; }

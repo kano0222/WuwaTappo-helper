@@ -104,7 +104,7 @@ namespace Tappo {
                         var status=new Status {running=true,pid=Process.GetCurrentProcess().Id,at=DateTimeOffset.UtcNow.ToString("o"),connected=true,state=new Snapshot()};
                         panel.ReadStatus=()=>status;panel.ReadClock=()=>now;panel.Refresh();
                         panel.E<ListBox>("ModeSelector").SelectedIndex=1;
-                        if(panel.E<TextBlock>("DetailMessage").Text!="模式已保存。")throw new Exception("mode success fixture missing");count++;
+                        if(panel.E<TextBlock>("DetailMessage").Text!="模式与参数已保存。")throw new Exception("mode success fixture missing");count++;
                         string expected;
                         switch(scenario) {
                             case "disconnect":status.connected=false;status.disconnectedSince=now-61000;status.connectionFailure="debug-unavailable";expected="先点击“停止后台”";break;
@@ -124,7 +124,7 @@ namespace Tappo {
                         if(!panel.E<TextBlock>("DetailMessage").Text.Contains(expected))throw new Exception("new success notice hid status: "+scenario);count++;
                         if(scenario=="disconnect") {
                             panel.E<ListBox>("ModeSelector").SelectedIndex=-1;
-                            if(!panel.E<TextBlock>("DetailMessage").Text.StartsWith("模式保存失败："))throw new Exception("current operation error was discarded");count++;
+                            if(!panel.E<TextBlock>("DetailMessage").Text.StartsWith("设置保存失败："))throw new Exception("current operation error was discarded");count++;
                             panel.E<ListBox>("ModeSelector").SelectedIndex=1;
                             if(!panel.E<TextBlock>("DetailMessage").Text.Contains(expected))throw new Exception("success did not clear previous operation error");count++;
                         }
@@ -132,7 +132,7 @@ namespace Tappo {
                         status.connected=true;status.disconnectedSince=null;status.connectionFailure=null;status.state.locked=false;
                         status.paused=false;status.manuallyPaused=false;status.recovering=false;status.readRetryAt=null;status.fault=null;status.at=DateTimeOffset.UtcNow.ToString("o");
                         panel.Refresh();
-                        if(panel.E<TextBlock>("DetailMessage").Text.Contains("模式已保存"))throw new Exception("old success notice resurfaced after recovery: "+scenario);count++;
+                        if(panel.E<TextBlock>("DetailMessage").Text.Contains("模式与参数已保存"))throw new Exception("old success notice resurfaced after recovery: "+scenario);count++;
                     }
                 }
                 return count;

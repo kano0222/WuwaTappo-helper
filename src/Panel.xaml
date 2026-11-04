@@ -65,6 +65,50 @@
         </ControlTemplate.Triggers>
       </ControlTemplate></Setter.Value></Setter>
     </Style>
+    <Style x:Key="ParameterOption" TargetType="ComboBoxItem">
+      <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+      <Setter Property="Padding" Value="10,8"/><Setter Property="Margin" Value="2"/>
+      <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ComboBoxItem">
+        <Border x:Name="ItemSurface" Background="Transparent" BorderBrush="Transparent" BorderThickness="1" CornerRadius="6" Padding="{TemplateBinding Padding}">
+          <ContentPresenter VerticalAlignment="Center"/>
+        </Border>
+        <ControlTemplate.Triggers>
+          <Trigger Property="IsSelected" Value="True"><Setter TargetName="ItemSurface" Property="Background" Value="#FFF3DC"/></Trigger>
+          <Trigger Property="IsHighlighted" Value="True"><Setter TargetName="ItemSurface" Property="Background" Value="#F1EDE6"/><Setter TargetName="ItemSurface" Property="BorderBrush" Value="#DEB46D"/></Trigger>
+          <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="ItemSurface" Property="BorderBrush" Value="#A5702E"/></Trigger>
+        </ControlTemplate.Triggers>
+      </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style x:Key="ParameterSelect" TargetType="ComboBox">
+      <Setter Property="Background" Value="#F8F7F4"/><Setter Property="Foreground" Value="#4D443B"/>
+      <Setter Property="BorderBrush" Value="#E6E0D8"/><Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="Padding" Value="11,0,32,0"/><Setter Property="FocusVisualStyle" Value="{x:Null}"/>
+      <Setter Property="ItemContainerStyle" Value="{StaticResource ParameterOption}"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ComboBox">
+        <Grid>
+          <Border x:Name="SelectSurface" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="8"/>
+          <ContentPresenter Content="{TemplateBinding SelectionBoxItem}" ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}" ContentTemplateSelector="{TemplateBinding ItemTemplateSelector}" Margin="{TemplateBinding Padding}" VerticalAlignment="Center" IsHitTestVisible="False"/>
+          <Path Data="M0 0 L4 4 L8 0" Stroke="#8E7858" StrokeThickness="1.5" HorizontalAlignment="Right" VerticalAlignment="Center" Margin="0,0,12,0" IsHitTestVisible="False"/>
+          <ToggleButton Focusable="False" ClickMode="Press" Background="Transparent" IsChecked="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}">
+            <ToggleButton.Template><ControlTemplate TargetType="ToggleButton"><Border Background="Transparent"/></ControlTemplate></ToggleButton.Template>
+          </ToggleButton>
+          <Popup x:Name="PART_Popup" IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom" AllowsTransparency="True" Focusable="False" PopupAnimation="None" VerticalOffset="4">
+            <Border Background="#FFFEFB" BorderBrush="#DEB46D" BorderThickness="1" CornerRadius="9" Padding="3" MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}">
+              <ScrollViewer MaxHeight="240" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" CanContentScroll="True" FocusVisualStyle="{x:Null}">
+                <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/>
+              </ScrollViewer>
+            </Border>
+          </Popup>
+        </Grid>
+        <ControlTemplate.Triggers>
+          <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="SelectSurface" Property="Background" Value="#F1EDE6"/><Setter TargetName="SelectSurface" Property="BorderBrush" Value="#DEB46D"/></Trigger>
+          <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="SelectSurface" Property="BorderBrush" Value="#A5702E"/></Trigger>
+          <Trigger Property="IsDropDownOpen" Value="True"><Setter TargetName="SelectSurface" Property="BorderBrush" Value="#A5702E"/></Trigger>
+          <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.38"/></Trigger>
+        </ControlTemplate.Triggers>
+      </ControlTemplate></Setter.Value></Setter>
+    </Style>
     <Style TargetType="TextBlock"><Setter Property="Foreground" Value="{StaticResource Ink}"/></Style>
     <Style TargetType="Border" x:Key="Card">
       <Setter Property="CornerRadius" Value="16"/><Setter Property="Background" Value="White"/>
@@ -84,7 +128,7 @@
         <Button x:Name="MinimizeButton" Grid.Column="1" Content="—" Height="30" Padding="0" BorderThickness="0" Background="Transparent" ToolTip="最小化"/>
         <Button x:Name="CloseButton" Grid.Column="2" Content="×" FontSize="20" Height="30" Padding="0" BorderThickness="0" Background="Transparent" ToolTip="选择退出助手或最小化到托盘"/>
       </Grid>
-      <ScrollViewer x:Name="MainScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="24,6,24,16">
+      <ScrollViewer x:Name="MainScroll" Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" Padding="24,6,24,16" FocusVisualStyle="{x:Null}">
         <StackPanel>
           <Grid Margin="0,0,0,12">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -121,7 +165,7 @@
           <Grid x:Name="StatsArea" Margin="0,0,0,12">
             <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
             <Border Style="{StaticResource Card}" Padding="16,12" Background="#FFF4DF" BorderBrush="#F0DEC0" Margin="0,0,12,0">
-              <StackPanel><TextBlock Text="可用次数" Foreground="#9A784A"/><TextBlock x:Name="AvailableValue" Text="—" FontSize="32" FontFamily="Bahnschrift" Margin="0,4,0,2"/><TextBlock Text="每箱消耗 1,000 · 储备目标 2,000" FontSize="11" Foreground="#A38A67"/></StackPanel>
+              <StackPanel><TextBlock Text="可用次数" Foreground="#9A784A"/><TextBlock x:Name="AvailableValue" Text="—" FontSize="32" FontFamily="Bahnschrift" Margin="0,4,0,2"/><TextBlock x:Name="ReserveCaption" Text="每箱消耗 1,000 · 储备目标 2,000" FontSize="11" Foreground="#A38A67"/></StackPanel>
             </Border>
             <Border Grid.Column="1" Style="{StaticResource Card}" Padding="16,12" Margin="0,0,12,0">
               <StackPanel><TextBlock Text="累计次数" Foreground="{StaticResource Muted}"/><TextBlock x:Name="TotalValue" Text="—" FontSize="32" FontFamily="Bahnschrift" Margin="0,4,0,2"/><TextBlock x:Name="CountCaption" Text="等待首次读取" FontSize="11" Foreground="#A49B90"/></StackPanel>
@@ -167,13 +211,23 @@
                 <ListBoxItem Tag="brute" AutomationProperties.Name="暴力模式，到期一次补足">
                   <StackPanel><TextBlock Text="暴力模式" FontWeight="SemiBold"/><TextBlock Text="到期一次补足" FontSize="11" Foreground="#9B8870" Margin="0,5,0,0"/></StackPanel>
                 </ListBoxItem>
-                <ListBoxItem Tag="clicker" AutomationProperties.Name="连点器模式，提前累积，每秒最多100次">
-                  <StackPanel><TextBlock Text="连点器模式" FontWeight="SemiBold"/><TextBlock Text="提前累积 · 100 次/秒" FontSize="11" Foreground="#9B8870" Margin="0,5,0,0"/></StackPanel>
+                <ListBoxItem Tag="clicker" AutomationProperties.Name="连点器模式，提前累积，可选补充速度">
+                  <StackPanel><TextBlock Text="连点器模式" FontWeight="SemiBold"/><TextBlock Text="提前累积 · 可选速度" FontSize="11" Foreground="#9B8870" Margin="0,5,0,0"/></StackPanel>
                 </ListBoxItem>
                 <ListBoxItem Tag="human" Margin="0" AutomationProperties.Name="人类模式，提前累积，波动速率与间歇">
                   <StackPanel><TextBlock Text="人类模式" FontWeight="SemiBold"/><TextBlock Text="提前累积 · 波动速率" FontSize="11" Foreground="#9B8870" Margin="0,5,0,0"/></StackPanel>
                 </ListBoxItem>
               </ListBox>
+              <StackPanel x:Name="ReserveOptions" Orientation="Horizontal" Margin="0,12,0,0" Visibility="Collapsed">
+                <StackPanel>
+                  <Label Content="储备目标" Target="{Binding ElementName=ReserveTarget}" Padding="0,0,0,5" Foreground="#81796F" FontSize="12"/>
+                  <ComboBox x:Name="ReserveTarget" Style="{StaticResource ParameterSelect}" Width="160" Height="36" VerticalContentAlignment="Center" IsEditable="False" AutomationProperties.Name="储备目标"/>
+                </StackPanel>
+                <StackPanel x:Name="SpeedOptions" Margin="20,0,0,0" Visibility="Collapsed">
+                  <Label Content="补充速度" Target="{Binding ElementName=ClickerRate}" Padding="0,0,0,5" Foreground="#81796F" FontSize="12"/>
+                  <ComboBox x:Name="ClickerRate" Style="{StaticResource ParameterSelect}" Width="180" Height="36" VerticalContentAlignment="Center" IsEditable="False" AutomationProperties.Name="补充速度"/>
+                </StackPanel>
+              </StackPanel>
               <TextBlock x:Name="ModeHint" FontSize="11" Foreground="#9B9186" TextWrapping="Wrap" Margin="0,10,0,0"/>
             </StackPanel>
           </Border>

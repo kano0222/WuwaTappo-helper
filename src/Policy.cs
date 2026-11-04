@@ -6,21 +6,21 @@ namespace Tappo {
     internal sealed class Plan { public string kind, side, reason; public int delta, delayMs; }
     internal static class Policy {
         public static readonly string[] Modes={"brute","clicker","human"};
-        public static Plan Choose(Snapshot s,string mode,bool boostDue,Func<double> random) {
-            if(!Modes.Contains(mode)) throw new InvalidOperationException("未知增加模式");
+        public static Plan Choose(Snapshot s,string mode,bool boostDue,Func<double> random,int reserveTarget=2000,int clickerRate=100) {
+            new Preference {mode=mode,reserveTarget=reserveTarget,clickerRate=clickerRate}.Validate();
+            var target=mode=="brute"?2000:reserveTarget;
             if(!s.loggedIn||s.locked) return Wait("等待登录或更新完成");
             if(!new[]{s.available,s.cumulative,s.consumed}.All(v=>v.HasValue&&v>=0&&v<=9007199254740991L)) throw new InvalidOperationException("计数格式异常");
             if(!new[]{s.left,s.right}.All(v=>v.HasValue&&v>=0&&v<=9007199254740991L)) throw new InvalidOperationException("宝箱时间尚未就绪");
             if(s.claimBusy) return Wait("等待当前宝箱领取完成");
             var ready=new[]{"left","right"}.FirstOrDefault(side=>s.Slot(side)<=s.time);
             if(ready!=null&&s.available>=1000) return new Plan {kind="claim",side=ready};
-            if(s.available<2000&&(mode!="brute"||ready!=null)) {
+            if(s.available<target&&(mode!="brute"||ready!=null)) {
                 if(!boostDue) return Wait("按所选速率补充次数");
-                var delta=(int)(2000-s.available.Value);
-                if(mode=="brute") return new Plan {kind="boost",delta=delta};
-                if(mode=="clicker") return new Plan {kind="boost",delta=Math.Min(100,delta),delayMs=1000};
+                if(mode=="brute") return new Plan {kind="boost",delta=(int)(target-s.available.Value)};
+                if(mode=="clicker") return new Plan {kind="boost",delta=clickerRate,delayMs=1000};
                 if(random()<0.15) return new Plan {kind="wait",reason="波动模式短暂间歇",delayMs=2000+(int)(random()*2000)};
-                return new Plan {kind="boost",delta=Math.Min(delta,2+(int)(random()*6)),delayMs=1000+(int)(random()*500)};
+                return new Plan {kind="boost",delta=2+(int)(random()*6),delayMs=1000+(int)(random()*500)};
             }
             return Wait("等待原有活跃计时及宝箱入口");
         }

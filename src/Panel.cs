@@ -23,6 +23,7 @@ namespace Tappo {
         public bool Busy {get;private set;} public bool AllowExit;
         internal bool TrayExitEnabled {get {return trayExit!=null&&trayExit.Enabled;}}
         string notice,savedMode="brute"; bool selecting,choosingClose,noticeIsSuccess;
+        int savedTarget=2000,savedRate=100;
         string stopAction="stop";
         bool retryRequested;
         Forms.NotifyIcon tray; Forms.ContextMenuStrip menu; Forms.ToolStripMenuItem trayPause,trayStop,trayExit,trayStatus;
@@ -41,8 +42,14 @@ namespace Tappo {
             ReadStatus=()=>store.Read<Status>("status.json");
             var preference=store.Read<Preference>("preferences.json");
             if(preference!=null&&Policy.Modes.Contains(preference.mode)) savedMode=preference.mode;
-            selecting=true; foreach(ListBoxItem item in E<ListBox>("ModeSelector").Items) if((string)item.Tag==savedMode) E<ListBox>("ModeSelector").SelectedItem=item; selecting=false;
+            if(preference!=null&&Preference.ReserveTargets.Contains(preference.reserveTarget)) savedTarget=preference.reserveTarget;
+            if(preference!=null&&Preference.ClickerRates.Contains(preference.clickerRate)) savedRate=preference.clickerRate;
+            E<ComboBox>("ReserveTarget").ItemsSource=Preference.ReserveTargets.Select(v=>new ComboBoxItem {Content=v.ToString("N0")+" 次",Tag=v}).ToArray();
+            E<ComboBox>("ClickerRate").ItemsSource=Preference.ClickerRates.Select(v=>new ComboBoxItem {Content=v.ToString("N0")+" 次/秒",Tag=v}).ToArray();
+            RestoreSelection();
             E<ListBox>("ModeSelector").SelectionChanged+=(s,e)=>SaveMode();
+            E<ComboBox>("ReserveTarget").SelectionChanged+=(s,e)=>SaveMode();
+            E<ComboBox>("ClickerRate").SelectionChanged+=(s,e)=>SaveMode();
             E<Button>("StartButton").Click+=async(s,e)=>await UserAction("start");
             E<Button>("PauseButton").Click+=async(s,e)=>{await UserAction(PauseAction(ReadStatus(),store.Exists("pending.json")));};
             E<Button>("StopButton").Click+=async(s,e)=>await UserAction(stopAction);
@@ -139,16 +146,23 @@ namespace Tappo {
                 Platform.SavePath(store,path);SetPath(path);return true;
             } catch(Exception error) {SetNotice(error.Message);Refresh();return false;}
         }
+        void RestoreSelection() {
+            selecting=true;
+            try {
+                foreach(ListBoxItem item in E<ListBox>("ModeSelector").Items) if((string)item.Tag==savedMode) E<ListBox>("ModeSelector").SelectedItem=item;
+                foreach(ComboBoxItem item in E<ComboBox>("ReserveTarget").Items) if((int)item.Tag==savedTarget) E<ComboBox>("ReserveTarget").SelectedItem=item;
+                foreach(ComboBoxItem item in E<ComboBox>("ClickerRate").Items) if((int)item.Tag==savedRate) E<ComboBox>("ClickerRate").SelectedItem=item;
+            } finally {selecting=false;}
+        }
         void SaveMode() {
             if(selecting) return;
             try {
                 var item=E<ListBox>("ModeSelector").SelectedItem as ListBoxItem;var mode=item==null?null:item.Tag as string;
-                if(!Policy.Modes.Contains(mode)) throw new InvalidOperationException("请选择有效模式。");
-                store.Write("preferences.json",new Preference {mode=mode});savedMode=mode;SetNotice("模式已保存。",true);
+                var preference=new Preference {mode=mode,reserveTarget=(int)((ComboBoxItem)E<ComboBox>("ReserveTarget").SelectedItem).Tag,clickerRate=(int)((ComboBoxItem)E<ComboBox>("ClickerRate").SelectedItem).Tag};
+                preference.Validate();
+                store.Write("preferences.json",preference);savedMode=mode;savedTarget=preference.reserveTarget;savedRate=preference.clickerRate;SetNotice("模式与参数已保存。",true);
             } catch(Exception error) {
-                SetNotice("模式保存失败："+error.Message);selecting=true;
-                try {foreach(ListBoxItem item in E<ListBox>("ModeSelector").Items) if((string)item.Tag==savedMode) E<ListBox>("ModeSelector").SelectedItem=item;}
-                finally {selecting=false;}
+                SetNotice("设置保存失败："+error.Message);RestoreSelection();
             }
             Refresh();
         }
@@ -286,8 +300,13 @@ namespace Tappo {
                 Text("ClaimsValue",state==null?"—":s.claimsThisRun.ToString("N0"));
                 Text("CountCaption",state==null?"等待首次读取":alive&&!stale?"来自后台最近一次读取":"上次运行的记录");Text("ClaimsCaption",alive?"本次运行领取":"上次运行领取");
                 var names=new Dictionary<string,string>{{"brute","暴力模式"},{"clicker","连点器模式"},{"human","人类模式"}};
-                var behavior=savedMode=="brute"?"需要补数时一次补足至 2,000 次。":"提前累积至 2,000 次，到期后逐个领取。";
-                Text("ModeHint",!alive?"已选择："+names[savedMode]+"，启动后台后生效。"+behavior:s.mode!=savedMode?"已保存："+names[savedMode]+"，等待后台应用。":"已应用："+names[savedMode]+(s.paused||s.fault!=null||pending?"，当前已暂停或正在确认操作。":"。"+behavior));
+                E<FrameworkElement>("ReserveOptions").Visibility=savedMode=="brute"?Visibility.Collapsed:Visibility.Visible;
+                E<FrameworkElement>("SpeedOptions").Visibility=savedMode=="clicker"?Visibility.Visible:Visibility.Collapsed;
+                Text("ReserveCaption","每箱消耗 1,000 · 储备目标 "+(savedMode=="brute"?2000:savedTarget).ToString("N0"));
+                var behavior=savedMode=="brute"?"需要补数时一次补足至 2,000 次。":"提前累积，储备目标为 "+savedTarget.ToString("N0")+" 次，到期后逐个领取。";
+                if(savedMode=="clicker") behavior+="补充速度 "+savedRate.ToString("N0")+" 次/秒，以实际操作耗时为准。";
+                var applied=alive&&s.mode==savedMode&&(savedMode=="brute"||s.reserveTarget==savedTarget)&&(savedMode!="clicker"||s.clickerRate==savedRate);
+                Text("ModeHint",!alive?"已选择："+names[savedMode]+"，启动后台后生效。"+behavior:!applied?"模式与参数已保存，等待后台应用。":"已应用："+names[savedMode]+(s.paused||s.fault!=null||pending?"，当前已暂停或正在确认操作。":"。"+behavior));
                 var clock=s==null?null:s.chestTimes;
                 bool valid=clock!=null&&clock.updatedAt.HasValue&&clock.left.HasValue&&clock.right.HasValue&&clock.error==null&&ReadClock()-clock.updatedAt>=0&&ReadClock()-clock.updatedAt<=90000;
                 Text("SnapshotLabel",!alive||stale?"等待连接":clock!=null&&clock.error!=null?"宝箱时间查询失败":valid?"接口同步 "+DateTimeOffset.FromUnixTimeMilliseconds(clock.updatedAt.Value).ToOffset(TimeSpan.FromHours(8)).ToString("HH:mm:ss"):"等待接口同步");

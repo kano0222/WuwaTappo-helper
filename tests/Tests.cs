@@ -76,6 +76,24 @@ namespace Tappo {
         }
         static void Policies() {
             var s=State();Func<double> random=()=>0.5;
+            var legacy=Json.Decode<Preference>("{\"mode\":\"clicker\"}");legacy.Validate();
+            Check(legacy.reserveTarget==2000&&legacy.clickerRate==100,"legacy preference defaults");
+            foreach(var target in Preference.ReserveTargets) foreach(var rate in Preference.ClickerRates) {
+                s=State();s.available=0;
+                var plan=Policy.Choose(s,"clicker",true,random,target,rate);
+                Check(plan.delta==rate&&plan.delayMs==1000,"configured clicker rate");
+                s.available=target-1;Check(Policy.Choose(s,"clicker",true,random,target,rate).delta==rate,"last clicker batch truncated");
+                Check(Policy.Choose(s,"human",true,random,target,rate).delta==5,"last human batch truncated");
+                s.available=target-1+rate;Check(Policy.Choose(s,"clicker",true,random,target,rate).kind=="wait","clicker continued after overshoot");
+                s.available=target+4;Check(Policy.Choose(s,"human",true,random,target,rate).kind=="wait","human continued after overshoot");
+                s.available=target;Check(Policy.Choose(s,"clicker",true,random,target,rate).kind=="wait","configured target reached");
+                s.available=target+200;Check(Policy.Choose(s,"human",true,random,target,rate).kind=="wait","lower target consumed balance");
+            }
+            s=State();s.available=0;s.left=s.time;
+            Check(Policy.Choose(s,"brute",true,random,10000,1000).delta==2000,"parameters changed brute target");
+            Reject(()=>Policy.Choose(s,"clicker",true,random,3000,100),"invalid target accepted");
+            Reject(()=>Policy.Choose(s,"clicker",true,random,2000,2000),"invalid rate accepted");
+            s=State();
             Check(Policy.Choose(s,"brute",true,random).kind=="wait","early claim");
             s.left=5000;s.available=721;Check(Policy.Choose(s,"brute",true,random).delta==1279,"brute delta");
             s=State();s.available=0;s.buttons["left"]=false;s.buttons["right"]=false;
@@ -88,7 +106,9 @@ namespace Tappo {
             Check(Policy.Choose(s,"human",true,random).delta==5,"human rate");
             Check(Policy.Choose(s,"human",true,()=>0).delayMs==2000,"human rest");
             Check(Policy.Choose(s,"clicker",false,random).kind=="wait","boost throttling");
-            s.left=s.time+1000;s.available=1999;Check(Policy.Choose(s,"clicker",true,random).delta==1,"target clamp");
+            s.left=s.time+1000;s.available=1234;
+            var fullBatch=Policy.Choose(s,"clicker",true,random,2000,1000);s.available+=fullBatch.delta;
+            Check(s.available==2234&&Policy.Choose(s,"clicker",true,random,2000,1000).kind=="wait","1234 to 2234 reserve threshold");
             s=State();s.available=1000;s.left=s.right=4000;Check(Policy.Choose(s,"brute",false,random).side=="left","serial slots");
             s.claimBusy=true;Check(Policy.Choose(s,"clicker",true,random).kind=="wait","animation lock");
             s=State();s.available=null;Reject(()=>Policy.Choose(s,"brute",true,random),"missing count accepted");
@@ -254,6 +274,24 @@ namespace Tappo {
             Check(client.State.available==1000&&client.State.consumed==3000,"wake balance confirmation");
         }
         static async Task BoostObservations() {
+            {
+                var store=Store();var client=new FakeClient();client.State.available=4900;client.State.left=client.State.right=900000;
+                store.Write("preferences.json",new Preference {mode="clicker",reserveTarget=5000,clickerRate=500});
+                long time=100000;int loops=0;var deltas=new List<int>();
+                client.BoostResult=(delta,before)=>{deltas.Add(delta);var after=Copy(before);after.available+=delta;after.cumulative+=delta;client.State=after;return after;};
+                Worker worker=null;
+                worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>Task.FromResult(0),ms=>{
+                    time+=ms;loops++;
+                    if(deltas.Count==1)store.Write("preferences.json",new Preference {mode="clicker",reserveTarget=10000,clickerRate=1000});
+                    if(deltas.Count==2)store.Write("preferences.json",new Preference {mode="clicker",reserveTarget=2000,clickerRate=100});
+                    if(loops>=8)worker.RequestDisconnect();
+                    return Task.FromResult(0);
+                },()=>time);
+                await worker.Run();
+                Check(deltas.SequenceEqual(new[]{500,1000}),"worker did not apply full batches, live target/rate or lower-target stop");
+                Check(client.State.available==6400&&worker.Status.reserveTarget==2000&&worker.Status.clickerRate==100,"worker parameter status or balance incorrect");
+                Check(!store.Exists("pending.json")&&worker.Status.fault==null,"configured boost left pending operation");
+            }
             foreach(var scenario in new[]{"delayed","report-reset","timeout","consumed","slot","logout","overwritten","invalid-receipt"}) {
                 var store=Store();var client=new FakeClient();client.State.available=0;client.State.left=client.State.right=900000;
                 store.Write("preferences.json",new Preference {mode="clicker"});
@@ -471,8 +509,44 @@ namespace Tappo {
                 Check(panel.E<ScrollViewer>("MainScroll").ScrollableHeight>0,"minimum expanded window does not scroll");
                 var surface=panel.E<Border>("RootSurface");var start=panel.E<Button>("StartButton").TranslatePoint(new Point(),surface);var stop=panel.E<Button>("StopButton").TranslatePoint(new Point(),surface);
                 Check(start.Y==stop.Y&&stop.X+panel.E<Button>("StopButton").ActualWidth<796,"control row overflow");
-                var modes=panel.E<ListBox>("ModeSelector");modes.SelectedIndex=1;modes.SelectedIndex=2;Check(store.Read<Preference>("preferences.json").mode=="human","mode not persisted");
+                var modes=panel.E<ListBox>("ModeSelector");modes.SelectedIndex=0;
+                Check(panel.E<StackPanel>("ReserveOptions").Visibility==Visibility.Collapsed,"brute shows parameters");
+                modes.SelectedIndex=1;
+                Check(panel.E<StackPanel>("ReserveOptions").Visibility==Visibility.Visible&&panel.E<StackPanel>("SpeedOptions").Visibility==Visibility.Visible,"clicker missing parameters");
+                var target=panel.E<ComboBox>("ReserveTarget");var rate=panel.E<ComboBox>("ClickerRate");
+                Check(!target.IsEditable&&!rate.IsEditable,"parameter entry editable");
+                target.SelectedIndex=2;rate.SelectedIndex=2;
+                var preference=store.Read<Preference>("preferences.json");
+                Check(preference.reserveTarget==10000&&preference.clickerRate==1000,"parameters not persisted");
+                target.SelectedIndex=3;Check(store.Read<Preference>("preferences.json").reserveTarget==20000,"20000 target not persisted");
+                target.SelectedIndex=4;Check(store.Read<Preference>("preferences.json").reserveTarget==50000,"50000 target not persisted");
+                Check(((ComboBoxItem)rate.SelectedItem).Content.ToString()=="1,000 次/秒","speed label still approximate");
+                panel.E<Expander>("UsageHint").IsExpanded=false;
+                panel.E<ScrollViewer>("MainScroll").ScrollToEnd();
+                panel.Render(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"previews","clicker-options.png"),820,660);
+                var speedPosition=rate.TranslatePoint(new Point(),panel.E<Border>("RootSurface"));
+                Check(speedPosition.X>=0&&speedPosition.X+rate.ActualWidth<796&&rate.ActualHeight>=32,"parameter controls overflow");
+                panel.Window.Show();panel.Window.UpdateLayout();
+                var source=PresentationSource.FromVisual(rate);
+                rate.RaiseEvent(new System.Windows.Input.KeyEventArgs(System.Windows.Input.Keyboard.PrimaryDevice,source,0,System.Windows.Input.Key.F4) {RoutedEvent=System.Windows.Input.Keyboard.KeyDownEvent});
+                panel.Window.Dispatcher.Invoke(new Action(()=>{}),DispatcherPriority.ApplicationIdle);
+                var popup=(System.Windows.Controls.Primitives.Popup)rate.Template.FindName("PART_Popup",rate);
+                Check(rate.IsDropDownOpen&&popup.IsOpen&&popup.Child.RenderSize.Width>=rate.ActualWidth,"keyboard did not open parameter popup or popup width too small");
+                var popupImage=new System.Windows.Media.Imaging.RenderTargetBitmap((int)Math.Ceiling(popup.Child.RenderSize.Width),(int)Math.Ceiling(popup.Child.RenderSize.Height),96,96,System.Windows.Media.PixelFormats.Pbgra32);
+                popupImage.Render(popup.Child);var popupEncoder=new System.Windows.Media.Imaging.PngBitmapEncoder();popupEncoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(popupImage));
+                using(var output=File.Create(Path.Combine(images,"clicker-options-expanded.png")))popupEncoder.Save(output);
+                rate.RaiseEvent(new System.Windows.Input.KeyEventArgs(System.Windows.Input.Keyboard.PrimaryDevice,source,0,System.Windows.Input.Key.Escape) {RoutedEvent=System.Windows.Input.Keyboard.KeyDownEvent});
+                Check(!rate.IsDropDownOpen,"Escape did not close parameter popup");
+                panel.Window.Hide();
+                modes.SelectedIndex=2;Check(store.Read<Preference>("preferences.json").mode=="human","mode not persisted");
+                Check(panel.E<StackPanel>("ReserveOptions").Visibility==Visibility.Visible&&panel.E<StackPanel>("SpeedOptions").Visibility==Visibility.Collapsed,"human parameter visibility");
+                Check((int)((ComboBoxItem)target.SelectedItem).Tag==50000,"switch lost target");
+                using(var reopened=new Panel(store,true)) {
+                    Check((int)((ComboBoxItem)reopened.E<ComboBox>("ReserveTarget").SelectedItem).Tag==50000&&(int)((ComboBoxItem)reopened.E<ComboBox>("ClickerRate").SelectedItem).Tag==1000,"reopen lost parameters");
+                }
                 File.Delete(store.FilePath("preferences.json"));Directory.CreateDirectory(store.FilePath("preferences.json"));
+                target.SelectedIndex=0;Check(target.SelectedIndex==4,"failed save changed target");
+                rate.SelectedIndex=0;Check(rate.SelectedIndex==2,"failed save changed speed");
                 modes.SelectedIndex=1;Check((string)((ListBoxItem)modes.SelectedItem).Tag=="human","failed save changed selection");Directory.Delete(store.FilePath("preferences.json"));
             }
             foreach(var entry in new[]{"context","tray"}) using(var panel=new Panel(Store())) {
@@ -525,7 +599,7 @@ namespace Tappo {
                 Check(panel.AllowExit==(choice==CloseChoice.Exit),choice+" close exit permission");
                 if(choice!=CloseChoice.Exit) {panel.AllowExit=true;panel.Window.Close();}
             }
-            foreach(var action in new[]{"exit","tray","cancel","escape"}) {
+            foreach(var action in new[]{"exit","tray","cancel","escape","close-button"}) {
                 var dialog=new CloseDialog(null);
                 dialog.Window.ContentRendered+=(s,e)=>dialog.Window.Dispatcher.BeginInvoke(new Action(()=> {
                     if(action=="cancel") {
@@ -536,6 +610,7 @@ namespace Tappo {
                     }
                     if(action=="exit")dialog.ExitButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     else if(action=="tray")dialog.TrayButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    else if(action=="close-button")((Button)dialog.Window.FindName("CancelButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     else if(action=="escape") dialog.Window.RaiseEvent(new System.Windows.Input.KeyEventArgs(System.Windows.Input.Keyboard.PrimaryDevice,PresentationSource.FromVisual(dialog.Window),0,System.Windows.Input.Key.Escape){RoutedEvent=System.Windows.Input.Keyboard.PreviewKeyDownEvent});
                     else dialog.Window.Close();
                 }));
