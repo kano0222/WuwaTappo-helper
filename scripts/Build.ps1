@@ -10,11 +10,12 @@ $releaseBuild=$false
 if ($Version) { $releaseBuild=$true }
 elseif ($env:GITHUB_REF_TYPE -eq 'tag') { $Version=$env:GITHUB_REF_NAME; $releaseBuild=$true }
 else {
-    if (Get-Command git -ErrorAction SilentlyContinue) { $Version=& git -C $root describe --tags --match 'v[0-9]*' --abbrev=0 2>$null }
+    if (Get-Command git -ErrorAction SilentlyContinue) { $Version=& git -C $root describe --tags --match 'v[0-9]*' --exclude '*-*' --abbrev=0 2>$null }
     if (-not $Version) { $Version='0.0.0' }
 }
-if ($Version -notmatch '^v?(\d+)\.(\d+)\.(\d+)$') { throw 'Version must use vX.Y.Z or X.Y.Z format.' }
-$buildVersion=$Version.TrimStart('v')
+if ($Version -notmatch '^v?(\d+)\.(\d+)\.(\d+)(-beta\.[1-9]\d*)?$') { throw 'Version must use X.Y.Z or X.Y.Z-beta.N format (optional v prefix).' }
+$versionSuffix=$Matches[4]
+$buildVersion=($Version.TrimStart('v') -split '-')[0]
 if (-not $releaseBuild) {
     $parts=$buildVersion.Split('.')
     $buildVersion=$parts[0]+'.'+$parts[1]+'.'+([int]$parts[2]+1)
@@ -36,10 +37,10 @@ if ($localBuild) {
 if (-not $OutputDirectory) {
     $OutputDirectory=Join-Path $root 'build'
     # Keep the CI packaging contract; local development builds have their own revision.
-    if ($env:GITHUB_ACTIONS -ne 'true') { $OutputDirectory=Join-Path $OutputDirectory $buildVersion }
+    if ($env:GITHUB_ACTIONS -ne 'true') { $OutputDirectory=Join-Path $OutputDirectory ($buildVersion+$versionSuffix) }
 }
 [void][IO.Directory]::CreateDirectory($OutputDirectory)
-$displayVersion=if ($releaseBuild) { $buildVersion } else { $buildVersion+'-dev' }
+$displayVersion=if ($releaseBuild) { $buildVersion+$versionSuffix } else { $buildVersion+'-dev' }
 $versionSource=Join-Path $OutputDirectory 'Version.cs'
 [IO.File]::WriteAllText($versionSource,('[assembly:System.Runtime.Versioning.TargetFramework(".NETFramework,Version=v4.8")][assembly:System.Reflection.AssemblyVersion("'+$assemblyVersion+'")][assembly:System.Reflection.AssemblyInformationalVersion("'+$displayVersion+'")]'))
 $sources+=$versionSource

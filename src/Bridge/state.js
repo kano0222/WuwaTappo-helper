@@ -1,11 +1,23 @@
 const m=await import(__COMMON__);
-if(m[__ENVIRONMENT__]!=='cn-cn-prod'||window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label!=='main')throw new Error('应用环境不匹配');
+const globalQuery=__USERINFO__===''&&m[__ENVIRONMENT__]===true;
+const environment=globalQuery?'global-global-prod':m[__ENVIRONMENT__];
+if(!['cn-cn-prod','global-global-prod'].includes(environment)||window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label!=='main')throw new Error('应用环境不匹配');
 const s=m[__STORE__];
-if(!s||typeof m[__LOCKED__]!=='function'||typeof m[__USERINFO__]!=='function'||typeof m[__DECODE__]!=='function')throw new Error('桌宠版本接口不匹配');
+if(!s||typeof m[__LOCKED__]!=='function'||typeof m[globalQuery?__COOKIE__:__USERINFO__]!=='function'||typeof m[__DECODE__]!=='function')throw new Error('桌宠版本接口不匹配');
 const locked=()=>m[__LOCKED__]();
 const account=s.userInfo?.cuid;
-const accountKey=account==null||account===''?null:Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode('tappo:'+m[__ENVIRONMENT__]+':'+String(account))))).map(v=>v.toString(16).padStart(2,'0')).join('');
-const sameAccount=()=>s.isLoggedIn&&s.userInfo?.cuid===account&&accountKey!==null;
+const accountKey=account==null||account===''?null:Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode('tappo:'+environment+':'+String(account))))).map(v=>v.toString(16).padStart(2,'0')).join('');
+const sameAccount=()=>m[__ENVIRONMENT__]===(globalQuery?true:environment)&&s.isLoggedIn&&s.userInfo?.cuid===account&&accountKey!==null;
+const queryUser=async()=>{
+  if(!globalQuery)return m[__USERINFO__]();
+  const token=m[__COOKIE__]('infoToken');
+  if(typeof token!=='string'||!token)throw new Error('桌宠尚未登录');
+  // Credentials remain inside the page. Never renew tokens or retry mutations here.
+  const response=await fetch('https://api-wutheringwaves-wuwatappo.kurogames-global.com/api/frontend/user/me',{
+    method:'GET',headers:{Authorization:'Bearer '+token},credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(8000)});
+  if(!response.ok){const error=new Error('服务器状态查询失败');error.httpStatus=response.status;error.retryAfter=response.headers.get('Retry-After');throw error;}
+  return response.json();
+};
 const failure=(error,stage)=>{
   const status=Number(error?.httpStatus??error?.status??error?.response?.status??0);
   const raw=error?.response?.headers?.get?.('Retry-After')??error?.retryAfter;
@@ -42,7 +54,7 @@ const readServer=async()=>{
       try{
         if(!sameAccount()||locked())throw new Error('账号或更新状态已变化');
         // Bound the shared read itself, not just each observer. A late reply is discarded.
-        const data=m[__DECODE__](await bounded(Promise.resolve().then(()=>m[__USERINFO__]()),8000));
+        const data=m[__DECODE__](await bounded(Promise.resolve().then(queryUser),8000));
         if(!sameAccount()||data?.cuid==null||String(data.cuid)!==String(account))throw new Error('账号已变化');
         q.failures=0;return data;
       }catch(error){

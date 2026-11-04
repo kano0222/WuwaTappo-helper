@@ -59,6 +59,20 @@ async function fixture(resources, overrides = {}) {
       c:userInfo,d:openChest,e:isForceUpdateLocked,f:unwrapApiData,g:getBagList};
   })()`);
   check(f.api.inspectModule(module).openChest==='d');
+  check(f.api.inspectModule({...module,a:'global-global-prod'}).environment==='a');
+  const globalSource='const APP_REGION="GLOBAL";normalizeClickCacheEnvironmentPart("global-prod","unknown");'+
+    'ApiHost="https://api-wutheringwaves-wuwatappo.kurogames-global.com";'+String(module.c)+';Authorization:`Bearer ${t}`;export{isGlobalApp as region,isDomesticApp as domestic}';
+  const globalModule={...module,a:undefined,c:undefined,region:true,domestic:false,
+    cookie:vm.runInNewContext('(e=>{const t=`kuro_${e}=`,n=document.cookie.split(";");return null})')};
+  const mapping=f.api.inspectModule(globalModule,globalSource);
+  check(mapping.environment==='region'&&mapping.userInfo===''&&mapping.cookie==='cookie');
+  assert.throws(()=>f.api.inspectModule({...globalModule,region:false},globalSource),/应用环境/);checks++;
+  assert.throws(()=>f.api.inspectModule(globalModule,globalSource.replace('global-prod','global-test')),/应用环境/);checks++;
+  assert.throws(()=>f.api.inspectModule({...globalModule,cookie:undefined},globalSource),/登录凭据/);checks++;
+  for(const environment of ['global-prod','global-test','cn-cn-test','unknown',undefined]) {
+    assert.throws(()=>f.api.inspectModule({...module,a:environment}),/应用环境/);checks++;
+  }
+  assert.throws(()=>f.api.inspectModule({...module,otherEnvironment:'global-global-prod'}),/应用环境/);checks++;
   assert.throws(()=>f.api.inspectModule({...module,g:undefined}),/背包查询接口/);checks++;
   check(f.api.inspectModule({...module,g:undefined,bagAlias:module.g}).bagList==='bagAlias');
   check(f.api.inspectModule({...module,b:{...module.b,addLocalClickCount:undefined,incrementLocalClickCount(){}}}).store==='b');

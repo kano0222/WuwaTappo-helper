@@ -85,8 +85,8 @@ jobs:
           import re
 
           tag = os.environ['RELEASE_TAG']
-          if not re.fullmatch(r'v\d+\.\d+\.\d+', tag):
-              raise SystemExit('Release tag must use vX.Y.Z format.')
+          if not re.fullmatch(r'v\d+\.\d+\.\d+(-beta\.[1-9]\d*)?', tag):
+              raise SystemExit('Release tag must use vX.Y.Z or vX.Y.Z-beta.N format.')
           text = pathlib.Path('CHANGELOG.md').read_text(encoding='utf-8')
           sections = re.split(r'^##\s+', text, flags=re.MULTILINE)[1:]
           notes = []
@@ -108,7 +108,11 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_TAG: ${{ github.ref_name }}
-        run: >-
-          gh release create "$RELEASE_TAG"
-          release-assets/WuwaTappoHelper-win-x64.zip
-          --verify-tag --title "$RELEASE_TAG" --notes-file release-notes.md
+        run: |
+          flags=()
+          if [[ "$RELEASE_TAG" == *-beta.* ]]; then
+            flags+=(--prerelease --latest=false)
+          fi
+          gh release create "$RELEASE_TAG" \
+            release-assets/WuwaTappoHelper-win-x64.zip \
+            --verify-tag --title "$RELEASE_TAG" --notes-file release-notes.md "${flags[@]}"

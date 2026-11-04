@@ -10,6 +10,17 @@ namespace Tappo {
         public static int Run() {
             var original=Environment.GetEnvironmentVariable(ArgumentsVariable);
             int checks=0;
+            var selected=@"I:\WuwaTappo1\WuwaTappoGlobal\WuwaTappo.exe";
+            if(Platform.MatchRunningApp(selected,new string[0]))throw new Exception("missing pet considered running");checks++;
+            if(!Platform.MatchRunningApp(selected,new[]{selected.ToUpperInvariant()}))throw new Exception("selected pet rejected");checks++;
+            foreach(var paths in new[]{new[]{@"I:\WuwaTappo\WuwaTappo.exe"},new[]{selected,selected},new string[]{null}}) {
+                bool rejected=false;try {Platform.MatchRunningApp(selected,paths);}catch(ConnectionFailureException error){rejected=error.Kind=="app-mismatch";}
+                if(!rejected)throw new Exception("ambiguous or different pet accepted");checks++;
+            }
+            using(var current=Process.GetCurrentProcess()) {
+                if(!string.Equals(Platform.ProcessPath(current.Id),current.MainModule.FileName,StringComparison.OrdinalIgnoreCase))throw new Exception("process image lookup failed");checks++;
+            }
+            if(Platform.ProcessPath(-1)!=null)throw new Exception("invalid process resolved");checks++;
             try {
                 foreach(var inherited in new[]{null,
                     "--proxy-server=\"http://127.0.0.1:7890\" --disable-gpu",

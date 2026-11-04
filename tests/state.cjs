@@ -14,9 +14,36 @@ const drain=async()=>{for(let i=0;i<20;i++)await Promise.resolve()};
    document:new Proxy({},{get(){throw Error('DOM access forbidden')}}),
    setTimeout(fn,ms){const id=++nextId;timers.set(id,{fn,at:now+ms});return id},clearTimeout:id=>timers.delete(id)});
  const script=source.replace('await import(__COMMON__)','module').replaceAll('__ENVIRONMENT__','"env"').replaceAll('__STORE__','"store"')
-  .replaceAll('__LOCKED__','"locked"').replaceAll('__USERINFO__','"user"').replaceAll('__DECODE__','"decode"');
+  .replaceAll('__LOCKED__','"locked"').replaceAll('__USERINFO__','"user"').replaceAll('__DECODE__','"decode"').replaceAll('__COOKIE__','"cookie"');
  const api=await vm.runInContext('(async()=>{'+script+'return {snapshot,readServer,failure,retryQuery}})()',context);
  const state=api.snapshot();assert.equal(state.accountKey,createHash('sha256').update('tappo:cn-cn-prod:private-test-id').digest('hex'));
+ module.env='global-global-prod';
+ assert.equal(api.snapshot().accountKey,null,'environment change retained old account');
+ await assert.rejects(api.readServer());assert.equal(calls,0,'environment change sent a query');
+ const globalApi=await vm.runInContext('(async()=>{'+script+'return {snapshot,readServer}})()',context);
+ const globalKey=globalApi.snapshot().accountKey;
+ assert.equal(globalKey,createHash('sha256').update('tappo:global-global-prod:private-test-id').digest('hex'));
+ assert.notEqual(globalKey,state.accountKey,'servers share account identity');
+ store.isLoggedIn=false;assert.equal(globalApi.snapshot().accountKey,null);await assert.rejects(globalApi.readServer());assert.equal(calls,0);
+ store.isLoggedIn=true;
+ module.env='unknown';await assert.rejects(vm.runInContext('(async()=>{'+script+'})()',context),/应用环境/);
+ module.env='cn-cn-prod';
+ // Global release has no exported userInfo: only the fixed read endpoint is permitted.
+ const globalScript=script.replaceAll('"user"','""');
+ let requests=0,token='test-token',status=200;
+ const fallbackModule={...module,env:true,cookie:()=>token};
+ const fallbackContext=vm.createContext({module:fallbackModule,crypto:webcrypto,TextEncoder,Uint8Array,AbortSignal,
+   window:{__TAURI_INTERNALS__:{metadata:{currentWindow:{label:'main'}}}},setTimeout,clearTimeout,
+   fetch:async(url,options)=>{requests++;assert.equal(url,'https://api-wutheringwaves-wuwatappo.kurogames-global.com/api/frontend/user/me');
+     assert.equal(options.method,'GET');assert.equal(options.headers.Authorization,'Bearer test-token');assert.equal(options.redirect,'error');
+     return {ok:status===200,status,headers:{get:()=> '120'},json:async()=>({cuid:'private-test-id'})};}});
+ const fallback=await vm.runInContext('(async()=>{'+globalScript+'return {snapshot,readServer,queryUser,failure}})()',fallbackContext);
+ assert.equal(fallback.snapshot().accountKey,globalKey);await fallback.readServer();assert.equal(requests,1);
+ assert(!JSON.stringify(fallback.snapshot()).includes(token));
+ token='';await assert.rejects(fallback.queryUser());assert.equal(requests,1);token='test-token';
+ status=429;await assert.rejects(fallback.queryUser(),error=>{const info=fallback.failure(error,'query');assert.equal(info.httpStatus,429);assert.equal(info.retryAfterMs,120000);return true});
+ status=401;await assert.rejects(fallback.queryUser(),error=>error.httpStatus===401);
+ fallbackModule.env=false;await assert.rejects(fallback.readServer());assert.equal(requests,3);
  assert(!JSON.stringify(state).includes('private-test-id'));assert.equal(state.claimBusy,false);
  vm.runInContext('globalThis.__TAPPO_HELPER_TX__={busy:true,accountKey:'+JSON.stringify(state.accountKey)+'}',context);assert.equal(api.snapshot().claimBusy,true);
  vm.runInContext('globalThis.__TAPPO_HELPER_TX__=null',context);

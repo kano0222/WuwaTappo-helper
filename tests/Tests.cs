@@ -156,7 +156,7 @@ namespace Tappo {
             using(var client=(AppClient)constructor.Invoke(new object[]{socket})) {
                 var caps=(Capabilities)typeof(AppClient).GetField("capabilities",flags).GetValue(client);
                 var profile=new AppProfile {commonPath="/assets/common.js",clickPath="/assets/clicks.js",exports=new Dictionary<string,string> {
-                    {"environment","env"},{"store","state"},{"locked","locked"},{"userInfo","user"},{"decode","decodeAlias"},
+                    {"environment","env"},{"cookie",""},{"store","state"},{"locked","locked"},{"userInfo","user"},{"decode","decodeAlias"},
                     {"openChest","openAlias"},{"saveClicks","persistAlias"},{"bagList","bagAlias"},{"refreshPanel","ready"}}};
                 typeof(Capabilities).GetProperty("Profile").GetSetMethod(true).Invoke(caps,new object[]{profile});
                 var script=(string)typeof(AppClient).GetMethod("Script",flags).Invoke(client,new object[]{"claim",State()});

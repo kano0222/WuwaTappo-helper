@@ -16,6 +16,7 @@ namespace Tappo {
         internal static string BuildVersion {
             get {var value=(AssemblyInformationalVersionAttribute)Attribute.GetCustomAttribute(Assembly.GetExecutingAssembly(),typeof(AssemblyInformationalVersionAttribute));return value==null?CurrentVersion:value.InformationalVersion;}
         }
+        internal static string DisplayVersion {get{return Regex.IsMatch(BuildVersion,@"^\d+\.\d+\.\d+-beta\.[1-9]\d*$")?BuildVersion:CurrentVersion;}}
         internal static Version ParseVersion(string value) {
             Version version;
             if(value==null||!Regex.IsMatch(value,@"^v?\d+\.\d+\.\d+$")||!Version.TryParse(value.TrimStart('v'),out version))
@@ -25,10 +26,11 @@ namespace Tappo {
         internal static UpdateInfo Parse(string json,string current) {
             var release=Json.Decode<ReleaseInfo>(json);
             if(release==null||release.draft||release.prerelease)throw new InvalidOperationException("暂未找到正式版本");
-            var version=ParseVersion(release.tag_name);var local=ParseVersion(current);
+            var beta=Regex.IsMatch(current,@"^\d+\.\d+\.\d+-beta\.[1-9]\d*$");
+            var version=ParseVersion(release.tag_name);var local=ParseVersion(beta?current.Split('-')[0]:current);
             var expected="https://github.com/kano0222/WuwaTappo-helper/releases/tag/"+release.tag_name;
             if(release.html_url!=expected)throw new InvalidOperationException("发布地址不匹配");
-            return new UpdateInfo {version=version.ToString(3),url=expected,available=version>local};
+            return new UpdateInfo {version=version.ToString(3),url=expected,available=version>local||(beta&&version==local)};
         }
         internal static async Task<UpdateInfo> Check(HttpMessageHandler handler,string current,CancellationToken cancellation) {
             using(var deadline=CancellationTokenSource.CreateLinkedTokenSource(cancellation))
@@ -53,6 +55,6 @@ namespace Tappo {
                 }
             }
         }
-        internal static Task<UpdateInfo> Check(CancellationToken cancellation) {return Check(new HttpClientHandler(),CurrentVersion,cancellation);}
+        internal static Task<UpdateInfo> Check(CancellationToken cancellation) {return Check(new HttpClientHandler(),DisplayVersion,cancellation);}
     }
 }

@@ -22,6 +22,9 @@ namespace Tappo {
             Check(Updates.Parse(Release("v0.1.2"),"0.1.1").available);checks++;
             Check(!Updates.Parse(Release("v0.1.1"),"0.1.1").available);checks++;
             Check(!Updates.Parse(Release("v0.1.0"),"0.1.1").available);checks++;
+            Check(Updates.Parse(Release("v0.1.12"),"0.1.12-beta.1").available);checks++;
+            Check(!Updates.Parse(Release("v0.1.11"),"0.1.12-beta.1").available);checks++;
+            Check(Updates.Parse(Release("v0.1.13"),"0.1.12-beta.1").available);checks++;
             Check(Updates.Parse(Release("v1.10.0"),"1.2.0").available);checks++;
             Check(Updates.ParseVersion(Updates.CurrentVersion)!=null&&Updates.BuildVersion.StartsWith(Updates.CurrentVersion));checks++;
             var framework=(System.Runtime.Versioning.TargetFrameworkAttribute)Attribute.GetCustomAttribute(typeof(Updates).Assembly,typeof(System.Runtime.Versioning.TargetFrameworkAttribute));

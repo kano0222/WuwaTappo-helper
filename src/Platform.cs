@@ -9,6 +9,8 @@ using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Security.Principal;
 using System.Text.RegularExpressions;
+using System.Text;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 
 namespace Tappo {
@@ -16,6 +18,29 @@ namespace Tappo {
         public StartupConfigurationException(Exception inner) : base("桌宠启动诊断保存失败，已停止后台。请检查 runtime/ 的写入权限后再启动。",inner) { }
     }
     internal static class Platform {
+        [DllImport("kernel32.dll",SetLastError=true)]
+        static extern IntPtr OpenProcess(int access,bool inherit,int processId);
+        [DllImport("kernel32.dll",CharSet=CharSet.Unicode,SetLastError=true)]
+        static extern bool QueryFullProcessImageName(IntPtr process,int flags,StringBuilder path,ref int size);
+        [DllImport("kernel32.dll")]
+        static extern bool CloseHandle(IntPtr handle);
+        internal static string ProcessPath(int processId) {
+            var handle=OpenProcess(0x1000,false,processId); // Query limited information, including elevated pets.
+            if(handle==IntPtr.Zero)return null;
+            try {var path=new StringBuilder(32768);int size=path.Capacity;return QueryFullProcessImageName(handle,0,path,ref size)?path.ToString():null;}
+            finally {CloseHandle(handle);}
+        }
+        internal static bool MatchRunningApp(string app,string[] paths) {
+            if(paths.Length==0)return false;
+            if(paths.Length!=1||string.IsNullOrWhiteSpace(paths[0])||!string.Equals(Path.GetFullPath(app),Path.GetFullPath(paths[0]),StringComparison.OrdinalIgnoreCase))
+                throw new ConnectionFailureException("app-mismatch","无法确认唯一的所选桌宠实例；请退出其他国服或国际服桌宠，再启动所选程序。");
+            return true;
+        }
+        internal static bool CheckRunningApp(string app) {
+            var processes=Process.GetProcessesByName("WuwaTappo");
+            try {return MatchRunningApp(app,processes.Select(p=>ProcessPath(p.Id)).ToArray());}
+            finally {foreach(var process in processes)process.Dispose();}
+        }
         internal static ProcessStartInfo AppStartInfo(string app,bool debug) {
             var info=new ProcessStartInfo(app) {WorkingDirectory=Path.GetDirectoryName(app),UseShellExecute=false,WindowStyle=ProcessWindowStyle.Hidden};
             // WebView2 reads this host command-line switch for every environment.
@@ -44,7 +69,7 @@ namespace Tappo {
             Settings saved=null; try { var path=Path.Combine(store.Root,"config.local.json"); if(File.Exists(path)) saved=Json.Decode<Settings>(RuntimeStore.ReadText(path)); } catch { }
             if(saved!=null) yield return saved.appPath;
             foreach(var process in Process.GetProcessesByName("WuwaTappo")) {
-                string path=null; using(process) { try { path=process.MainModule.FileName; } catch { } }
+                string path=null; using(process) { path=ProcessPath(process.Id); }
                 if(path!=null) yield return path;
             }
             foreach(var hive in new[]{RegistryHive.CurrentUser,RegistryHive.LocalMachine}) foreach(var view in new[]{RegistryView.Registry64,RegistryView.Registry32}) {
@@ -66,6 +91,7 @@ namespace Tappo {
             foreach(var root in new[]{Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86),Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"Programs")}) {
                 if(string.IsNullOrEmpty(root)) continue;
                 yield return Path.Combine(root,@"WuwaTappo\WuwaTappo.exe"); yield return Path.Combine(root,@"Wuwa Tappo\WuwaTappo.exe");
+                yield return Path.Combine(root,@"WuwaTappoGlobal\WuwaTappo.exe");
             }
         }
         public static string Discover(RuntimeStore store) {
@@ -91,8 +117,7 @@ namespace Tappo {
         }
         public static async Task EnsureDebugSession(RuntimeStore store) {
             var app=LoadPath(store);
-            var processes=Process.GetProcessesByName("WuwaTappo"); var running=processes.Length>0;
-            foreach(var p in processes) p.Dispose();
+            var running=CheckRunningApp(app);
             if(running) { CheckListeners(); return; }
             if(!Administrator) throw new InvalidOperationException("启动桌宠连接需要管理员权限。");
             var test=new TcpListener(IPAddress.Loopback,19222); try { test.Start(); } finally { test.Stop(); }

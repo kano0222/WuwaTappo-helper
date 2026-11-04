@@ -25,6 +25,7 @@ namespace Tappo {
             return failure!=null?failure.Kind:error is MainWindowNotReadyException?"main-not-ready":"connection-failed";
         }
         public static string Hint(Status status,long now) {
+            if(status.connectionFailure=="app-mismatch") return "请退出其他国服或国际服桌宠，确认助手选择的程序路径后重试。";
             if(status.connectionFailure=="incompatible") return "当前桌宠版本暂不兼容，请检查助手更新。";
             if(status.connected!=false&&status.state!=null&&status.state.locked) return "桌宠正在更新，自动操作已暂停。";
             if(status.disconnectedSince.HasValue) {

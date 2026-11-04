@@ -1,20 +1,36 @@
 (async()=>{// These checks describe capabilities, not release versions or generated aliases.
 class ContractError extends Error {}
 class MainNotReadyError extends Error {}
-function inspectModule(m) {
+function inspectModule(m, source = '') {
   const unique = (predicate, label) => {
     const keys = Object.keys(m).filter(k => predicate(m[k]));
     if (keys.length !== 1) throw new ContractError('兼容性检查失败：' + label + '缺失或不唯一');
     return keys[0];
   };
   const fn = (name, pattern) => v => typeof v === 'function' && v.name === name && pattern.test(Function.prototype.toString.call(v));
+  // Global 1.0.3 keeps userInfo and the cache environment private. Validate its
+  // exported region flags and request contract before using the read-only fallback.
+  let globalEnvironment = null;
+  if (!Object.values(m).some(v => v === 'cn-cn-prod' || v === 'global-global-prod')) {
+    const exported = source.slice(source.lastIndexOf('export{'));
+    const globalKey = exported.match(/\bisGlobalApp as (\w+)\b/)?.[1];
+    const domesticKey = exported.match(/\bisDomesticApp as (\w+)\b/)?.[1];
+    if (!globalKey || !domesticKey || m[globalKey] !== true || m[domesticKey] !== false ||
+        !source.includes('const APP_REGION="GLOBAL"') ||
+        !source.includes('normalizeClickCacheEnvironmentPart("global-prod","unknown")') ||
+        !source.includes('ApiHost="https://api-wutheringwaves-wuwatappo.kurogames-global.com"') ||
+        !/function userInfo\(\)\{return \w+\.get\("api\/frontend\/user\/me",\{\},\{\}\)\}/.test(source) ||
+        !source.includes('Authorization:`Bearer ${t}`')) throw new ContractError('兼容性检查失败：应用环境或只读查询契约');
+    globalEnvironment = globalKey;
+  }
   const exports = {
-    environment: unique(v => v === 'cn-cn-prod', '应用环境'),
+    environment: globalEnvironment || unique(v => v === 'cn-cn-prod' || v === 'global-global-prod', '应用环境'),
+    cookie: globalEnvironment ? unique(v => typeof v === 'function' && /^\w+=>\{const \w+=`kuro_\$\{\w+\}=`,\w+=document\.cookie\.split\(";"\)/.test(String(v)), '登录凭据读取接口') : '',
     store: unique(v => v && typeof v === 'object' && typeof v.isLoggedIn === 'boolean' &&
       ['totalClickCount','cumulativeClickCount','localClickCount','serverClickConsume','serverClickTotal'].every(k => Number.isSafeInteger(v[k]) && v[k] >= 0) &&
       (typeof v.addLocalClickCount === 'function' || typeof v.incrementLocalClickCount === 'function') && typeof v.applyClickReportSuccess === 'function' && typeof v.applyChestClickConsume === 'function' && typeof v.updateUserInfo === 'function' && typeof v.$onAction === 'function' && 'userInfo' in v, '计数状态'),
     locked: unique(fn('isForceUpdateLocked', /^function isForceUpdateLocked\(\)\{return \w+\.value\}$/), '更新锁'),
-    userInfo: unique(fn('userInfo', /^function userInfo\(\)\{return \w+\.get\("api\/frontend\/user\/me",\{\},\{\}\)\}$/), '只读用户接口'),
+    userInfo: globalEnvironment ? '' : unique(fn('userInfo', /^function userInfo\(\)\{return \w+\.get\("api\/frontend\/user\/me",\{\},\{\}\)\}$/), '只读用户接口'),
     bagList: unique(fn('getBagList', /^function getBagList\(\)\{return \w+\.post\("api\/frontend\/bags\/list",\{\},\{\}\)\}$/), '背包查询接口'),
     openChest: unique(fn('openChest', /^function openChest\((\w+)\)\{return \w+\.post\("api\/frontend\/chests\/open",\{place:\1\.place,click_num:\1\.click_num\},\{\}\)\}$/), '宝箱领取接口'),
     decode: unique(fn('unwrapApiData', /Number\(\w+\?\.code\).*Number\.isFinite.*isApiSuccess.*\.data\?\?\w+\.result/s), '响应解码')
@@ -71,7 +87,7 @@ async function discoverProfile() {
   const candidates = sources.filter(([, s]) => s.includes('function userInfo()') && s.includes('function isForceUpdateLocked()'));
   if (candidates.length !== 1) throw new ContractError('兼容性检查失败：共享状态模块缺失或不唯一');
   const commonPath = candidates[0][0];
-  const exports = inspectModule(await import(commonPath));
+  const exports = inspectModule(await import(commonPath), candidates[0][1]);
   exports.countMode=inspectCountMode(sources);
   exports.refreshPanel=sources.some(([,s])=>/case"ready":\w+\(\w+\.value\),\w+\(\);break/.test(s))?'ready':'';
   const store=(await import(commonPath))[exports.store];

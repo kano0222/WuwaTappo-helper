@@ -25,8 +25,8 @@ namespace Tappo {
             bool headless=args.Length>0;
             try {
                 if(args.Length==1&&args[0]=="--worker") {
-                    var worker=new Worker(store,async()=>{await Platform.EnsureDebugSession(store).ConfigureAwait(false);return await AppClient.Connect().ConfigureAwait(false);},
-                        client=>Platform.Restore(client,store),Task.Delay,()=>RuntimeStore.Now,async()=>await AppClient.Connect(5000).ConfigureAwait(false));
+                    var worker=new Worker(store,async()=>{await Platform.EnsureDebugSession(store).ConfigureAwait(false);return await AppClient.Connect(appPath:Platform.LoadPath(store)).ConfigureAwait(false);},
+                        client=>Platform.Restore(client,store),Task.Delay,()=>RuntimeStore.Now,async()=>await AppClient.Connect(5000,Platform.LoadPath(store)).ConfigureAwait(false));
                     return worker.Run().GetAwaiter().GetResult();
                 }
                 if(args.Length==2&&args[0]=="--probe") {Probe(args[1]).GetAwaiter().GetResult();return 0;}

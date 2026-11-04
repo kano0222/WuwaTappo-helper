@@ -59,7 +59,7 @@ namespace Tappo {
             E<Button>("MinimizeButton").Click+=(s,e)=>Window.WindowState=WindowState.Minimized;
             E<Button>("CloseButton").Click+=async(s,e)=>await RequestClose();
             E<MenuItem>("ExitMenuItem").Click+=async(s,e)=>await Exit();
-            E<Button>("UpdateButton").Content="v"+Updates.CurrentVersion+" · 检查更新";
+            E<Button>("UpdateButton").Content="v"+Updates.DisplayVersion+" · 检查更新";
             E<Button>("UpdateButton").ToolTip="当前构建："+Updates.BuildVersion;
             E<Button>("UpdateButton").Click+=async(s,e)=>await UpdateAction();
             E<Button>("FeedbackButton").Click+=(s,e)=>{
@@ -127,7 +127,7 @@ namespace Tappo {
             try {
                 var result=await UpdateCheck(updateCancellation.Token);
                 if(disposed)return;
-                update=result;button.Content=result.available?"发现新版 v"+result.version:"v"+Updates.CurrentVersion+" · 已是最新";
+                update=result;button.Content=result.available?"发现新版 v"+result.version:"v"+Updates.DisplayVersion+" · 已是最新";
                 button.ToolTip=result.available?"点击打开 GitHub 发布页；更新前请完全退出助手并保留配置与 runtime。":"当前构建："+Updates.BuildVersion+"；点击重新检查。";
             } catch(Exception error) {
                 if(disposed)return;

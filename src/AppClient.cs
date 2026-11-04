@@ -50,9 +50,11 @@ namespace Tappo {
                 await delay(400).ConfigureAwait(false);
             }
         }
-        public static async Task<AppClient> Connect(int mainWaitMs=25000) {
+        public static async Task<AppClient> Connect(int mainWaitMs=25000,string appPath=null) {
+            if(appPath!=null&&!Platform.CheckRunningApp(appPath))throw new ConnectionFailureException("debug-unavailable","所选桌宠尚未运行。");
             var selected=await WaitForMain(FindMain,Task.Delay,()=>RuntimeStore.Now,mainWaitMs).ConfigureAwait(false);
             try {
+                if(appPath!=null&&!Platform.CheckRunningApp(appPath))throw new ConnectionFailureException("debug-unavailable","所选桌宠已退出。");
                 await selected.capabilities.Ensure().ConfigureAwait(false);
                 return selected;
             } catch {selected.Dispose();throw;}
