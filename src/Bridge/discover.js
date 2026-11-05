@@ -8,23 +8,30 @@ function inspectModule(m, source = '') {
     return keys[0];
   };
   const fn = (name, pattern) => v => typeof v === 'function' && v.name === name && pattern.test(Function.prototype.toString.call(v));
-  // Global 1.0.3 keeps userInfo and the cache environment private. Validate its
-  // exported region flags and request contract before using the read-only fallback.
+  // New builds keep the cache environment private. Validate both region flags
+  // and the cache namespace; only Global needs the private userInfo fallback.
   let globalEnvironment = null;
+  let domesticEnvironment = null;
   if (!Object.values(m).some(v => v === 'cn-cn-prod' || v === 'global-global-prod')) {
     const exported = source.slice(source.lastIndexOf('export{'));
     const globalKey = exported.match(/\bisGlobalApp as (\w+)\b/)?.[1];
     const domesticKey = exported.match(/\bisDomesticApp as (\w+)\b/)?.[1];
-    if (!globalKey || !domesticKey || m[globalKey] !== true || m[domesticKey] !== false ||
-        !source.includes('const APP_REGION="GLOBAL"') ||
-        !source.includes('normalizeClickCacheEnvironmentPart("global-prod","unknown")') ||
-        !source.includes('ApiHost="https://api-wutheringwaves-wuwatappo.kurogames-global.com"') ||
-        !/function userInfo\(\)\{return \w+\.get\("api\/frontend\/user\/me",\{\},\{\}\)\}/.test(source) ||
-        !source.includes('Authorization:`Bearer ${t}`')) throw new ContractError('兼容性检查失败：应用环境或只读查询契约');
-    globalEnvironment = globalKey;
+    if (globalKey && domesticKey && m[globalKey] === false && m[domesticKey] === true &&
+        source.includes('const APP_REGION="CN"') &&
+        source.includes('normalizeClickCacheEnvironmentPart("cn-prod","unknown")')) {
+      domesticEnvironment = domesticKey;
+    } else {
+      if (!globalKey || !domesticKey || m[globalKey] !== true || m[domesticKey] !== false ||
+          !source.includes('const APP_REGION="GLOBAL"') ||
+          !source.includes('normalizeClickCacheEnvironmentPart("global-prod","unknown")') ||
+          !source.includes('ApiHost="https://api-wutheringwaves-wuwatappo.kurogames-global.com"') ||
+          !/function userInfo\(\)\{return \w+\.get\("api\/frontend\/user\/me",\{\},\{\}\)\}/.test(source) ||
+          !source.includes('Authorization:`Bearer ${t}`')) throw new ContractError('兼容性检查失败：应用环境或只读查询契约');
+      globalEnvironment = globalKey;
+    }
   }
   const exports = {
-    environment: globalEnvironment || unique(v => v === 'cn-cn-prod' || v === 'global-global-prod', '应用环境'),
+    environment: domesticEnvironment || globalEnvironment || unique(v => v === 'cn-cn-prod' || v === 'global-global-prod', '应用环境'),
     cookie: globalEnvironment ? unique(v => typeof v === 'function' && /^\w+=>\{const \w+=`kuro_\$\{\w+\}=`,\w+=document\.cookie\.split\(";"\)/.test(String(v)), '登录凭据读取接口') : '',
     store: unique(v => v && typeof v === 'object' && typeof v.isLoggedIn === 'boolean' &&
       ['totalClickCount','cumulativeClickCount','localClickCount','serverClickConsume','serverClickTotal'].every(k => Number.isSafeInteger(v[k]) && v[k] >= 0) &&

@@ -28,6 +28,14 @@ const drain=async()=>{for(let i=0;i<20;i++)await Promise.resolve()};
  store.isLoggedIn=true;
  module.env='unknown';await assert.rejects(vm.runInContext('(async()=>{'+script+'})()',context),/应用环境/);
  module.env='cn-cn-prod';
+ // Domestic builds with a private cache namespace still use the native query.
+ module.env=true;
+ const domesticApi=await vm.runInContext('(async()=>{'+script+'return {snapshot,readServer,queryUser}})()',context);
+ assert.equal(domesticApi.snapshot().accountKey,state.accountKey,'region flags changed persisted account identity');
+ await domesticApi.queryUser();assert.equal(calls,1);calls=0;
+ module.env=false;assert.equal(domesticApi.snapshot().accountKey,null);
+ await assert.rejects(domesticApi.readServer());assert.equal(calls,0);
+ module.env='cn-cn-prod';
  // Global release has no exported userInfo: only the fixed read endpoint is permitted.
  const globalScript=script.replaceAll('"user"','""');
  let requests=0,token='test-token',status=200;

@@ -66,6 +66,15 @@ async function fixture(resources, overrides = {}) {
     cookie:vm.runInNewContext('(e=>{const t=`kuro_${e}=`,n=document.cookie.split(";");return null})')};
   const mapping=f.api.inspectModule(globalModule,globalSource);
   check(mapping.environment==='region'&&mapping.userInfo===''&&mapping.cookie==='cookie');
+  const domesticSource='const APP_REGION="CN";normalizeClickCacheEnvironmentPart("cn-prod","unknown");'+
+    'export{isGlobalApp as region,isDomesticApp as domestic}';
+  const domesticModule={...module,a:undefined,region:false,domestic:true};
+  const domesticMapping=f.api.inspectModule(domesticModule,domesticSource);
+  check(domesticMapping.environment==='domestic'&&domesticMapping.userInfo==='c'&&domesticMapping.cookie==='');
+  assert.throws(()=>f.api.inspectModule({...domesticModule,region:true},domesticSource),/应用环境/);checks++;
+  assert.throws(()=>f.api.inspectModule({...domesticModule,domestic:false},domesticSource),/应用环境/);checks++;
+  assert.throws(()=>f.api.inspectModule(domesticModule,domesticSource.replace('cn-prod','cn-test')),/应用环境/);checks++;
+  assert.throws(()=>f.api.inspectModule({...domesticModule,c:undefined},domesticSource),/只读用户接口/);checks++;
   assert.throws(()=>f.api.inspectModule({...globalModule,region:false},globalSource),/应用环境/);checks++;
   assert.throws(()=>f.api.inspectModule(globalModule,globalSource.replace('global-prod','global-test')),/应用环境/);checks++;
   assert.throws(()=>f.api.inspectModule({...globalModule,cookie:undefined},globalSource),/登录凭据/);checks++;

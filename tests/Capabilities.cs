@@ -29,7 +29,13 @@ namespace Tappo {
             now=150000;version=null;failed=false;
             try {await session.Ensure();}catch(InvalidOperationException){failed=true;}
             if(!failed||session.Profile.version!="1.0.3") throw new Exception("missing version accepted");
-            return 7;
+            version="99.0.0";await session.Ensure(true);
+            if(session.Profile.version!=version||discoveries!=5) throw new Exception("unknown compatible version was not discovered");
+            var fresh=new Capabilities((source,timeout)=>Task.FromResult<object>(source.Contains("plugin:app|version")?(object)version:
+                Json.Decode<object>(Json.Encode(new {profile=new AppProfile {commonPath="/assets/future.js"}}))),()=>now);
+            await fresh.Ensure();
+            if(fresh.Profile.version!=version) throw new Exception("initial connection rejected unknown version");
+            return 9;
         }
     }
 }

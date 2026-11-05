@@ -1,13 +1,14 @@
 const m=await import(__COMMON__);
 const globalQuery=__USERINFO__===''&&m[__ENVIRONMENT__]===true;
-const environment=globalQuery?'global-global-prod':m[__ENVIRONMENT__];
+const regionFlag=m[__ENVIRONMENT__]===true;
+const environment=regionFlag?(globalQuery?'global-global-prod':'cn-cn-prod'):m[__ENVIRONMENT__];
 if(!['cn-cn-prod','global-global-prod'].includes(environment)||window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label!=='main')throw new Error('应用环境不匹配');
 const s=m[__STORE__];
 if(!s||typeof m[__LOCKED__]!=='function'||typeof m[globalQuery?__COOKIE__:__USERINFO__]!=='function'||typeof m[__DECODE__]!=='function')throw new Error('桌宠版本接口不匹配');
 const locked=()=>m[__LOCKED__]();
 const account=s.userInfo?.cuid;
 const accountKey=account==null||account===''?null:Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',new TextEncoder().encode('tappo:'+environment+':'+String(account))))).map(v=>v.toString(16).padStart(2,'0')).join('');
-const sameAccount=()=>m[__ENVIRONMENT__]===(globalQuery?true:environment)&&s.isLoggedIn&&s.userInfo?.cuid===account&&accountKey!==null;
+const sameAccount=()=>m[__ENVIRONMENT__]===(regionFlag?true:environment)&&s.isLoggedIn&&s.userInfo?.cuid===account&&accountKey!==null;
 const queryUser=async()=>{
   if(!globalQuery)return m[__USERINFO__]();
   const token=m[__COOKIE__]('infoToken');
