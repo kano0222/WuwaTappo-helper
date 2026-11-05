@@ -32,22 +32,22 @@ namespace Tappo {
         }
         internal static bool MatchRunningApp(string app,string[] paths) {
             if(paths.Length==0)return false;
-            if(paths.Length!=1||string.IsNullOrWhiteSpace(paths[0])||!string.Equals(Path.GetFullPath(app),Path.GetFullPath(paths[0]),StringComparison.OrdinalIgnoreCase))
-                throw new ConnectionFailureException("app-mismatch","无法确认唯一的所选桌宠实例；请退出其他国服或国际服桌宠，再启动所选程序。");
-            return true;
+            if(paths.Any(string.IsNullOrWhiteSpace)||paths.Count(p=>string.Equals(Path.GetFullPath(app),Path.GetFullPath(p),StringComparison.OrdinalIgnoreCase))>1)
+                throw new ConnectionFailureException("app-mismatch","无法确认唯一的所选桌宠实例，请检查所选程序及进程权限。");
+            return paths.Any(p=>string.Equals(Path.GetFullPath(app),Path.GetFullPath(p),StringComparison.OrdinalIgnoreCase));
         }
         internal static bool CheckRunningApp(string app) {
             var processes=Process.GetProcessesByName("WuwaTappo");
             try {return MatchRunningApp(app,processes.Select(p=>ProcessPath(p.Id)).ToArray());}
             finally {foreach(var process in processes)process.Dispose();}
         }
-        internal static ProcessStartInfo AppStartInfo(string app,bool debug) {
+        internal static ProcessStartInfo AppStartInfo(string app,bool debug,int port=19222) {
             var info=new ProcessStartInfo(app) {WorkingDirectory=Path.GetDirectoryName(app),UseShellExecute=false,WindowStyle=ProcessWindowStyle.Hidden};
             // WebView2 reads this host command-line switch for every environment.
             // The pet does not enable CDP from the environment variable alone.
             // Preserve user environment options. Host switches are processed last,
             // so only our debug address and port override conflicting user switches.
-            if(debug) info.Arguments="--edge-webview-switches=\"--remote-debugging-address=127.0.0.1 --remote-debugging-port=19222\"";
+            if(debug) info.Arguments="--edge-webview-switches=\"--remote-debugging-address=127.0.0.1 --remote-debugging-port="+port+"\"";
             return info;
         }
         internal static void SaveStartupRecord(Action persist) {
@@ -95,13 +95,18 @@ namespace Tappo {
             }
         }
         public static string Discover(RuntimeStore store) {
+            if(store.InstanceId!=null) {var saved=Instances.SavedPath(store.Root);return ValidPath(saved)?saved:null;}
             foreach(var candidate in Candidates(store).Where(p=>!string.IsNullOrEmpty(p)).Distinct(StringComparer.OrdinalIgnoreCase))
                 try { if(ValidPath(candidate)) return Path.GetFullPath(candidate); } catch { }
             return null;
         }
         public static void SavePath(RuntimeStore store,string path) {
             if(!ValidPath(path)) throw new InvalidOperationException("请选择 Wuwa Tappo 安装目录中的 WuwaTappo.exe；文件不存在或应用标识不匹配。");
-            RuntimeStore.AtomicWrite(Path.Combine(store.Root,"config.local.json"),new Settings {appPath=path});
+            var previous=Instances.SavedPath(store.Root);
+            if(store.InstanceId!=null&&Instances.Key(path)!=store.InstanceId)throw new InvalidOperationException("此窗口绑定的桌宠不可更换，请连接另一个桌宠。");
+            if(previous!=null&&Instances.Key(previous)!=Instances.Key(path)&&store.Exists("pending.json"))
+                throw new InvalidOperationException("请先核对当前桌宠的待确认操作，再切换程序。也可连接另一个桌宠。" );
+            RuntimeStore.AtomicWrite(Path.Combine(store.Root,"config.local.json"),new Settings {appPath=Path.GetFullPath(path)});
         }
         public static string LoadPath(RuntimeStore store) {
             var path=Path.Combine(store.Root,"config.local.json");
@@ -110,27 +115,26 @@ namespace Tappo {
             if(settings==null||!ValidPath(settings.appPath)) throw new InvalidOperationException("桌宠路径无效，请重新选择程序。");
             return settings.appPath;
         }
-        public static void CheckListeners() {
-            var endpoints=IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Where(p=>p.Port==19222).ToArray();
+        public static void CheckListeners(int port=19222) {
+            var endpoints=IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Where(p=>p.Port==port).ToArray();
             if(endpoints.Length==0) throw new ConnectionFailureException("debug-unavailable","调试入口不存在");
             if(endpoints.Any(p=>!IPAddress.IsLoopback(p.Address))) throw new InvalidOperationException("调试端口并非仅限本机，已停止。");
         }
-        public static async Task EnsureDebugSession(RuntimeStore store) {
-            var app=LoadPath(store);
+        public static async Task EnsureDebugSession(RuntimeStore store,string app) {
             var running=CheckRunningApp(app);
-            if(running) { CheckListeners(); return; }
+            if(running) { CheckListeners(Instances.PortFor(app)); return; }
             if(!Administrator) throw new InvalidOperationException("启动桌宠连接需要管理员权限。");
-            var test=new TcpListener(IPAddress.Loopback,19222); try { test.Start(); } finally { test.Stop(); }
+            var port=Instances.AvailablePort();
             var record=new Dictionary<string,object>{{"startedAt",DateTimeOffset.UtcNow.ToString("o")},{"argumentSource","host-command-line"}};
             SaveStartupRecord(()=>store.Write("debug-startup-session.json",record));
             try {
-                using(var child=Process.Start(AppStartInfo(app,true))) {
+                using(var child=Process.Start(AppStartInfo(app,true,port))) {
                     if(child==null) throw new InvalidOperationException("桌宠启动失败。");
                     record["launched"]=true; record["processId"]=child.Id;
                 }
                 var until=RuntimeStore.Now+25000;
                 while(true) {
-                    try { CheckListeners(); await AppClient.LocalGet("/json/version",1000).ConfigureAwait(false); record["debugReady"]=true; break; }
+                    try { CheckListeners(port); if(Instances.PortFor(app)!=port) throw new InvalidOperationException("调试端口归属不匹配。"); await AppClient.LocalGet("/json/version",1000,port).ConfigureAwait(false); record["debugReady"]=true; break; }
                     catch { if(RuntimeStore.Now>=until) throw new InvalidOperationException("桌宠连接未就绪，请检查桌宠状态。"); }
                     await Task.Delay(400).ConfigureAwait(false);
                 }
@@ -140,14 +144,15 @@ namespace Tappo {
                 SaveStartupRecord(()=>store.Write("debug-startup-session.json",record));
             }
         }
-        public static async Task Restore(IAppClient client,RuntimeStore store) {
+        public static async Task Restore(IAppClient client,string app) {
             if(client==null) throw new InvalidOperationException("没有可用连接；未尝试强制结束桌宠，请手动退出后普通启动。");
+            var port=Instances.PortFor(app);
             try { await client.Quit().ConfigureAwait(false); } catch { }
             for(int i=0;i<30;i++) {
-                bool open=IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Any(p=>p.Port==19222);
+                bool open=CheckRunningApp(app)||IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Any(p=>p.Port==port);
                 if(!open) {
                     await Task.Delay(1000).ConfigureAwait(false);
-                    var app=LoadPath(store); var info=AppStartInfo(app,false);
+                    var info=AppStartInfo(app,false);
                     using(var child=Process.Start(info)) { if(child==null) throw new InvalidOperationException("普通桌宠启动失败。"); }
                     return;
                 }

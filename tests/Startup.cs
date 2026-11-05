@@ -13,10 +13,13 @@ namespace Tappo {
             var selected=@"I:\WuwaTappo1\WuwaTappoGlobal\WuwaTappo.exe";
             if(Platform.MatchRunningApp(selected,new string[0]))throw new Exception("missing pet considered running");checks++;
             if(!Platform.MatchRunningApp(selected,new[]{selected.ToUpperInvariant()}))throw new Exception("selected pet rejected");checks++;
-            foreach(var paths in new[]{new[]{@"I:\WuwaTappo\WuwaTappo.exe"},new[]{selected,selected},new string[]{null}}) {
+            foreach(var paths in new[]{new[]{selected,selected},new string[]{null}}) {
                 bool rejected=false;try {Platform.MatchRunningApp(selected,paths);}catch(ConnectionFailureException error){rejected=error.Kind=="app-mismatch";}
                 if(!rejected)throw new Exception("ambiguous or different pet accepted");checks++;
             }
+            if(!Platform.MatchRunningApp(selected,new[]{selected,@"I:\WuwaTappo\WuwaTappo.exe"}))throw new Exception("dual region rejected");checks++;
+            if(Platform.MatchRunningApp(selected,new[]{@"I:\WuwaTappo\WuwaTappo.exe"}))throw new Exception("other region counted as selected");checks++;
+            checks+=InstanceChecks.Run();
             using(var current=Process.GetCurrentProcess()) {
                 if(!string.Equals(Platform.ProcessPath(current.Id),current.MainModule.FileName,StringComparison.OrdinalIgnoreCase))throw new Exception("process image lookup failed");checks++;
             }

@@ -77,9 +77,9 @@ namespace Tappo {
     internal sealed class LauncherStatus { public string failedAt, error, requestedAt; public int runnerId; }
     internal sealed class Journal { public string id, at; public Plan action; public Snapshot before; public ServerState server; }
     internal sealed class RuntimeStore {
-        public readonly string Root, Runtime;
+        public readonly string Root, Runtime, InstanceId;
         static readonly UTF8Encoding Utf8 = new UTF8Encoding(false);
-        public RuntimeStore(string root) { Root = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar); Runtime = Path.Combine(Root,"runtime"); Directory.CreateDirectory(Runtime); }
+        public RuntimeStore(string root,string instanceId=null) { InstanceId=instanceId; Root = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar); Runtime = Path.Combine(Root,"runtime"); Directory.CreateDirectory(Runtime); }
         public string FilePath(string name) { return Path.Combine(Runtime,name); }
         public bool Exists(string name) { return File.Exists(FilePath(name)); }
         public static string ReadText(string path) {

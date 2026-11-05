@@ -1,6 +1,7 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Threading.Tasks;
 using System.Windows;
 
@@ -21,15 +22,20 @@ namespace Tappo {
                     return 0;
                 } catch {return 1;}
             }
-            var store=new RuntimeStore(AppDomain.CurrentDomain.BaseDirectory);
+            string instance=null;
+            if(args.Length>=2&&args[args.Length-2]=="--instance") {instance=args[args.Length-1];args=args.Take(args.Length-2).ToArray();}
+            RuntimeStore store;
+            try {store=Instances.Open(AppDomain.CurrentDomain.BaseDirectory,instance);}
+            catch(Exception error) {MessageBox.Show(error.Message);return 1;}
             bool headless=args.Length>0;
             try {
                 if(args.Length==1&&args[0]=="--worker") {
-                    var worker=new Worker(store,async()=>{await Platform.EnsureDebugSession(store).ConfigureAwait(false);return await AppClient.Connect(appPath:Platform.LoadPath(store)).ConfigureAwait(false);},
-                        client=>Platform.Restore(client,store),Task.Delay,()=>RuntimeStore.Now,async()=>await AppClient.Connect(5000,Platform.LoadPath(store)).ConfigureAwait(false));
-                    return worker.Run().GetAwaiter().GetResult();
+                    var appPath=Platform.LoadPath(store);
+                    var worker=new Worker(store,async()=>{await Platform.EnsureDebugSession(store,appPath).ConfigureAwait(false);return await AppClient.Connect(appPath:appPath).ConfigureAwait(false);},
+                        client=>Platform.Restore(client,appPath),Task.Delay,()=>RuntimeStore.Now,async()=>await AppClient.Connect(5000,appPath).ConfigureAwait(false));
+                    using(Instances.Acquire(appPath)) return worker.Run().GetAwaiter().GetResult();
                 }
-                if(args.Length==2&&args[0]=="--probe") {Probe(args[1]).GetAwaiter().GetResult();return 0;}
+                if(args.Length==2&&args[0]=="--probe") {Probe(args[1],store).GetAwaiter().GetResult();return 0;}
                 if(args.Length==2&&args[0]=="--control") {
                     if(Array.IndexOf(new[]{"pause","resume","stop","disconnect"},args[1])<0) throw new InvalidOperationException("未知控制操作。");
                     if(!Panel.Alive(store.Read<Status>("status.json"))) throw new InvalidOperationException("后台未运行。");
@@ -55,8 +61,8 @@ namespace Tappo {
                 return 1;
             }
         }
-        static async Task Probe(string output) {
-            using(var client=await AppClient.Connect().ConfigureAwait(false)) {
+        static async Task Probe(string output,RuntimeStore store) {
+            using(var client=await AppClient.Connect(appPath:Platform.LoadPath(store)).ConfigureAwait(false)) {
                 var state=await client.Snapshot().ConfigureAwait(false);
                 Policy.Choose(state,"brute",true,()=>0.5); // Validate local state without executing the returned plan.
                 var server=await client.Server().ConfigureAwait(false);server.Validate();

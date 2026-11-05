@@ -36,10 +36,10 @@ namespace Tappo {
         public AppProfile Profile { get {return capabilities.Profile;} }
         static readonly string[] KnownErrors={"未确认领取结果，不自动重试","领取期间出现其他计数或槽位变化，已暂停且不会自动重发","补数期间账号变化，结果未确认，不自动重发"};
         AppClient(ClientWebSocket socket) { this.socket=socket;capabilities=new Capabilities(Evaluate,()=>RuntimeStore.Now); }
-        public static async Task<string> LocalGet(string suffix,int timeout) {
+        public static async Task<string> LocalGet(string suffix,int timeout,int port=19222) {
             using(var handler=new HttpClientHandler {UseProxy=false})
             using(var http=new HttpClient(handler) {Timeout=TimeSpan.FromMilliseconds(timeout)})
-                return await http.GetStringAsync("http://127.0.0.1:19222"+suffix).ConfigureAwait(false);
+                return await http.GetStringAsync("http://127.0.0.1:"+port+suffix).ConfigureAwait(false);
         }
         internal static async Task<T> WaitForMain<T>(Func<Task<T>> inspect,Func<int,Task> delay,Func<long> now,int timeoutMs) where T:class {
             var deadline=now()+timeoutMs;
@@ -52,23 +52,26 @@ namespace Tappo {
         }
         public static async Task<AppClient> Connect(int mainWaitMs=25000,string appPath=null) {
             if(appPath!=null&&!Platform.CheckRunningApp(appPath))throw new ConnectionFailureException("debug-unavailable","所选桌宠尚未运行。");
-            var selected=await WaitForMain(FindMain,Task.Delay,()=>RuntimeStore.Now,mainWaitMs).ConfigureAwait(false);
+            var port=appPath==null?19222:Instances.PortFor(appPath);
+            var selected=await WaitForMain(()=>FindMain(port,appPath),Task.Delay,()=>RuntimeStore.Now,mainWaitMs).ConfigureAwait(false);
             try {
                 if(appPath!=null&&!Platform.CheckRunningApp(appPath))throw new ConnectionFailureException("debug-unavailable","所选桌宠已退出。");
+                if(appPath!=null&&Instances.PortFor(appPath)!=port)throw new InvalidOperationException("桌宠调试端口已变化。");
                 await selected.capabilities.Ensure().ConfigureAwait(false);
                 return selected;
             } catch {selected.Dispose();throw;}
         }
-        static async Task<AppClient> FindMain() {
-            Platform.CheckListeners();
-            var targets=Json.Decode<Target[]>(await LocalGet("/json/list",5000).ConfigureAwait(false));
+        static async Task<AppClient> FindMain(int port,string appPath) {
+            if(appPath!=null&&Instances.PortFor(appPath)!=port)throw new InvalidOperationException("桌宠调试端口已变化，请重新连接。");
+            Platform.CheckListeners(port);
+            var targets=Json.Decode<Target[]>(await LocalGet("/json/list",5000,port).ConfigureAwait(false));
             AppClient selected=null;
             try {
                 foreach(var target in targets.Where(t=>t.type=="page")) {
                     Uri page,address;
                     if(!Uri.TryCreate(target.url,UriKind.Absolute,out page)||page.Host!="tauri.localhost") continue;
                     if(!Uri.TryCreate(target.webSocketDebuggerUrl,UriKind.Absolute,out address)||address.Scheme!="ws"||
-                        !new[]{"127.0.0.1","localhost","[::1]","::1"}.Contains(address.Host)||address.Port!=19222)
+                        !new[]{"127.0.0.1","localhost","[::1]","::1"}.Contains(address.Host)||address.Port!=port)
                         throw new InvalidOperationException("调试地址超出本机范围");
                     var ws=new ClientWebSocket(); ws.Options.Proxy=null;
                     using(var timeout=new CancellationTokenSource(5000)) {

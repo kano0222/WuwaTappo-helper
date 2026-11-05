@@ -56,6 +56,7 @@ namespace Tappo {
             E<Button>("RetryButton").Click+=async(s,e)=>await UserAction("retry");
             E<Button>("ResetPendingButton").Click+=async(s,e)=>await ResetPending();
             E<Button>("BrowseAppButton").Click+=(s,e)=>ChoosePath(true);
+            E<Button>("AnotherAppButton").Click+=(s,e)=>OpenAnother();
             E<Button>("MinimizeButton").Click+=(s,e)=>Window.WindowState=WindowState.Minimized;
             E<Button>("CloseButton").Click+=async(s,e)=>await RequestClose();
             E<MenuItem>("ExitMenuItem").Click+=async(s,e)=>await Exit();
@@ -79,11 +80,16 @@ namespace Tappo {
         public T E<T>(string name) where T:class { var value=Window.FindName(name) as T; if(value==null) throw new InvalidOperationException("界面元素缺失："+name);return value; }
         void Text(string name,string text) { E<TextBlock>(name).Text=text; }
         void SetNotice(string message,bool success=false) {notice=message;noticeIsSuccess=success;}
-        public void SetPath(string path) {Text("AppPathText",path==null?"桌宠：启动时自动查找，也可手动选择":"桌宠："+path);E<TextBlock>("AppPathText").ToolTip=path;}
+        public void SetPath(string path) {Text("AppPathText",path==null?"桌宠：启动时自动查找，也可手动选择":"桌宠："+path);E<TextBlock>("AppPathText").ToolTip=path;
+            var label=path==null?null:new DirectoryInfo(Path.GetDirectoryName(path)).Name;
+            Window.Title="Wuwa Tappo · 后台助手"+(label==null?"":" · "+label);
+            Text("InstanceTitle","WUWA TAPPO  /  后台助手"+(label==null?"":"  /  "+label));
+            if(tray!=null)tray.Text=("Wuwa Tappo · "+(label??"助手")).Substring(0,Math.Min(63,("Wuwa Tappo · "+(label??"助手")).Length));
+        }
         void Life(string phase) { RuntimeStore.Append(store.FilePath("panel-lifecycle.log"),DateTimeOffset.Now.ToString("o")+" pid="+Process.GetCurrentProcess().Id+" "+phase+"\n"); }
         public static string InstanceKey(string root) {
             using(var sha=SHA256.Create()) using(var user=WindowsIdentity.GetCurrent())
-                return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(root+"|"+user.User.Value))).Replace("-","").Substring(0,16);
+                return BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(root.ToUpperInvariant()+"|"+user.User.Value))).Replace("-","").Substring(0,16);
         }
         public bool ClaimInstance() {
             var key=InstanceKey(store.Root);mutex=new Mutex(false,"Local\\TappoPanel-"+key);showEvent=new EventWaitHandle(false,EventResetMode.AutoReset,"Local\\TappoPanelShow-"+key);
@@ -108,7 +114,7 @@ namespace Tappo {
             trayStop=(Forms.ToolStripMenuItem)menu.Items.Add("停止并恢复普通桌宠",null,async(s,e)=>await UserAction(stopAction));
             menu.Items.Add(new Forms.ToolStripSeparator());trayExit=(Forms.ToolStripMenuItem)menu.Items.Add("退出助手",null,async(s,e)=>await Exit());
             using(var stream=System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream("helper.ico")) icon=new System.Drawing.Icon(stream);
-            tray=new Forms.NotifyIcon {Icon=icon,ContextMenuStrip=menu,Text="Wuwa Tappo 助手",Visible=true};tray.DoubleClick+=(s,e)=>Show();
+            tray=new Forms.NotifyIcon {Icon=icon,ContextMenuStrip=menu,Text="Wuwa Tappo 助手",Visible=true};tray.DoubleClick+=(s,e)=>Show();SetPath(Platform.Discover(store));
         }
         public void StartTimer() {
             timer=new DispatcherTimer {Interval=TimeSpan.FromSeconds(1)};
@@ -136,6 +142,26 @@ namespace Tappo {
                 button.Content="更新检查失败 · 重试";button.ToolTip=error is InvalidOperationException?error.Message:"暂时无法连接 GitHub，请稍后重试。";
             } finally {checkingUpdates=false;if(!disposed)button.IsEnabled=true;}
         }
+        void OpenAnother() {
+            try {
+                var dialog=new Microsoft.Win32.OpenFileDialog {Title="连接另一个桌宠：选择 WuwaTappo.exe",Filter="Wuwa Tappo (WuwaTappo.exe)|WuwaTappo.exe",CheckFileExists=true};
+                if(dialog.ShowDialog(Window)!=true)return;
+                var path=dialog.FileName;
+                if(!Platform.ValidPath(path))throw new InvalidOperationException("请选择 Wuwa Tappo 安装目录中的 WuwaTappo.exe。");
+                var baseRoot=AppDomain.CurrentDomain.BaseDirectory;
+                RuntimeStore target;
+                using(Instances.LockBindings(baseRoot)) {
+                    var primary=new RuntimeStore(baseRoot);
+                    if(Instances.SavedPath(baseRoot)==null) {
+                        var discovered=Platform.Discover(primary);
+                        if(discovered!=null)Platform.SavePath(primary,discovered);
+                    }
+                    target=Instances.Open(baseRoot,Instances.ForPath(baseRoot,path));
+                    if(Instances.SavedPath(target.Root)==null)Platform.SavePath(target,path);
+                }
+                using(var process=Process.Start(new ProcessStartInfo(Platform.Executable,Instances.Arguments(target)) {UseShellExecute=true,WorkingDirectory=baseRoot})) { }
+            } catch(Exception error) {SetNotice(error.Message);Refresh();}
+        }
         bool ChoosePath(bool force) {
             try {
                 var path=force?null:Platform.Discover(store);
@@ -143,7 +169,13 @@ namespace Tappo {
                     var dialog=new Microsoft.Win32.OpenFileDialog {Title="选择已安装的 WuwaTappo.exe",Filter="Wuwa Tappo (WuwaTappo.exe)|WuwaTappo.exe",CheckFileExists=true};
                     if(dialog.ShowDialog(Window)!=true) return false;path=dialog.FileName;
                 }
-                Platform.SavePath(store,path);SetPath(path);return true;
+                var baseRoot=AppDomain.CurrentDomain.BaseDirectory;
+                using(Instances.LockBindings(baseRoot)) {
+                    var other=Path.Combine(baseRoot,"runtime","instances",Instances.Key(path),"config.local.json");
+                    if(store.InstanceId==null&&File.Exists(other))throw new InvalidOperationException("此桌宠已有独立窗口，请通过“连接另一个桌宠”打开。");
+                    Platform.SavePath(store,path);
+                }
+                SetPath(path);return true;
             } catch(Exception error) {SetNotice(error.Message);Refresh();return false;}
         }
         void RestoreSelection() {
@@ -186,7 +218,7 @@ namespace Tappo {
                 }
                 if(action=="start") {
                     PrepareStart(store);
-                    var info=new ProcessStartInfo(Platform.Executable,"--worker") {WorkingDirectory=store.Root,UseShellExecute=true,WindowStyle=ProcessWindowStyle.Hidden};
+                    var info=new ProcessStartInfo(Platform.Executable,"--worker"+Instances.Arguments(store)) {WorkingDirectory=store.Root,UseShellExecute=true,WindowStyle=ProcessWindowStyle.Hidden};
                     if(!Platform.Administrator) info.Verb="runas";
                     using(var process=Process.Start(info)) {
                         if(process==null) throw new InvalidOperationException("后台未启动。");
@@ -290,7 +322,8 @@ namespace Tappo {
                 E<Button>("StopButton").Content=stopText;
                 E<Button>("StartButton").IsEnabled=!alive&&!Busy;E<Button>("PauseButton").IsEnabled=pauseEnabled;
                 E<Button>("PauseButton").Content=pauseAction=="resume"?"继续运行":"暂停";
-                E<Button>("StopButton").IsEnabled=alive&&!Busy;E<Button>("BrowseAppButton").IsEnabled=!alive&&!Busy;
+                E<Button>("StopButton").IsEnabled=alive&&!Busy;E<Button>("BrowseAppButton").IsEnabled=!alive&&!Busy&&Instances.Arguments(store)=="";
+                E<Button>("AnotherAppButton").IsEnabled=!Busy;
                 E<Button>("ResetPendingButton").Visibility=pending?Visibility.Visible:Visibility.Collapsed;
                 E<Button>("ResetPendingButton").IsEnabled=pending&&!Busy&&(!alive||!stale&&s.paused&&s.fault!=null);
                 Text("ActionHint",Busy?"处理中…":"每秒刷新");

@@ -54,6 +54,20 @@ namespace Tappo {
             if(args.Length==2&&args[0]=="--process-check") {
                 var alive=RuntimeStore.Alive(int.Parse(args[1]));Console.WriteLine("Query-only process check: "+alive);return alive?0:2;
             }
+            if(args.Length==1&&args[0]=="--dual-probe") {
+                foreach(var process in Process.GetProcessesByName("WuwaTappo"))using(process) {
+                    var path=Platform.ProcessPath(process.Id);
+                    Console.WriteLine("pid="+process.Id+" installation="+(path==null?"unavailable":new DirectoryInfo(Path.GetDirectoryName(path)).Name));
+                    if(path!=null)try {Console.WriteLine("verifiedPort="+Instances.PortFor(path));}catch(Exception error){Console.WriteLine(error.Message);}
+                }
+                return 0;
+            }
+            if(args.Length==2&&args[0]=="--panel-lease-check") {
+                using(var panel=new Panel(new RuntimeStore(args[1]),preview:true))return panel.ClaimInstance()?0:2;
+            }
+            if(args.Length==2&&args[0]=="--instance-lease-check") {
+                try {using(Instances.Acquire(args[1]))return 0;}catch(InvalidOperationException){return 2;}
+            }
             if(args.Length==2&&args[0]=="--panel-child") return PanelChild(args[1]);
             var suite=args.Length==0?"All":args.Length==2&&args[0]=="--suite"?args[1]:null;
             suite=new[]{"All","Worker","Panel","Platform"}.FirstOrDefault(value=>string.Equals(value,suite,StringComparison.OrdinalIgnoreCase));
