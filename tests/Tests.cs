@@ -171,7 +171,8 @@ namespace Tappo {
                 var caps=(Capabilities)typeof(AppClient).GetField("capabilities",flags).GetValue(client);
                 var profile=new AppProfile {commonPath="/assets/common.js",clickPath="/assets/clicks.js",exports=new Dictionary<string,string> {
                     {"environment","env"},{"cookie",""},{"store","state"},{"locked","locked"},{"userInfo","user"},{"decode","decodeAlias"},
-                    {"openChest","openAlias"},{"saveClicks","persistAlias"},{"bagList","bagAlias"},{"refreshPanel","ready"}}};
+                    {"openChest","openAlias"},{"saveClicks","persistAlias"},{"bagList","bagAlias"},{"refreshPanel","ready"},
+                    {"chestHost","https://api-mc-wuwatappo.kurogames-global.com"},{"chestCookie","cookieAlias"},{"chestToast","toastAlias"},{"chestRenew","renewAlias"}}};
                 typeof(Capabilities).GetProperty("Profile").GetSetMethod(true).Invoke(caps,new object[]{profile});
                 var script=(string)typeof(AppClient).GetMethod("Script",flags).Invoke(client,new object[]{"claim",State()});
                 var tokens=System.Text.RegularExpressions.Regex.Matches(script,"__[A-Z_]+__");

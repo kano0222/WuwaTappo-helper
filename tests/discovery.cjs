@@ -75,6 +75,18 @@ async function fixture(resources, overrides = {}) {
   assert.throws(()=>f.api.inspectModule({...domesticModule,domestic:false},domesticSource),/应用环境/);checks++;
   assert.throws(()=>f.api.inspectModule(domesticModule,domesticSource.replace('cn-prod','cn-test')),/应用环境/);checks++;
   assert.throws(()=>f.api.inspectModule({...domesticModule,c:undefined},domesticSource),/只读用户接口/);checks++;
+  const toastModule=vm.runInNewContext(`({
+    cookie:e=>{const t=\`kuro_\${e}=\`,n=document.cookie.split(";");return null},
+    toast:function showApiErrorToast(e){return showToast(resolveApiErrorMessage(e))},
+    renew:async function renewTokenIfNeeded(){}
+  })`);
+  const quietSource=domesticSource+';function showApiErrorToast('; // Source contracts are inspected, never executed.
+  const quietContract=quietSource+'ApiHost="https://api-mc-wuwatappo.kurogames-global.com";Authorization:`Bearer ${t}`';
+  const quietMapping=f.api.inspectModule({...domesticModule,...toastModule},quietContract);
+  check(quietMapping.chestHost==='https://api-mc-wuwatappo.kurogames-global.com'&&quietMapping.chestCookie==='cookie'&&quietMapping.chestToast==='toast'&&quietMapping.chestRenew==='renew');
+  assert.throws(()=>f.api.inspectModule({...domesticModule,...toastModule},quietContract.replace('api-mc-wuwatappo','other')),/静默领取/);checks++;
+  assert.throws(()=>f.api.inspectModule({...domesticModule,...toastModule,toast:undefined},quietContract),/领取错误提示/);checks++;
+  assert.throws(()=>f.api.inspectModule({...domesticModule,...toastModule,cookie:undefined},quietContract),/领取凭据/);checks++;
   assert.throws(()=>f.api.inspectModule({...globalModule,region:false},globalSource),/应用环境/);checks++;
   assert.throws(()=>f.api.inspectModule(globalModule,globalSource.replace('global-prod','global-test')),/应用环境/);checks++;
   assert.throws(()=>f.api.inspectModule({...globalModule,cookie:undefined},globalSource),/登录凭据/);checks++;

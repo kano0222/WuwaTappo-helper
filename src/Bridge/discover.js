@@ -42,6 +42,19 @@ function inspectModule(m, source = '') {
     openChest: unique(fn('openChest', /^function openChest\((\w+)\)\{return \w+\.post\("api\/frontend\/chests\/open",\{place:\1\.place,click_num:\1\.click_num\},\{\}\)\}$/), '宝箱领取接口'),
     decode: unique(fn('unwrapApiData', /Number\(\w+\?\.code\).*Number\.isFinite.*isApiSuccess.*\.data\?\?\w+\.result/s), '响应解码')
   };
+  exports.chestHost='';exports.chestCookie='';exports.chestToast='';exports.chestRenew='';
+  if (source.includes('function showApiErrorToast(')) {
+    const domestic=domesticEnvironment || m[exports.environment]==='cn-cn-prod';
+    const host=domestic?'https://api-mc-wuwatappo.kurogames-global.com':'https://api-wutheringwaves-wuwatappo.kurogames-global.com';
+    if (!source.includes('ApiHost="'+host+'"') || !source.includes('Authorization:`Bearer ${t}`'))
+      throw new ContractError('兼容性检查失败：静默领取请求契约');
+    exports.chestHost=host;
+    exports.chestCookie=unique(v=>typeof v==='function'&&/^\w+=>\{const \w+=`kuro_\$\{\w+\}=`,\w+=document\.cookie\.split\(";"\)/.test(String(v)), '领取凭据读取接口');
+    exports.chestToast=unique(fn('showApiErrorToast', /showToast\(resolveApiErrorMessage\(/), '领取错误提示接口');
+    const renew=Object.keys(m).filter(k=>typeof m[k]==='function'&&m[k].name==='renewTokenIfNeeded');
+    if(renew.length>1)throw new ContractError('兼容性检查失败：凭据续期接口不唯一');
+    exports.chestRenew=renew[0]||'';
+  }
   // Probe only local pure functions; never call userInfo or a mutation during discovery.
   if (typeof m[exports.locked]() !== 'boolean') throw new ContractError('兼容性检查失败：更新锁返回格式');
   const sample = { probe: true };

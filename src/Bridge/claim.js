@@ -1,4 +1,32 @@
 (async()=>{ __STATE__
+  const requestChest=async payload=>{
+    if(!__CHESTHOST__)return m[__OPENCHEST__](payload);
+    // The native bag preflight already performs token renewal, including on
+    // Global builds where renewal is private. Keep credentials inside the page.
+    if(__CHESTRENEW__)await m[__CHESTRENEW__]();
+    if(!sameAccount()||locked())throw new Error('账号或更新状态已变化');
+    const token=m[__CHESTCOOKIE__]('infoToken');
+    if(typeof token!=='string'||!token)throw new Error('桌宠尚未登录');
+    try{
+      const response=await fetch(__CHESTHOST__+'/api/frontend/chests/open',{
+        method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json',
+          'X-BLM-CID':localStorage.getItem('KURO_YCK_REQ_CID')||'','X-BLM-FRID':crypto.randomUUID().replaceAll('-','')},
+        body:JSON.stringify(payload),credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(10000)});
+      let envelope;
+      try{envelope=await response.json();}catch{throw Object.assign(new Error('领取响应格式异常'),{httpStatus:response.status,retryAfter:response.headers.get('Retry-After')});}
+      if(!response.ok){
+        // Preserve business rejections and Retry-After on HTTP error replies.
+        let error;
+        try{m[__DECODE__](envelope);}catch(cause){error=cause;}
+        throw Object.assign(error||new Error('领取请求失败'),{httpStatus:response.status,retryAfter:response.headers.get('Retry-After')});
+      }
+      // Decode through the native contract (including login-expiry handling).
+      m[__DECODE__](envelope);return envelope;
+    }catch(error){
+      if(Number(error?.code)!==70006){try{m[__CHESTTOAST__](error);}catch{}}
+      throw error;
+    }
+  };
   const id=__BEFORE_OPERATIONID__,side=__SIDE__,other=side==='left'?'right':'left',expectedAccount=__BEFORE_ACCOUNTKEY__;
   const uncertain=()=>new Error('结果无法确认');
   const serverState=data=>{
@@ -84,8 +112,8 @@
          before.consumed!==__BEFORE_CONSUMED__||tx.initial.consumed!==before.consumed){tx.result={outcome:'skipped',skipped:true,reason:'领取条件已变化',confirmedServer:tx.initial};return;}
       tx.stage='request';tx.sent=true;
       let data;
-      try{data=m[__DECODE__](await m[__OPENCHEST__]({place:side,click_num:before.cumulative}));}
-      catch(error){const code=Number(error?.code);if(![70004,70005,70006].includes(code))throw error;tx.rejection=code;}
+      try{data=m[__DECODE__](await requestChest({place:side,click_num:before.cumulative}));}
+      catch(error){const code=Number(error?.code);if(![70004,70005,70006].includes(code)||Number(error?.httpStatus)>=400)throw error;tx.rejection=code;}
       check();
       if(tx.rejection===null){
         tx.stage='response';
