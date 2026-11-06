@@ -129,17 +129,18 @@ namespace Tappo {
         internal async Task CheckForUpdates() {
             if(checkingUpdates||disposed)return;
             checkingUpdates=true;nextUpdateCheck=RuntimeStore.Now+6*60*60*1000L;
-            var button=E<Button>("UpdateButton");button.IsEnabled=false;button.Content="正在检查更新…";
+            var currentVersion="v"+Updates.DisplayVersion;
+            var button=E<Button>("UpdateButton");button.IsEnabled=false;button.Content=currentVersion+" · 正在检查更新…";
             try {
                 var result=await UpdateCheck(updateCancellation.Token);
                 if(disposed)return;
-                update=result;button.Content=result.available?"发现新版 v"+result.version:"v"+Updates.DisplayVersion+" · 已是最新";
-                button.ToolTip=result.available?"点击打开 GitHub 发布页；更新前请完全退出助手并保留配置与 runtime。":"当前构建："+Updates.BuildVersion+"；点击重新检查。";
+                update=result;button.Content=currentVersion+(result.available?" · 新版 v"+result.version:" · 已是最新");
+                button.ToolTip="当前构建："+Updates.BuildVersion+"；"+(result.available?"点击打开 GitHub 发布页；更新前请完全退出助手并保留配置与 runtime。":"点击重新检查。");
             } catch(Exception error) {
                 if(disposed)return;
                 update=null;
                 nextUpdateCheck=RuntimeStore.Now+15*60*1000L;
-                button.Content="更新检查失败 · 重试";button.ToolTip=error is InvalidOperationException?error.Message:"暂时无法连接 GitHub，请稍后重试。";
+                button.Content=currentVersion+" · 更新检查失败 · 重试";button.ToolTip="当前构建："+Updates.BuildVersion+"；"+(error is InvalidOperationException?error.Message:"暂时无法连接 GitHub，请稍后重试。");
             } finally {checkingUpdates=false;if(!disposed)button.IsEnabled=true;}
         }
         void OpenAnother() {

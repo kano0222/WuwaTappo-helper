@@ -574,12 +574,16 @@ namespace Tappo {
         static void UpdatePanels() {
             var store=Store();using(var panel=new Panel(store)) {
                 panel.ReadStatus=()=>new Status {running=true,pid=Process.GetCurrentProcess().Id};
+                var versionLabel="v"+Updates.DisplayVersion+" · ";
+                Check(panel.E<Button>("UpdateButton").Content.ToString().StartsWith(versionLabel),"initial UI missing local version");
                 panel.UpdateCheck=token=>Task.FromResult(new UpdateInfo {version="0.1.1",available=false});
                 panel.CheckForUpdates().GetAwaiter().GetResult();Check(panel.E<Button>("UpdateButton").Content.ToString().Contains("已是最新"),"up-to-date UI");
+                Check(panel.E<Button>("UpdateButton").Content.ToString().StartsWith(versionLabel),"up-to-date UI missing local version");
                 panel.UpdateCheck=token=>Task.FromResult(new UpdateInfo {version="9.9.9",available=true,url="https://github.com/kano0222/WuwaTappo-helper/releases/tag/v9.9.9"});
                 panel.CheckForUpdates().GetAwaiter().GetResult();string opened=null;panel.OpenUpdatePage=url=>opened=url;
                 panel.Render(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"previews","update-available.png"),820,660);
                 var updateButton=panel.E<Button>("UpdateButton");var position=updateButton.TranslatePoint(new Point(),panel.E<Border>("RootSurface"));
+                Check(updateButton.Content.ToString().StartsWith(versionLabel)&&updateButton.Content.ToString().Contains("9.9.9"),"new release hid installed version");
                 Check(position.X>=0&&position.X+updateButton.ActualWidth<=820&&position.Y+updateButton.ActualHeight<=660,"update button overflow");
                 panel.UpdateAction().GetAwaiter().GetResult();Check(opened!=null&&opened.EndsWith("v9.9.9"),"update page not opened");
                 var feedback=panel.E<Button>("FeedbackButton");
@@ -594,11 +598,16 @@ namespace Tappo {
                 }
                 panel.UpdateCheck=token=>{throw new InvalidOperationException("GitHub 暂时限制查询");};panel.CheckForUpdates().GetAwaiter().GetResult();
                 Check(panel.E<Button>("UpdateButton").IsEnabled&&panel.E<Button>("UpdateButton").Content.ToString().Contains("失败"),"update failure disabled controls");
+                Check(updateButton.Content.ToString().StartsWith(versionLabel)&&updateButton.ToolTip.ToString().Contains(Updates.BuildVersion),"failed check hid local version");
+                panel.UpdateCheck=token=>{throw new System.Net.Http.HttpRequestException("offline");};panel.CheckForUpdates().GetAwaiter().GetResult();
+                Check(updateButton.Content.ToString().StartsWith(versionLabel)&&updateButton.ToolTip.ToString().Contains(Updates.BuildVersion),"offline check hid local version");
+                panel.Render(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"previews","update-failed.png"),820,660);
                 int retries=0;panel.UpdateCheck=token=>{retries++;return Task.FromResult(new UpdateInfo {version="0.1.1"});};
                 panel.UpdateAction().GetAwaiter().GetResult();Check(retries==1,"retry opened stale update page");
                 Check(!store.Exists("control.json")&&panel.ReadStatus().running,"update check changed automation");
                 var waiting=new TaskCompletionSource<UpdateInfo>();int calls=0;
                 panel.UpdateCheck=token=>{calls++;return waiting.Task;};var first=panel.CheckForUpdates();
+                Check(updateButton.Content.ToString().StartsWith(versionLabel),"pending check hid local version");
                 panel.CheckForUpdates().GetAwaiter().GetResult();Check(calls==1&&!panel.E<Button>("UpdateButton").IsEnabled,"overlapping update requests");
                 waiting.SetResult(new UpdateInfo {version="0.1.1"});panel.Window.Dispatcher.Invoke(new Action(()=>{}),DispatcherPriority.ApplicationIdle);first.GetAwaiter().GetResult();
                 Check(panel.E<Button>("UpdateButton").IsEnabled,"update button not restored");
