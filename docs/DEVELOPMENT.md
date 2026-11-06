@@ -95,7 +95,7 @@
 
 [build.yml](../.github/workflows/build.yml) 在 `main` 推送、`v*` 标签推送及手动触发时运行原生检查和四组 JS 检查，再生成便携 ZIP。
 
-当前打包清单严格包含四个文件：exe、exe.config、README.md、config.example.json。打包阶段执行 `--check`，要求文件数为 4、总大小不超过 5 MiB。仓库与分发包不包含本机配置、运行记录、桌宠安装文件或账号数据；分发包也不附带 `docs/` 和 README 预览图片，相关文档需在仓库中查看。
+当前打包清单严格包含五个文件：exe、exe.config、README.md、config.example.json、LICENSE。打包阶段执行 `--check`，要求文件数为 5、总大小不超过 5 MiB。仓库与分发包不包含本机配置、运行记录、桌宠安装文件或账号数据；分发包也不附带 `docs/` 和 README 预览图片，相关文档需在仓库中查看。
 
 通过检查的 ZIP 上传到 **Artifacts**，保留 30 天；标签推送才进一步创建 **GitHub Release**。Artifacts 不等同于 Release，手动触发工作流本身不创建 Release。
 

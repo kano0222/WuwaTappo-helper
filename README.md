@@ -1,5 +1,11 @@
 # Wuwa Tappo Helper
 
+<p>
+  <a href="https://github.com/kano0222/WuwaTappo-helper/releases"><img alt="最新版本" src="https://img.shields.io/github/v/release/kano0222/WuwaTappo-helper?label=release&style=flat-square"></a>
+  <a href="https://github.com/kano0222/WuwaTappo-helper/actions/workflows/build.yml"><img alt="构建状态" src="https://img.shields.io/github/actions/workflow/status/kano0222/WuwaTappo-helper/build.yml?branch=main&amp;label=build&amp;style=flat-square"></a>
+  <a href="LICENSE"><img alt="MIT License" src="https://img.shields.io/badge/license-MIT-green?style=flat-square"></a>
+</p>
+
 Windows 上的 Wuwa Tappo 后台助手，支持国服与国际服，提供次数统计、宝箱倒计时、三种增加模式和系统托盘控制。
 
 ![真实 WPF 面板动态预览](docs/images/readme-motion.png)

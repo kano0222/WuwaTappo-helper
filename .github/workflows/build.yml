@@ -42,13 +42,13 @@ jobs:
         run: |
           $stage = Join-Path $PWD 'dist/WuwaTappoHelper-win-x64'
           [void][IO.Directory]::CreateDirectory($stage)
-          foreach ($file in @('build/WuwaTappoHelper.exe','build/WuwaTappoHelper.exe.config','README.md','config.example.json')) {
+          foreach ($file in @('build/WuwaTappoHelper.exe','build/WuwaTappoHelper.exe.config','README.md','config.example.json','LICENSE')) {
             Copy-Item -LiteralPath $file -Destination $stage
           }
           $check = Start-Process -FilePath (Join-Path $stage 'WuwaTappoHelper.exe') -ArgumentList '--check' -PassThru -Wait -WindowStyle Hidden
           if ($check.ExitCode -ne 0) { throw 'Embedded resource validation failed.' }
           $files = @(Get-ChildItem -LiteralPath $stage -Recurse -File)
-          if ($files.Count -ne 4) { throw 'Unexpected distribution files.' }
+          if ($files.Count -ne 5) { throw 'Unexpected distribution files.' }
           $size = ($files | Measure-Object Length -Sum).Sum
           if ($size -gt 5MB) { throw 'Native distribution unexpectedly exceeds 5 MiB.' }
           "Native distribution: $size bytes; no bundled PowerShell or Node.js." >> $env:GITHUB_STEP_SUMMARY
