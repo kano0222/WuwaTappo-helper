@@ -8,6 +8,7 @@ using System.Windows;
 namespace Tappo {
     internal static class Program {
         [STAThread] public static int Main(string[] args) {
+            if(args.Length==2&&args[0]=="--apply-update")return UpdateInstaller.Apply(args[1]);
             // Branch before constructing the real runtime store, including on preview errors.
             if(args.Length>0&&args[0]=="--render-preview") {
                 try {
@@ -22,6 +23,9 @@ namespace Tappo {
                     return 0;
                 } catch {return 1;}
             }
+            var baseRoot=AppDomain.CurrentDomain.BaseDirectory;
+            if(UpdateInstaller.Installing(baseRoot)) {MessageBox.Show("助手正在更新，请稍后重新打开。");return 1;}
+            UpdateInstaller.Cleanup(baseRoot);
             string instance=null;
             if(args.Length>=2&&args[args.Length-2]=="--instance") {instance=args[args.Length-1];args=args.Take(args.Length-2).ToArray();}
             RuntimeStore store;

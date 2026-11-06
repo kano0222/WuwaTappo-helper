@@ -7,8 +7,9 @@ using System.Threading;
 using System.Threading.Tasks;
 
 namespace Tappo {
-    internal sealed class ReleaseInfo { public string tag_name,html_url; public bool draft,prerelease; }
-    internal sealed class UpdateInfo { public string version,url; public bool available; }
+    internal sealed class ReleaseAsset { public string name,browser_download_url,digest,state; public long size; }
+    internal sealed class ReleaseInfo { public string tag_name,html_url; public bool draft,prerelease; public ReleaseAsset[] assets; }
+    internal sealed class UpdateInfo { public string version,url; public bool available; public ReleaseAsset asset; }
     internal static class Updates {
         internal const string IssuesUrl="https://github.com/kano0222/WuwaTappo-helper/issues";
         internal const string LatestUrl="https://api.github.com/repos/kano0222/WuwaTappo-helper/releases/latest";
@@ -30,7 +31,12 @@ namespace Tappo {
             var version=ParseVersion(release.tag_name);var local=ParseVersion(beta?current.Split('-')[0]:current);
             var expected="https://github.com/kano0222/WuwaTappo-helper/releases/tag/"+release.tag_name;
             if(release.html_url!=expected)throw new InvalidOperationException("发布地址不匹配");
-            return new UpdateInfo {version=version.ToString(3),url=expected,available=version>local||(beta&&version==local)};
+            ReleaseAsset asset=null;
+            foreach(var item in release.assets??new ReleaseAsset[0]) if(item.name==UpdateInstaller.PackageName) {
+                if(asset!=null)throw new InvalidOperationException("发布包含重复更新包");
+                UpdateInstaller.ValidateAsset(item,release.tag_name);asset=item;
+            }
+            return new UpdateInfo {version=version.ToString(3),url=expected,available=version>local||(beta&&version==local),asset=asset};
         }
         internal static async Task<UpdateInfo> Check(HttpMessageHandler handler,string current,CancellationToken cancellation) {
             using(var deadline=CancellationTokenSource.CreateLinkedTokenSource(cancellation))

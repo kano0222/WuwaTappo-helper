@@ -46,7 +46,7 @@ $versionSource=Join-Path $OutputDirectory 'Version.cs'
 $sources+=$versionSource
 # JSON models are populated by JavaScriptSerializer rather than C# assignments.
 $arguments=@('/nologo','/target:winexe','/platform:x64','/optimize+','/warn:4','/nowarn:0649','/main:Tappo.Program',('/out:'+(Join-Path $OutputDirectory 'WuwaTappoHelper.exe')),('/win32icon:'+(Join-Path $root 'assets\helper.ico')),('/win32manifest:'+(Join-Path $root 'src\app.manifest')))
-foreach ($assembly in @('System.dll','System.Core.dll','System.Net.Http.dll','System.Web.Extensions.dll','System.Drawing.dll','System.Windows.Forms.dll','System.Xaml.dll','WPF\WindowsBase.dll','WPF\PresentationCore.dll','WPF\PresentationFramework.dll')) {
+foreach ($assembly in @('System.dll','System.Core.dll','System.Net.Http.dll','System.IO.Compression.dll','System.IO.Compression.FileSystem.dll','System.Web.Extensions.dll','System.Drawing.dll','System.Windows.Forms.dll','System.Xaml.dll','WPF\WindowsBase.dll','WPF\PresentationCore.dll','WPF\PresentationFramework.dll')) {
     $arguments+=('/reference:'+(Join-Path $framework $assembly))
 }
 $arguments+=('/resource:'+(Join-Path $root 'src\Panel.xaml')+',Panel.xaml')

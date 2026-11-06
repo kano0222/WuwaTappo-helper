@@ -33,9 +33,11 @@ namespace Tappo {
         internal Func<CloseChoice> ClosePrompt;
         internal bool AutoCheckUpdates;
         internal Func<CancellationToken,Task<UpdateInfo>> UpdateCheck=Updates.Check;
+        internal Func<UpdateInfo,Action<int>,CancellationToken,Task<string>> UpdateDownload=(info,progress,token)=>UpdateInstaller.Download(info,AppDomain.CurrentDomain.BaseDirectory,progress,token);
+        internal Action<string> InstallUpdate=UpdateInstaller.Launch;
         internal Action<string> OpenUpdatePage=url=>{Process.Start(new ProcessStartInfo(url){UseShellExecute=true});};
         readonly CancellationTokenSource updateCancellation=new CancellationTokenSource();
-        bool checkingUpdates,disposed; long nextUpdateCheck; UpdateInfo update;
+        bool checkingUpdates,downloadingUpdate,launchingUpdate,disposed; long nextUpdateCheck; UpdateInfo update; string updateStage;
         internal Func<long> ReadClock=()=>RuntimeStore.Now;
         public Panel(RuntimeStore store,bool preview=false) {
             this.store=store; Window=(Window)XamlReader.Parse(Resources.Text("Panel.xaml"));
@@ -118,27 +120,60 @@ namespace Tappo {
         }
         public void StartTimer() {
             timer=new DispatcherTimer {Interval=TimeSpan.FromSeconds(1)};
-            timer.Tick+=async(s,e)=>{if(showEvent!=null&&showEvent.WaitOne(0)) Show();Refresh();if(AutoCheckUpdates&&RuntimeStore.Now>=nextUpdateCheck)await CheckForUpdates();};timer.Start();
+            timer.Tick+=async(s,e)=>{
+                if(UpdateInstaller.Requested(AppDomain.CurrentDomain.BaseDirectory)) {
+                    if(!Busy&&!Alive(ReadStatus())) {AllowExit=true;Window.Close();if(Application.Current!=null)Application.Current.Shutdown();}
+                    else {SetNotice("正在等待当前操作结束并退出，以安装更新…");Refresh();}
+                    return;
+                }
+                if(showEvent!=null&&showEvent.WaitOne(0)) Show();Refresh();if(AutoCheckUpdates&&RuntimeStore.Now>=nextUpdateCheck)await CheckForUpdates();
+            };timer.Start();
         }
         internal async Task UpdateAction() {
-            if(checkingUpdates||disposed)return;
+            if(checkingUpdates||downloadingUpdate||launchingUpdate||disposed)return;
+            var button=E<Button>("UpdateButton");
+            if(updateStage!=null) {
+                try {
+                    launchingUpdate=true;button.IsEnabled=false;button.Content="正在校验并准备更新…";
+                    InstallUpdate(updateStage);
+                    // Keep the panel available on updater failure; its event coordinates a successful exit.
+                    button.Content="重启并更新";
+                } catch(InvalidUpdateFilesException error) {
+                    updateStage=null;button.Content="更新失效 · 自动下载";
+                    button.ToolTip="当前构建："+Updates.BuildVersion+"；"+error.Message;
+                    SetNotice(error.Message);Refresh();
+                } catch(Exception error) {button.Content="重启并更新";button.ToolTip="更新启动失败："+error.Message;}
+                finally {launchingUpdate=false;if(!disposed)button.IsEnabled=true;}
+                return;
+            }
             if(update!=null&&update.available) {
-                try {OpenUpdatePage(update.url);} catch {E<Button>("UpdateButton").ToolTip="无法打开浏览器，请手动访问 GitHub Releases。";}
+                downloadingUpdate=true;button.IsEnabled=false;button.Content="正在下载更新…";
+                try {
+                    updateStage=await UpdateDownload(update,percent=>Window.Dispatcher.BeginInvoke(new Action(()=>{
+                        if(!disposed&&downloadingUpdate)button.Content="正在下载更新 · "+percent+"%";
+                    })),updateCancellation.Token);
+                    if(disposed)return;
+                    button.Content="重启并更新";button.ToolTip="已下载并校验 v"+update.version+"。点击退出此目录下所有助手窗口和后台，保留配置与运行记录；更新后请手动启动后台。";
+                } catch(Exception error) {
+                    if(disposed)return;
+                    button.Content="下载失败 · 重试";button.ToolTip=error is InvalidOperationException?error.Message:"下载失败，请稍后重试。";
+                } finally {downloadingUpdate=false;if(!disposed)button.IsEnabled=true;}
             } else await CheckForUpdates();
         }
         internal async Task CheckForUpdates() {
-            if(checkingUpdates||disposed)return;
+            if(checkingUpdates||downloadingUpdate||launchingUpdate||updateStage!=null||disposed)return;
             checkingUpdates=true;nextUpdateCheck=RuntimeStore.Now+6*60*60*1000L;
             var currentVersion="v"+Updates.DisplayVersion;
             var button=E<Button>("UpdateButton");button.IsEnabled=false;button.Content=currentVersion+" · 正在检查更新…";
             try {
                 var result=await UpdateCheck(updateCancellation.Token);
                 if(disposed)return;
-                update=result;button.Content=currentVersion+(result.available?" · 新版 v"+result.version:" · 已是最新");
-                button.ToolTip="当前构建："+Updates.BuildVersion+"；"+(result.available?"点击打开 GitHub 发布页；更新前请完全退出助手并保留配置与 runtime。":"点击重新检查。");
+                update=result;button.Tag=result.available?"update":null;
+                button.Content=result.available?"发现新版 v"+result.version+" · 自动下载":currentVersion+" · 已是最新";
+                button.ToolTip="当前构建："+Updates.BuildVersion+"；"+(result.available?"点击下载更新，下载完成后可点击“重启并更新”。":"点击重新检查。");
             } catch(Exception error) {
                 if(disposed)return;
-                update=null;
+                update=null;button.Tag=null;
                 nextUpdateCheck=RuntimeStore.Now+15*60*1000L;
                 button.Content=currentVersion+" · 更新检查失败 · 重试";button.ToolTip="当前构建："+Updates.BuildVersion+"；"+(error is InvalidOperationException?error.Message:"暂时无法连接 GitHub，请稍后重试。");
             } finally {checkingUpdates=false;if(!disposed)button.IsEnabled=true;}
@@ -207,6 +242,7 @@ namespace Tappo {
             store.Write("control.json",new Command {id=Guid.NewGuid().ToString(),action="resume"});
         }
         public async Task Act(string action,string pendingHash=null) {
+            if(UpdateInstaller.Requested(AppDomain.CurrentDomain.BaseDirectory))throw new InvalidOperationException("助手正在退出以安装更新，请稍候。");
             if(Busy) return;
             if(DispatchOverride!=null) {DispatchOverride(action);return;}
             if(action=="start"&&!ChoosePath(false)) return;

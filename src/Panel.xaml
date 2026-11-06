@@ -38,6 +38,14 @@
       <Setter Property="Background" Value="#EDB65E"/><Setter Property="BorderBrush" Value="#EDB65E"/>
       <Setter Property="Foreground" Value="#382917"/>
     </Style>
+    <Style TargetType="Button" x:Key="UpdateAction" BasedOn="{StaticResource ButtonBase}">
+      <Style.Triggers>
+        <Trigger Property="Tag" Value="update">
+          <Setter Property="Background" Value="#FFF5DE"/><Setter Property="BorderBrush" Value="#EDB65E"/>
+          <Setter Property="Foreground" Value="#704D20"/>
+        </Trigger>
+      </Style.Triggers>
+    </Style>
     <Style x:Key="ModeOption" TargetType="ListBoxItem">
       <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
       <Setter Property="Margin" Value="0,0,8,0"/>
@@ -250,7 +258,7 @@
                 <TextBlock Text="反馈" VerticalAlignment="Center"/>
               </StackPanel>
             </Button>
-            <Button x:Name="UpdateButton" Content="检查更新" Height="28" Padding="10,0" FontSize="11"/>
+            <Button x:Name="UpdateButton" Style="{StaticResource UpdateAction}" Content="检查更新" Width="240" Height="28" Padding="10,0" FontSize="11" Opacity="1"/>
           </StackPanel>
         </Grid>
       </Border>

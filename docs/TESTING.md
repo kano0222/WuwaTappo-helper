@@ -10,7 +10,7 @@
 | --- | --- | --- |
 | 策略、Worker、连接、恢复、状态文件、能力校验 | `./scripts/Test.ps1 -Suite Worker` | 策略边界、待确认记录、服务器确认、退避与手动重试、断线恢复、版本映射。 |
 | WPF 面板、托盘、关闭、反馈及更新交互 | `./scripts/Test.ps1 -Suite Panel` | 布局、按钮指令、提示优先级、暂停、隐藏／唤起／退出及更新交互；会打开隔离测试窗口。 |
-| 多实例、启动参数、WebSocket、更新请求 | `./scripts/Test.ps1 -Suite Platform` | 实例数据隔离、跨进程互斥、端口归属、子进程参数保留、回环连接释放、版本比较、HTTP 错误和取消。 |
+| 多实例、启动参数、WebSocket、更新请求 | `./scripts/Test.ps1 -Suite Platform` | 实例数据隔离、跨进程互斥、端口归属、子进程参数保留、回环连接释放、版本比较、HTTP 错误和取消；更新包校验、解压边界、替换回滚及配置和待确认记录保留。 |
 | 所有桥接脚本 | `./scripts/Test.ps1 -Suite Bridge` | 资源发现、补数、领取及状态查询。 |
 | 单个桥接脚本 | `./scripts/Test.ps1 -Suite Boost` | 可选 `Discovery`、`Boost`、`Claim`、`State`。 |
 | 全量回归 | `./scripts/Test.ps1` | 全部原生与四组 JS 测试。 |

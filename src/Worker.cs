@@ -178,6 +178,8 @@ namespace Tappo {
                     if(store.Exists("pending.json")) Status.fault=PendingMessage();
                     Publish(client!=null?"已连接":"正在等待桌宠重新连接");
                     while(!stop) {
+                        // Stop between operations; never interrupt an in-flight transaction or erase its journal.
+                        if(UpdateInstaller.Requested(AppDomain.CurrentDomain.BaseDirectory)) {stop=true;restoreRequested=false;break;}
                         int loopDelay=1000;
                         string retryCommand=null;
                         var command=store.Read<Command>("control.json");
@@ -264,6 +266,7 @@ namespace Tappo {
                                     else if(server.consumed!=Status.state.consumed) Publish("等待桌宠同步服务器余额");
                                     else if(action.kind=="claim"&&server.Slot(action.side)>now()) Publish("等待服务器确认槽位到期");
                                     else {
+                                        if(UpdateInstaller.Requested(AppDomain.CurrentDomain.BaseDirectory)) {stop=true;restoreRequested=false;break;}
                                         if(action.kind=="boost") nextBoost=now()+action.delayMs;
                                         var before=Status.state;
                                         if(action.kind=="claim") {

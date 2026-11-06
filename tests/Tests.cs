@@ -39,6 +39,25 @@ namespace Tappo {
         static void Reject(Action action,string message) {bool rejected=false;try{action();}catch{rejected=true;}Check(rejected,message);}
         static RuntimeStore Store() {return new RuntimeStore(Path.Combine(root,Guid.NewGuid().ToString("N")));}
         [STAThread] public static int Main(string[] args) {
+            if(args.Length==2&&args[0]=="--apply-update")return UpdateInstaller.Apply(args[1]);
+            if(args.Length==2&&args[0]=="--update-participant") {
+                var isolatedRoot=AppDomain.CurrentDomain.BaseDirectory;
+                var isolatedStore=Instances.Open(isolatedRoot,args[1]=="primary"?null:args[1]);
+                var app=new Application {ShutdownMode=ShutdownMode.OnExplicitShutdown};
+                using(var panel=new Panel(isolatedStore,preview:true)) {
+                    if(!panel.ClaimInstance())return 2;
+                    panel.StartTimer();
+                    isolatedStore.Write("update-ready.json",new {ready=true});
+                    var timeout=new DispatcherTimer {Interval=TimeSpan.FromSeconds(30)};timeout.Tick+=(s,e)=>app.Shutdown(3);timeout.Start();
+                    app.Run();timeout.Stop();
+                    if(!panel.AllowExit)return 3;
+                    isolatedStore.Write("update-stopped.json",new {stopped=true});return 0;
+                }
+            }
+            if(File.Exists(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"update-test-mode"))&&(args.Length==0||args.Length==2&&args[0]=="--instance")) {
+                var isolatedStore=Instances.Open(AppDomain.CurrentDomain.BaseDirectory,args.Length==0?null:args[1]);
+                isolatedStore.Write("update-restarted.json",new {readme=File.ReadAllText(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"README.md"))});return 0;
+            }
             var startupCheck=Array.IndexOf(args,"--startup-args-check");
             if(startupCheck>=0&&startupCheck+2<args.Length) {
                 var debug=args[startupCheck+1]=="debug";
@@ -80,7 +99,7 @@ namespace Tappo {
                     checks+=ConnectionChecks.Run().GetAwaiter().GetResult();checks+=RetryChecks.Run().GetAwaiter().GetResult();checks+=RecoveryChecks.Run().GetAwaiter().GetResult();checks+=CapabilityChecks.Run().GetAwaiter().GetResult();
                 }
                 if(suite=="All"||suite=="Panel") {ResetPanels();Layouts();CloseChoices();Lifecycle();checks+=ConnectionChecks.Panels();UpdatePanels();}
-                if(suite=="All"||suite=="Platform") {checks+=StartupChecks.Run();checks+=TransportChecks.Run().GetAwaiter().GetResult();checks+=UpdateChecks.Run().GetAwaiter().GetResult();}
+                if(suite=="All"||suite=="Platform") {checks+=StartupChecks.Run();checks+=TransportChecks.Run().GetAwaiter().GetResult();checks+=UpdateChecks.Run().GetAwaiter().GetResult();checks+=InstallerChecks.Run().GetAwaiter().GetResult();}
                 Console.WriteLine("PASS: "+checks+" native checks ("+suite+"); no account mutations, app restarts, or system policy changes.");return 0;
             } catch(Exception error) {Console.Error.WriteLine(error);return 1;}
             finally {
@@ -572,20 +591,32 @@ namespace Tappo {
             }
         }
         static void UpdatePanels() {
-            var store=Store();using(var panel=new Panel(store)) {
-                panel.ReadStatus=()=>new Status {running=true,pid=Process.GetCurrentProcess().Id};
+            var store=Store();using(var panel=new Panel(store,preview:true)) {
+                var now=DateTimeOffset.UtcNow;var state=State();state.time=now.ToUnixTimeMilliseconds();state.available=1800;state.cumulative=12800;state.consumed=11000;
+                state.left=state.time+240000;state.right=state.time+754000;
+                panel.ReadClock=()=>now.ToUnixTimeMilliseconds();
+                panel.ReadStatus=()=>new Status {running=true,pid=Process.GetCurrentProcess().Id,at=now.ToString("o"),mode="brute",state=state,claimsThisRun=2,
+                    chestTimes=new ChestTimes {updatedAt=state.time,left=state.left,right=state.right}};
+                panel.SetPath(@"C:\WuwaTappo\WuwaTappo.exe");
+                store.Log("started");store.Log("claim-confirmed",new {side="right"});store.Log("boost-confirmed",new {delta=100});
+                var previewActivities=File.ReadAllText(store.FilePath("events.jsonl"));
                 var versionLabel="v"+Updates.DisplayVersion+" · ";
                 Check(panel.E<Button>("UpdateButton").Content.ToString().StartsWith(versionLabel),"initial UI missing local version");
                 panel.UpdateCheck=token=>Task.FromResult(new UpdateInfo {version="0.1.1",available=false});
                 panel.CheckForUpdates().GetAwaiter().GetResult();Check(panel.E<Button>("UpdateButton").Content.ToString().Contains("已是最新"),"up-to-date UI");
                 Check(panel.E<Button>("UpdateButton").Content.ToString().StartsWith(versionLabel),"up-to-date UI missing local version");
-                panel.UpdateCheck=token=>Task.FromResult(new UpdateInfo {version="9.9.9",available=true,url="https://github.com/kano0222/WuwaTappo-helper/releases/tag/v9.9.9"});
+                panel.UpdateCheck=token=>Task.FromResult(new UpdateInfo {version="0.1.17",available=true,url="https://github.com/kano0222/WuwaTappo-helper/releases/tag/v0.1.17"});
                 panel.CheckForUpdates().GetAwaiter().GetResult();string opened=null;panel.OpenUpdatePage=url=>opened=url;
                 panel.Render(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"previews","update-available.png"),820,660);
+                RenderUpdateState(panel,"update-available");
                 var updateButton=panel.E<Button>("UpdateButton");var position=updateButton.TranslatePoint(new Point(),panel.E<Border>("RootSurface"));
-                Check(updateButton.Content.ToString().StartsWith(versionLabel)&&updateButton.Content.ToString().Contains("9.9.9"),"new release hid installed version");
+                Check(updateButton.Content.ToString()=="发现新版 v0.1.17 · 自动下载"&&updateButton.ToolTip.ToString().Contains(Updates.BuildVersion),"new release unclear or installed version missing");
+                Check((string)updateButton.Tag=="update"&&((System.Windows.Media.SolidColorBrush)updateButton.Background).Color==System.Windows.Media.Color.FromRgb(255,245,222),"new update not highlighted");
                 Check(position.X>=0&&position.X+updateButton.ActualWidth<=820&&position.Y+updateButton.ActualHeight<=660,"update button overflow");
-                panel.UpdateAction().GetAwaiter().GetResult();Check(opened!=null&&opened.EndsWith("v9.9.9"),"update page not opened");
+                int downloads=0;panel.UpdateDownload=(info,progress,token)=>{downloads++;throw new IOException("offline");};
+                panel.UpdateAction().GetAwaiter().GetResult();Check(downloads==1&&opened==null&&updateButton.Content.ToString().Contains("下载失败"),"download failure or browser fallback");
+                RenderUpdateState(panel,"update-download-failed");
+                panel.UpdateAction().GetAwaiter().GetResult();Check(downloads==2&&updateButton.IsEnabled,"download retry unavailable");
                 var feedback=panel.E<Button>("FeedbackButton");
                 feedback.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Check(opened==Updates.IssuesUrl,"feedback page not opened");
                 var feedbackPosition=feedback.TranslatePoint(new Point(),panel.E<Border>("RootSurface"));
@@ -611,6 +642,52 @@ namespace Tappo {
                 panel.CheckForUpdates().GetAwaiter().GetResult();Check(calls==1&&!panel.E<Button>("UpdateButton").IsEnabled,"overlapping update requests");
                 waiting.SetResult(new UpdateInfo {version="0.1.1"});panel.Window.Dispatcher.Invoke(new Action(()=>{}),DispatcherPriority.ApplicationIdle);first.GetAwaiter().GetResult();
                 Check(panel.E<Button>("UpdateButton").IsEnabled,"update button not restored");
+                File.WriteAllText(store.FilePath("events.jsonl"),previewActivities);
+                panel.UpdateCheck=token=>Task.FromResult(new UpdateInfo {version="0.1.17",available=true});panel.CheckForUpdates().GetAwaiter().GetResult();
+                var download=new TaskCompletionSource<string>();downloads=0;
+                panel.UpdateDownload=(info,progress,token)=>{downloads++;progress(50);return download.Task;};
+                var downloading=panel.UpdateAction();panel.UpdateAction().GetAwaiter().GetResult();panel.CheckForUpdates().GetAwaiter().GetResult();
+                Check(downloads==1&&!updateButton.IsEnabled,"overlapping download or check");
+                panel.Window.Dispatcher.Invoke(new Action(()=>{}),DispatcherPriority.ApplicationIdle);
+                RenderUpdateState(panel,"update-downloading");
+                download.SetResult("isolated-stage");panel.Window.Dispatcher.Invoke(new Action(()=>{}),DispatcherPriority.ApplicationIdle);downloading.GetAwaiter().GetResult();
+                Check(updateButton.Content.ToString()=="重启并更新"&&updateButton.IsEnabled,"download did not enable restart");
+                RenderUpdateState(panel,"update-ready");
+                panel.CheckForUpdates().GetAwaiter().GetResult();Check(updateButton.Content.ToString()=="重启并更新","automatic check discarded staged update");
+                int installs=0;panel.InstallUpdate=stage=>{Check(stage=="isolated-stage","wrong update stage");installs++;throw new IOException("launch failed");};
+                panel.UpdateAction().GetAwaiter().GetResult();Check(installs==1&&updateButton.IsEnabled&&updateButton.ToolTip.ToString().Contains("启动失败"),"installer launch failure lost retry");
+                panel.InstallUpdate=stage=>installs++;panel.UpdateAction().GetAwaiter().GetResult();Check(installs==2&&downloads==1,"restart downloaded again");
+                panel.InstallUpdate=UpdateInstaller.Launch;
+                panel.UpdateAction().GetAwaiter().GetResult();
+                Check(updateButton.IsEnabled&&updateButton.Content.ToString()=="更新失效 · 自动下载"&&updateButton.ToolTip.ToString().Contains("重新下载"),"missing update did not restore download");
+                Check(!panel.AllowExit&&!store.Exists("control.json")&&panel.ReadStatus().running,"invalid update stopped automation or closed panel");
+                RenderUpdateState(panel,"update-invalid");
+                panel.UpdateDownload=(info,progress,token)=>{downloads++;return Task.FromResult("replacement-stage");};
+                panel.UpdateAction().GetAwaiter().GetResult();
+                Check(downloads==2&&updateButton.Content.ToString()=="重启并更新","invalid update could not be downloaded again");
+                panel.InstallUpdate=stage=>{Check(stage=="replacement-stage","invalid stage reused after download");installs++;};
+                panel.UpdateAction().GetAwaiter().GetResult();Check(installs==3,"replacement update did not reach installer");
+                Check(!store.Exists("control.json"),"download or launch directly mutated automation");
+            }
+        }
+        static void RenderUpdateState(Panel panel,string name) {
+            foreach(var size in new[]{new Size(960,900),new Size(820,660)}) {
+                var suffix=size.Width==960?"-full":"-minimum";
+                panel.Render(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"previews",name+suffix+".png"),(int)size.Width,(int)size.Height);
+                if(size.Width==960) {
+                    var footer=panel.E<Border>("FooterHint");var visual=new System.Windows.Media.DrawingVisual();
+                    using(var drawing=visual.RenderOpen())drawing.DrawRectangle(new System.Windows.Media.VisualBrush(footer),null,new Rect(0,0,footer.ActualWidth,footer.ActualHeight));
+                    var bitmap=new System.Windows.Media.Imaging.RenderTargetBitmap((int)Math.Ceiling(footer.ActualWidth),(int)Math.Ceiling(footer.ActualHeight),96,96,System.Windows.Media.PixelFormats.Pbgra32);bitmap.Render(visual);
+                    var encoder=new System.Windows.Media.Imaging.PngBitmapEncoder();encoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(bitmap));
+                    using(var output=File.Create(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"previews",name+"-footer.png")))encoder.Save(output);
+                }
+                var button=panel.E<Button>("UpdateButton");var feedback=panel.E<Button>("FeedbackButton");var surface=panel.E<Border>("RootSurface");
+                var position=button.TranslatePoint(new Point(),surface);var other=feedback.TranslatePoint(new Point(),surface);
+                Check(button.ActualWidth==240&&button.ActualHeight==feedback.ActualHeight&&Math.Abs(position.Y-other.Y)<1,"update footer controls changed size or alignment: "+name);
+                Check(other.X>=0&&other.X+feedback.ActualWidth+5<=position.X&&position.X+button.ActualWidth<=size.Width-20&&position.Y+button.ActualHeight<=size.Height,"update footer overflow: "+name);
+                var text=new TextBlock {Text=button.Content.ToString(),FontFamily=button.FontFamily,FontSize=button.FontSize,FontWeight=button.FontWeight};text.Measure(new Size(double.PositiveInfinity,double.PositiveInfinity));
+                Check(text.DesiredSize.Width<=button.ActualWidth-button.Padding.Left-button.Padding.Right-2,"update label clipped: "+name);
+                Check(button.Opacity==1,"update progress text faded: "+name);
             }
         }
         static void CloseChoices() {
