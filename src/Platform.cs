@@ -115,17 +115,17 @@ namespace Tappo {
             if(settings==null||!ValidPath(settings.appPath)) throw new InvalidOperationException("桌宠路径无效，请重新选择程序。");
             return settings.appPath;
         }
-        public static void CheckListeners(int port=19222) {
+        public static void CheckListeners(int port=19222,bool allowMissing=false) {
             var endpoints=IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Where(p=>p.Port==port).ToArray();
-            if(endpoints.Length==0) throw new ConnectionFailureException("debug-unavailable","调试入口不存在");
+            if(endpoints.Length==0&&!allowMissing) throw new ConnectionFailureException("debug-unavailable","调试入口不存在");
             if(endpoints.Any(p=>!IPAddress.IsLoopback(p.Address))) throw new InvalidOperationException("调试端口并非仅限本机，已停止。");
         }
         public static async Task EnsureDebugSession(RuntimeStore store,string app) {
             var running=CheckRunningApp(app);
-            if(running) { CheckListeners(Instances.PortFor(app)); return; }
+            if(running) { Instances.PortFor(app); return; }
             if(!Administrator) throw new InvalidOperationException("启动桌宠连接需要管理员权限。");
             var port=Instances.AvailablePort();
-            var record=new Dictionary<string,object>{{"startedAt",DateTimeOffset.UtcNow.ToString("o")},{"argumentSource","host-command-line"}};
+            var record=new Dictionary<string,object>{{"startedAt",DateTimeOffset.UtcNow.ToString("o")},{"argumentSource","host-command-line"},{"port",port}};
             SaveStartupRecord(()=>store.Write("debug-startup-session.json",record));
             try {
                 using(var child=Process.Start(AppStartInfo(app,true,port))) {
@@ -134,8 +134,8 @@ namespace Tappo {
                 }
                 var until=RuntimeStore.Now+25000;
                 while(true) {
-                    try { CheckListeners(port); if(Instances.PortFor(app)!=port) throw new InvalidOperationException("调试端口归属不匹配。"); await AppClient.LocalGet("/json/version",1000,port).ConfigureAwait(false); record["debugReady"]=true; break; }
-                    catch { if(RuntimeStore.Now>=until) throw new InvalidOperationException("桌宠连接未就绪，请检查桌宠状态。"); }
+                    try { if(Instances.PortFor(app)!=port) throw new InvalidOperationException("调试端口归属不匹配。"); await AppClient.LocalGet("/json/version",1000,port).ConfigureAwait(false); record["debugReady"]=true; break; }
+                    catch(Exception error) { record["lastCheckError"]=error.Message;if(RuntimeStore.Now>=until) throw new InvalidOperationException("桌宠连接未就绪，请检查桌宠状态。",error); }
                     await Task.Delay(400).ConfigureAwait(false);
                 }
             } catch(Exception error) {record["error"]=error.Message;throw;}

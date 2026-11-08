@@ -3,11 +3,13 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Management;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace Tappo {
     internal static class Instances {
@@ -87,24 +89,81 @@ namespace Tappo {
             return OwnedPort(pid);
         }
         internal static int OwnedPort(int pid) {
-            var tree=ProcessTree(pid);int size=0;
-            GetExtendedTcpTable(IntPtr.Zero,ref size,false,2,3,0);
-            var buffer=Marshal.AllocHGlobal(size);
-            try {
-                if(GetExtendedTcpTable(buffer,ref size,false,2,3,0)!=0)throw new InvalidOperationException("无法核实调试端口归属。");
-                var ports=new HashSet<int>();var count=Marshal.ReadInt32(buffer);
-                for(int i=0;i<count;i++) {
-                    var row=IntPtr.Add(buffer,4+i*24);
-                    if(!tree.Contains(Marshal.ReadInt32(row,20)))continue;
-                    var address=new IPAddress((long)(uint)Marshal.ReadInt32(row,4));
-                    if(!IPAddress.IsLoopback(address))continue;
-                    var port=(int)(ushort)IPAddress.NetworkToHostOrder((short)Marshal.ReadInt32(row,8));
-                    ports.Add(port);
+            return ResolvePort(ProcessTree(pid),ReadTcpRows,()=>DebugPort(CommandLine(pid)),ProbePort);
+        }
+        internal sealed class TcpRow {
+            public int state,localPort,remotePort,pid;
+            public IPAddress localAddress,remoteAddress;
+        }
+        static TcpRow[] ReadTcpRows() {
+            // Include established connections: some systems omit the CDP listener.
+            int size=0;
+            GetExtendedTcpTable(IntPtr.Zero,ref size,false,2,5,0); // AF_INET, OWNER_PID_ALL
+            for(int attempt=0;attempt<3;attempt++) {
+                var buffer=Marshal.AllocHGlobal(size);
+                try {
+                    var result=GetExtendedTcpTable(buffer,ref size,false,2,5,0);
+                    if(result==122)continue; // Table grew between the size query and read.
+                    if(result!=0)throw new InvalidOperationException("无法核实调试端口归属。");
+                    var rows=new List<TcpRow>();var count=Marshal.ReadInt32(buffer);
+                    for(int i=0;i<count;i++) {
+                        var row=IntPtr.Add(buffer,4+i*24);
+                        rows.Add(new TcpRow {state=Marshal.ReadInt32(row),localAddress=new IPAddress((long)(uint)Marshal.ReadInt32(row,4)),
+                            localPort=(int)(ushort)IPAddress.NetworkToHostOrder((short)Marshal.ReadInt32(row,8)),
+                            remoteAddress=new IPAddress((long)(uint)Marshal.ReadInt32(row,12)),
+                            remotePort=(int)(ushort)IPAddress.NetworkToHostOrder((short)Marshal.ReadInt32(row,16)),pid=Marshal.ReadInt32(row,20)});
+                    }
+                    return rows.ToArray();
+                } finally {Marshal.FreeHGlobal(buffer);}
+            }
+            throw new InvalidOperationException("调试端口列表持续变化，请重试。");
+        }
+        internal static string CommandLine(int pid) {
+            using(var search=new ManagementObjectSearcher("SELECT CommandLine FROM Win32_Process WHERE ProcessId="+pid)) {
+                search.Options.Timeout=TimeSpan.FromSeconds(2);
+                using(var rows=search.Get()) foreach(ManagementObject row in rows) using(row) return row["CommandLine"] as string;
+            }
+            return null;
+        }
+        internal static int DebugPort(string commandLine) {
+            var matches=Regex.Matches(commandLine??"","(?:^|[\\s\"])--remote-debugging-port=(\\d+)(?=[\\s\"]|$)");
+            int port;
+            if(matches.Count!=1||!int.TryParse(matches[0].Groups[1].Value,out port)||port<1||port>65535)
+                throw new ConnectionFailureException("debug-unavailable","无法从所选桌宠启动参数确认调试端口。");
+            return port;
+        }
+        internal static bool OwnsConnection(IEnumerable<TcpRow> rows,HashSet<int> tree,int port,int clientPort) {
+            return rows.Any(row=>row.state==5&&row.localAddress.Equals(IPAddress.Loopback)&&row.remoteAddress.Equals(IPAddress.Loopback)&&
+                row.localPort==port&&row.remotePort==clientPort&&tree.Contains(row.pid));
+        }
+        internal static bool ProbePort(int port,HashSet<int> tree) {
+            using(var client=new TcpClient(AddressFamily.InterNetwork)) {
+                var connect=client.ConnectAsync(IPAddress.Loopback,port);
+                if(!connect.Wait(1000))return false;
+                var clientPort=((IPEndPoint)client.Client.LocalEndPoint).Port;
+                for(int attempt=0;attempt<5;attempt++) {
+                    if(OwnsConnection(ReadTcpRows(),tree,port,clientPort))return true;
+                    System.Threading.Thread.Sleep(20);
                 }
-                if(ports.Count==0)throw new ConnectionFailureException("debug-unavailable","所选桌宠没有本机调试入口；请正常退出该桌宠，再点击启动后台。");
-                if(ports.Count!=1)throw new InvalidOperationException("所选桌宠存在多个监听端口，无法确认调试入口。");
-                return ports.Single();
-            } finally {Marshal.FreeHGlobal(buffer);}
+                return false;
+            }
+        }
+        internal static int ResolvePort(HashSet<int> tree,Func<TcpRow[]> read,Func<int> candidate,Func<int,HashSet<int>,bool> probe) {
+            var rows=read();
+            var ports=new HashSet<int>(rows.Where(row=>row.state==2&&tree.Contains(row.pid)&&IPAddress.IsLoopback(row.localAddress)).Select(row=>row.localPort));
+            if(ports.Count>1)throw new InvalidOperationException("所选桌宠存在多个监听端口，无法确认调试入口。");
+            if(ports.Count==1) {
+                var port=ports.Single();Platform.CheckListeners(port,true);return port;
+            }
+            int fallback;
+            try {
+                fallback=candidate();
+                Platform.CheckListeners(fallback,true);
+                if(!probe(fallback,tree))throw new InvalidOperationException("连接的服务端不属于所选桌宠进程树。");
+            } catch(Exception error) {
+                throw new ConnectionFailureException("debug-unavailable","所选桌宠调试入口验证失败："+error.Message);
+            }
+            return fallback;
         }
         internal static int AvailablePort() {
             var listener=new TcpListener(IPAddress.Loopback,0);

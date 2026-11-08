@@ -63,7 +63,7 @@ namespace Tappo {
         }
         static async Task<AppClient> FindMain(int port,string appPath) {
             if(appPath!=null&&Instances.PortFor(appPath)!=port)throw new InvalidOperationException("桌宠调试端口已变化，请重新连接。");
-            Platform.CheckListeners(port);
+            if(appPath==null)Platform.CheckListeners(port); // PortFor already validates the selected process and endpoint.
             var targets=Json.Decode<Target[]>(await LocalGet("/json/list",5000,port).ConfigureAwait(false));
             AppClient selected=null;
             try {

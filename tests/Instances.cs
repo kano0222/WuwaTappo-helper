@@ -46,7 +46,7 @@ namespace Tappo {
                     Check(button.ActualWidth>=120&&button.ActualHeight>=28,"second instance button clipped");
                     Check(!extra.E<System.Windows.Controls.Button>("BrowseAppButton").IsEnabled,"secondary profile can be rebound");
                 }
-                return 19;
+                return 19+EndpointChecks.Run();
             } finally {Directory.Delete(root,true);}
         }
         static int Child(string app,string mode="--instance-lease-check") {
