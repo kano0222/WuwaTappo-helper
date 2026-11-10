@@ -68,6 +68,7 @@ namespace Tappo {
             E<Button>("StartButton").Click+=async(s,e)=>{if(E<Button>("StartButton").IsEnabled)await UserAction(runAction);};
             E<Button>("ResetPendingButton").Click+=async(s,e)=>await ResetPending();
             E<Button>("BrowseAppButton").Click+=async(s,e)=>await ChoosePath(true);
+            E<Button>("BrowseAppButton").ToolTipOpening+=(s,e)=>{if(!E<Button>("BrowseAppButton").IsMouseOver)e.Handled=true;};
             E<Button>("AnotherAppButton").Click+=(s,e)=>OpenAnother();
             E<Button>("MinimizeButton").Click+=(s,e)=>Window.WindowState=WindowState.Minimized;
             E<Button>("CloseButton").Click+=async(s,e)=>await RequestClose();
@@ -449,9 +450,6 @@ namespace Tappo {
                 Text("FixedSpeed",savedMode=="brute"?"到期补足":"波动慢速");
                 E<Label>("SpeedLabel").Content=savedMode=="clicker"?"补充速度":"补充方式";
                 Text("ReserveCaption","每箱消耗 1,000 · 储备目标 "+(savedMode=="brute"?2000:savedTarget).ToString("N0"));
-                var behavior=savedMode=="brute"?"到期且不足领取时，补足至 2,000 次。":savedMode=="clicker"?"目标 "+savedTarget.ToString("N0")+" 次 · "+savedRate.ToString("N0")+" 次/秒。":"目标 "+savedTarget.ToString("N0")+" 次。";
-                var applied=alive&&s.mode==savedMode&&(savedMode=="brute"||s.reserveTarget==savedTarget)&&(savedMode!="clicker"||s.clickerRate==savedRate);
-                Text("ModeHint",behavior+(alive&&!applied?" 等待后台应用。":""));
                 var clock=s==null?null:s.chestTimes;
                 bool valid=clock!=null&&clock.updatedAt.HasValue&&clock.left.HasValue&&clock.right.HasValue&&clock.error==null&&ReadClock()-clock.updatedAt>=0&&ReadClock()-clock.updatedAt<=90000;
                 Text("SnapshotLabel",!alive?state==null?"启动后同步":"上次运行已结束":stale?"状态未更新":s.connected==false?"连接已断开":clock!=null&&clock.error!=null?"宝箱时间查询失败":valid?"上次同步 "+DateTimeOffset.FromUnixTimeMilliseconds(clock.updatedAt.Value).ToOffset(TimeSpan.FromHours(8)).ToString("HH:mm:ss"):"等待接口同步");
@@ -497,7 +495,7 @@ namespace Tappo {
             Text("ActivityText",string.Join("\n",lines));
             E<FrameworkElement>("ActivityEmpty").Visibility=lines.Count==0?Visibility.Visible:Visibility.Collapsed;
         }
-        public void Render(string path,int width=880,int height=874) {
+        public void Render(string path,int width=880,int height=846) {
             var surface=E<Border>("RootSurface");Refresh();surface.Measure(new Size(width,height));surface.Arrange(new Rect(0,0,width,height));surface.UpdateLayout();Refresh();surface.UpdateLayout();
             var image=new RenderTargetBitmap(width,height,96,96,PixelFormats.Pbgra32);image.Render(surface);
             var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(image));

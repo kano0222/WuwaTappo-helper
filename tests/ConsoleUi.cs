@@ -18,11 +18,11 @@ namespace Tappo {
             try {
                 var store=new RuntimeStore(root);var now=RuntimeStore.Now;
                 using(var panel=new Panel(store,preview:true)) {
-                    Check(panel.Window.Width==880&&panel.Window.Height==874,"default console size does not fit the tightened layout");
-                    panel.FitToWorkArea(1080);Check(panel.Window.Height==874,"startup overrides the compact default height");
+                    Check(panel.Window.Width==880&&panel.Window.Height==846,"default console size does not fit the tightened layout");
+                    panel.FitToWorkArea(1080);Check(panel.Window.Height==846,"startup overrides the compact default height");
                     panel.FitToWorkArea(800);Check(panel.Window.Height==760,"startup does not fit a smaller work area");
                     panel.FitToWorkArea(600);Check(panel.Window.Height==660,"startup shrinks below the minimum height");
-                    panel.Window.Height=874;
+                    panel.Window.Height=846;
                     Check((string)((ListBoxItem)panel.E<ListBox>("ModeSelector").SelectedItem).Tag=="clicker","new console does not default to clicker mode");
                     foreach(var mode in new[]{"brute","human"}) {
                         var savedStore=new RuntimeStore(Path.Combine(root,"saved-"+mode));savedStore.Write("preferences.json",new Preference {mode=mode});
@@ -37,7 +37,8 @@ namespace Tappo {
                     Check(panel.E<TextBlock>("AvailableValue").ToolTip==null&&panel.Window.FindName("LeftHint")==null&&panel.Window.FindName("RightHint")==null,"empty count or chest repeats visible state in a tooltip");
                     panel.SetPath(@"C:\Very long installation directory\Another long directory\WuwaTappo\WuwaTappo.exe");
                     Check(panel.E<Button>("BrowseAppButton").ToolTip.ToString()==panel.E<TextBlock>("AppPathText").Text,"path tooltip does not show the full path");
-                    Check(ToolTipService.GetShowsToolTipOnKeyboardFocus(panel.E<Button>("BrowseAppButton"))==false&&ToolTipService.GetIsEnabled(panel.E<Button>("BrowseAppButton")),"path tooltip opens on keyboard focus or mouse tooltips are disabled");
+                    Check(ToolTipService.GetIsEnabled(panel.E<Button>("BrowseAppButton")),"path tooltip is disabled");
+                    PathToolTip(panel);
                     Render(panel,output,"idle");
                     foreach(var height in new[]{900,940}) {
                         panel.Render(Path.Combine(output,"empty-centered-"+height+".png"),880,height);
@@ -139,7 +140,6 @@ namespace Tappo {
                     Check(panel.E<StackPanel>("ActivityEmpty").Visibility==Visibility.Collapsed&&panel.E<TextBlock>("ActivityText").Text.Contains("补充速度已改为 1,000 次/秒")&&panel.E<TextBlock>("ActivityText").Text.Contains("储备目标已改为 50,000 次"),"saved parameter changes are missing from activity");
                     Render(panel,output,"clicker-activity");
                     status.readRetryAt=now+10000;Render(panel,output,"clicker-retry-activity");status.readRetryAt=null;
-                    Check(panel.E<TextBlock>("ModeHint").Text.Contains("50,000")&&panel.E<TextBlock>("ModeHint").Text.Contains("1,000"),"selected parameters missing");
                     panel.E<ListBox>("ModeSelector").SelectedIndex=2;Render(panel,output,"human-activity");
                     var activityY=panel.E<Border>("ActivityArea").TranslatePoint(new Point(),panel.E<Border>("RootSurface")).Y;
                     foreach(var modeIndex in new[]{0,1,2}) {
@@ -165,6 +165,26 @@ namespace Tappo {
             } finally {Directory.Delete(root,true);}
             return checks;
         }
+        static void PathToolTip(Panel panel) {
+            var button=panel.E<Button>("BrowseAppButton");
+            var flags=System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic;
+            // IsMouseOver reads WPF's cached flag; changing only its dependency property does not simulate hover.
+            var writeFlag=typeof(UIElement).GetMethod("WriteFlag",flags);
+            var hoverFlag=Enum.Parse(writeFlag.GetParameters()[0].ParameterType,"IsMouseOverCache");
+            var constructor=typeof(ToolTipEventArgs).GetConstructor(flags,null,new[]{typeof(bool)},null);
+            var wasHovered=button.IsMouseOver;var wasEnabled=button.IsEnabled;var path=button.ToolTip;
+            try {
+                foreach(var enabled in new[]{true,false}) foreach(var hovered in new[]{false,true}) {
+                    button.IsEnabled=enabled;writeFlag.Invoke(button,new object[]{hoverFlag,hovered});
+                    Check(button.IsMouseOver==hovered,"fixture did not establish the requested mouse state");
+                    var opening=(ToolTipEventArgs)constructor.Invoke(new object[]{true});
+                    button.RaiseEvent(opening);
+                    Check(opening.Handled==!hovered,"path tooltip does not require mouse hover: enabled="+enabled+", hovered="+hovered);
+                    Check(object.Equals(button.ToolTip,path),"tooltip filtering changed the full path");
+                }
+                Check(button.Focusable&&button.IsTabStop&&ToolTipService.GetShowOnDisabled(button),"tooltip filtering disabled keyboard access or disabled-button path hints");
+            } finally {button.IsEnabled=wasEnabled;writeFlag.Invoke(button,new object[]{hoverFlag,wasHovered});}
+        }
         static void RunButtonStates(Panel panel,string output,string name) {
             var button=panel.E<Button>("StartButton");
             var flags=System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic;
@@ -189,11 +209,11 @@ namespace Tappo {
             } finally {button.SetValue(pressedKey,wasPressed);button.SetValue(hoverKey,wasHovered);}
         }
         static void Render(Panel panel,string output,string name) {
-            foreach(var size in new[]{new Size(880,874),new Size(820,660)}) {
+            foreach(var size in new[]{new Size(880,846),new Size(820,660)}) {
                 var suffix=size.Width==880?"-default":"-minimum";
                 panel.Render(Path.Combine(output,name+suffix+".png"),(int)size.Width,(int)size.Height);
                 Check(panel.Window.FindName("ContentScroll")==null&&panel.E<Border>("MainViewport").ClipToBounds,"main panel scrolls instead of clipping");
-                Check(!panel.E<TextBlock>("ModeHint").Text.Contains("启动后台后生效")&&!panel.E<TextBlock>("ModeHint").Text.Contains("已应用"),"mode hint repeats lifecycle confirmation");
+                Check(panel.Window.FindName("ModeHint")==null,"removed mode hint still occupies the parameter card");
                 var surface=panel.E<Border>("RootSurface");
                 var picker=panel.E<Button>("BrowseAppButton");var path=panel.E<TextBlock>("AppPathText");var change=panel.E<Border>("ChangePathAction");
                 var pickerPoint=picker.TranslatePoint(new Point(),surface);var startPoint=panel.E<Button>("StartButton").TranslatePoint(new Point(),surface);
