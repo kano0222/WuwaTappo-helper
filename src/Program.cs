@@ -36,7 +36,7 @@ namespace Tappo {
                 if(args.Length==1&&args[0]=="--worker") {
                     var appPath=Platform.LoadPath(store);
                     var worker=new Worker(store,async()=>{await Platform.EnsureDebugSession(store,appPath).ConfigureAwait(false);return await AppClient.Connect(appPath:appPath).ConfigureAwait(false);},
-                        client=>Platform.Restore(client,appPath),Task.Delay,()=>RuntimeStore.Now,async()=>await AppClient.Connect(5000,appPath).ConfigureAwait(false));
+                        client=>Platform.ClosePet(client,appPath),Task.Delay,()=>RuntimeStore.Now,async()=>await AppClient.Connect(5000,appPath).ConfigureAwait(false),()=>Platform.EnsureDebugSession(store,appPath));
                     using(Instances.Acquire(appPath)) return worker.Run().GetAwaiter().GetResult();
                 }
                 if(args.Length==2&&args[0]=="--probe") {Probe(args[1],store).GetAwaiter().GetResult();return 0;}
@@ -54,7 +54,7 @@ namespace Tappo {
                     panel.AutoCheckUpdates=true;
                     var app=new Application {ShutdownMode=ShutdownMode.OnExplicitShutdown};
                     app.DispatcherUnhandledException+=(s,e)=>{RuntimeStore.Append(store.FilePath("panel-launcher-error.log"),e.Exception.Message+"\n");e.Handled=true;};
-                    panel.Window.Height=Math.Max(660,Math.Min(900,SystemParameters.WorkArea.Height-40));
+                    panel.FitToWorkArea(SystemParameters.WorkArea.Height);
                     panel.InitializeTray();panel.StartTimer();panel.Refresh();app.Run(panel.Window);
                 }
                 return 0;

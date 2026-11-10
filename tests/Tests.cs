@@ -28,7 +28,8 @@ namespace Tappo {
         public Task<ServerState> Server() {Reads++;return Task.FromResult(ServerResult==null?new ServerState {accountKey=State.accountKey,total=State.cumulative,consumed=State.consumed,left=State.left,right=State.right}:ServerResult());}
         public Task<Snapshot> Boost(int delta,Snapshot before) {Boosts++;if(BoostResult!=null)return Task.FromResult(BoostResult(delta,before));var result=Tests.Copy(before);result.cumulative+=delta;result.available+=delta;State=result;return Task.FromResult(result);}
         public Task<Snapshot> Claim(string side,Snapshot before) {Claims++;if(ThrowClaim) throw new TimeoutException("调用超时，禁止自动重发操作");var result=ClaimResult==null?Tests.Copy(before):ClaimResult();result.operationId=before.operationId;result.rewardVerified=!OmitReward;result.reward=OmitReward?null:new RewardReceipt {assetId=123,assetName="test",assetType="accessory",quantityBefore=0,quantityAfter=1};State=result;return Task.FromResult(result);}
-        public Task Quit() {Quits++;return Task.FromResult(0);}
+        public Func<Task> QuitResult;
+        public Task Quit() {Quits++;return QuitResult==null?Task.FromResult(0):QuitResult();}
         public void Dispose() {Closed++;}
     }
     internal static class Tests {
@@ -39,6 +40,7 @@ namespace Tappo {
         static void Reject(Action action,string message) {bool rejected=false;try{action();}catch{rejected=true;}Check(rejected,message);}
         static RuntimeStore Store() {return new RuntimeStore(Path.Combine(root,Guid.NewGuid().ToString("N")));}
         [STAThread] public static int Main(string[] args) {
+            if(args.Length==2&&args[0]=="--pet-fixture")return PetLifecycleChecks.Fixture(args[1]);
             if(args.Length==2&&args[0]=="--apply-update")return UpdateInstaller.Apply(args[1]);
             if(args.Length==2&&args[0]=="--update-participant") {
                 var isolatedRoot=AppDomain.CurrentDomain.BaseDirectory;
@@ -94,18 +96,80 @@ namespace Tappo {
             root=Path.Combine(Path.GetTempPath(),"tappo-native-tests-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
             try {
                 if(suite=="All"||suite=="Worker") {
-                    Policies();Files();Clocks().GetAwaiter().GetResult();Workers().GetAwaiter().GetResult();WakeReplenishment().GetAwaiter().GetResult();BoostObservations().GetAwaiter().GetResult();Resets().GetAwaiter().GetResult();QueryRetries().GetAwaiter().GetResult();Connections().GetAwaiter().GetResult();
+                    Policies();Files();checks+=ClaimHistoryChecks.Run();Clocks().GetAwaiter().GetResult();Workers().GetAwaiter().GetResult();WakeReplenishment().GetAwaiter().GetResult();BoostObservations().GetAwaiter().GetResult();Resets().GetAwaiter().GetResult();QueryRetries().GetAwaiter().GetResult();Connections().GetAwaiter().GetResult();
                     ServerChestConfirmation().GetAwaiter().GetResult();VersionPreflight().GetAwaiter().GetResult();
-                    checks+=ConnectionChecks.Run().GetAwaiter().GetResult();checks+=RetryChecks.Run().GetAwaiter().GetResult();checks+=RecoveryChecks.Run().GetAwaiter().GetResult();checks+=CapabilityChecks.Run().GetAwaiter().GetResult();
+                    checks+=ConnectionChecks.Run().GetAwaiter().GetResult();checks+=RetryChecks.Run().GetAwaiter().GetResult();checks+=ResumeChecks.Run().GetAwaiter().GetResult();checks+=RecoveryChecks.Run().GetAwaiter().GetResult();checks+=CapabilityChecks.Run().GetAwaiter().GetResult();
                 }
-                if(suite=="All"||suite=="Panel") {ResetPanels();Layouts();CloseChoices();Lifecycle();checks+=ConnectionChecks.Panels();UpdatePanels();}
-                if(suite=="All"||suite=="Platform") {checks+=StartupChecks.Run();checks+=TransportChecks.Run().GetAwaiter().GetResult();checks+=UpdateChecks.Run().GetAwaiter().GetResult();checks+=InstallerChecks.Run().GetAwaiter().GetResult();}
+                if(suite=="All"||suite=="Panel") {ResetPanels();Layouts();CloseChoices();Lifecycle();checks+=ConnectionChecks.Panels();UpdatePanels();StartupPanels();TrayRunControls();checks+=ConsoleUiChecks.Run();checks+=DiagnosticChecks.Run();checks+=AutoRunChecks.Run();}
+                if(suite=="All"||suite=="Platform") {checks+=StartupChecks.Run();checks+=PetLifecycleChecks.Run();checks+=TransportChecks.Run().GetAwaiter().GetResult();checks+=UpdateChecks.Run().GetAwaiter().GetResult();checks+=InstallerChecks.Run().GetAwaiter().GetResult();}
                 Console.WriteLine("PASS: "+checks+" native checks ("+suite+"); no account mutations, app restarts, or system policy changes.");return 0;
             } catch(Exception error) {Console.Error.WriteLine(error);return 1;}
             finally {
                 var target=Path.GetFullPath(root);var temp=Path.GetFullPath(Path.GetTempPath());
                 if(target.StartsWith(temp,StringComparison.OrdinalIgnoreCase)&&Path.GetFileName(target).StartsWith("tappo-native-tests-")) Directory.Delete(target,true);
             }
+        }
+        static void TrayRunControls() {
+            var store=Store();using(var panel=new Panel(store,preview:true)) {
+                var now=RuntimeStore.Now;Status status=null;string command=null;
+                panel.ReadStatus=()=>status;panel.ReadClock=()=>now;panel.DispatchOverride=action=>command=action;panel.InitializeTray();
+                var menu=(System.Windows.Forms.ContextMenuStrip)typeof(Panel).GetField("menu",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic).GetValue(panel);
+                var run=(System.Windows.Forms.ToolStripMenuItem)typeof(Panel).GetField("trayRun",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic).GetValue(panel);
+                var exit=(System.Windows.Forms.ToolStripMenuItem)typeof(Panel).GetField("trayExit",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic).GetValue(panel);
+                Check(!menu.Items.Cast<System.Windows.Forms.ToolStripItem>().Any(item=>item.Text.Contains("暂停")||item.Text.Contains("停止并")||item.Text=="停止后台"),"tray retains obsolete pause/stop entries");
+                Check(run.Text=="启动后台"&&run.Enabled&&exit.Text=="退出助手","idle tray actions do not match the panel");
+                run.PerformClick();Check(command=="start","idle tray does not start the background");
+                status=new Status {running=true,pid=Process.GetCurrentProcess().Id,at=DateTimeOffset.FromUnixTimeMilliseconds(now).ToString("o"),connected=true};panel.Refresh();command=null;
+                Check(run.Text=="停止运行"&&run.Enabled==panel.E<Button>("StartButton").IsEnabled&&exit.Text=="退出助手","running tray actions do not match the panel");
+                status.paused=true;status.manuallyPaused=true;
+                run.PerformClick();Check(command=="pause","changed status reverses the rendered tray stop action");
+                panel.Refresh();command=null;
+                Check(run.Text=="启动后台"&&run.Enabled,"stopped tray action does not offer start");
+                run.PerformClick();Check(command=="resume","stopped tray action does not resume the existing background");
+                store.Write("pending.json",new {historical=true});panel.Refresh();command=null;
+                run.PerformClick();Check(!run.Enabled&&!panel.E<Button>("StartButton").IsEnabled&&command==null,"tray bypasses pending-operation safeguards");
+                store.ClearPending();status.at=DateTimeOffset.FromUnixTimeMilliseconds(now-60000).ToString("o");panel.Refresh();
+                Check(!run.Enabled&&!panel.E<Button>("StartButton").IsEnabled,"stale status permits tray resume");
+                panel.ReadStatus=()=>{throw new IOException("fixture read failure");};panel.Refresh();
+                Check(!run.Enabled&&exit.Enabled&&exit.Text=="退出助手","failed status read leaves inconsistent tray controls");
+            }
+        }
+        static void StartupPanels() {
+            var store=Store();
+            var startup=new LogonStartup(@"C:\测试目录\helper folder\WuwaTappoHelper.exe",store);
+            string value=null;int writes=0;
+            startup.ReadValue=()=>value;startup.WriteValue=text=>{value=text;writes++;};
+            Check(!startup.Enabled,"autostart default enabled");
+            Check(startup.Command=="\"C:\\测试目录\\helper folder\\WuwaTappoHelper.exe\"","autostart path not quoted");
+            var other=new LogonStartup(@"C:\helper.exe",Instances.Open(store.Root,new string('A',64)));
+            Check(other.Name!=startup.Name&&other.Command.EndsWith(" --instance "+new string('A',64)),"autostart instances share entry or lose binding");
+            using(var panel=new Panel(store,preview:true)) {
+                panel.ReadStartup=()=>startup.Enabled;panel.WriteStartup=startup.SetEnabled;
+                panel.InitializeTray();
+                var toggle=panel.E<CheckBox>("StartupCheckBox");
+                toggle.IsChecked=true;toggle.RaiseEvent(new RoutedEventArgs(System.Windows.Controls.Primitives.ButtonBase.ClickEvent));
+                Check(startup.Enabled&&toggle.IsChecked==true&&panel.TrayStartup.Checked,"panel startup switch not synchronized");
+                panel.TrayStartup.PerformClick();
+                Check(value==null&&toggle.IsChecked==false&&!panel.TrayStartup.Checked,"tray startup switch not synchronized");
+                value=startup.Command;panel.Refresh();
+                Check(toggle.IsChecked==true&&panel.TrayStartup.Checked&&writes==2,"external startup change not reflected or refresh writes settings");
+                startup.WriteValue=text=>{throw new UnauthorizedAccessException("denied");};
+                panel.TrayStartup.PerformClick();
+                Check(toggle.IsChecked==true&&panel.TrayStartup.Checked,"failed startup write changed state");
+                Check(panel.E<TextBlock>("DetailMessage").Text=="未能保存开机自启设置，请重试。","startup write failure missing or exposes system details");
+                panel.ReadStartup=()=>{throw new IOException("unavailable");};panel.Refresh();
+                Check(!toggle.IsEnabled&&!panel.TrayStartup.Enabled&&toggle.IsChecked==true,"startup read failure lost state or remained editable");
+                Check(toggle.ToolTip==null&&string.IsNullOrEmpty(panel.TrayStartup.ToolTipText),"startup error retains a tooltip");
+                panel.ReadStartup=()=>startup.Enabled;panel.Refresh();
+                Check(toggle.IsEnabled&&panel.TrayStartup.Enabled,"startup read recovery remained disabled");
+                Check(!File.Exists(store.FilePath("control.json")),"startup switch dispatched background command");
+            }
+            startup.WriteValue=text=>{};value=null;
+            Reject(()=>startup.SetEnabled(true),"startup failed readback accepted");
+            var longPath=new LogonStartup("C:\\"+new string('x',245)+"\\WuwaTappoHelper.exe",store);
+            longPath.ReadValue=()=>null;longPath.WriteValue=text=>{throw new Exception("write should not run");};
+            try {longPath.SetEnabled(true);throw new Exception("long startup command accepted");}
+            catch(InvalidOperationException error){Check(error.Message.Contains("路径过长"),"long command reached registry write");}
         }
         static void Policies() {
             var s=State();Func<double> random=()=>0.5;
@@ -209,11 +273,11 @@ namespace Tappo {
             clock.Reset();Check(!clock.Value.updatedAt.HasValue,"logout cache retained");Reject(()=>clock.Accept(new ServerState {right=10}),"missing server time accepted");
         }
         static async Task Workers() {
-            foreach(var action in new[]{"disconnect","stop","poll","timeout","reject","success","boost","skip","wrong-slot","unknown-rejection","unverified-reward"}) {
+            foreach(var action in new[]{"disconnect","stop-background","stop","poll","timeout","reject","success","boost","skip","wrong-slot","unknown-rejection","unverified-reward"}) {
                 var store=Store();var client=new FakeClient();long now=100000;int loops=0,restores=0;
-                bool historical=action=="disconnect"||action=="stop"||action=="poll";
+                bool historical=action=="disconnect"||action=="stop-background"||action=="stop"||action=="poll";
                 if(historical) File.WriteAllText(store.FilePath("pending.json"),"{\"historical\":true}");
-                if(action=="disconnect"||action=="stop") store.Write("control.json",new Command {id="fixture",action=action});
+                if(action=="disconnect"||action=="stop-background"||action=="stop") store.Write("control.json",new Command {id="fixture",action=action});
                 if(!historical) {client.State.left=4000;client.State.time=5000;}
                 if(action=="timeout") client.ThrowClaim=true;
                 if(action=="reject") client.ClaimResult=()=>{var s=Copy(client.State);s.rejected=true;s.code=70006;return s;};
@@ -227,7 +291,14 @@ namespace Tappo {
                 worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),async c=>{restores++;await c.Quit();},ms=>{now+=30000;if(++loops==2)worker.RequestDisconnect();return Task.FromResult(0);},()=>now);
                 await worker.Run();
                 Check(restores==(action=="stop"?1:0),action+" restore intent");Check(client.Quits==restores,action+" quit intent");Check(client.Closed==1,action+" connection cleanup");
-                Check(!worker.Status.running&&worker.Status.automationDisconnected,action+" disconnect confirmation");Check(!store.Exists("lock.json"),action+" stale lock");
+                Check(!worker.Status.running&&worker.Status.automationDisconnected,action+" disconnect confirmation");
+                Check(worker.Status.petClosed==(action=="stop"),action+" pet close result");
+                Check(new ClaimHistory(store,null).Total==worker.Status.claimsThisRun,action+" persistent claim count");
+                using(new FileStream(store.FilePath("worker.guard"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None)) { }
+                store.Write("control.json",new Command {id="restart",action="disconnect"});
+                var nextClient=new FakeClient();nextClient.State.loggedIn=false;Worker next=null;
+                next=new Worker(store,()=>Task.FromResult<IAppClient>(nextClient),c=>{throw new Exception("restarting closed another pet");},ms=>{next.RequestDisconnect();return Task.FromResult(0);},()=>now);
+                await next.Run();Check(nextClient.Closed==1&&!next.Status.running,action+" worker could not restart after stopping");Check(!store.Exists("lock.json"),action+" stale lock");
                 if(historical) {Check(File.ReadAllText(store.FilePath("pending.json"))=="{\"historical\":true}","historical record changed");Check(client.Claims==0&&client.Boosts==0,"pending allowed mutations");}
                 if(action=="poll") Check(client.Reads==2,"paused historical polling");
                 if(action=="timeout") Check(store.Exists("pending.json")&&client.Claims==1,"uncertain claim retried");
@@ -287,6 +358,7 @@ namespace Tappo {
         }
         static async Task WakeReplenishment() {
             var store=Store();var client=new FakeClient();long now=5000;int loops=0;
+            store.Write("preferences.json",new Preference {mode="brute"});
             client.State.available=379;client.State.buttons["left"]=client.State.buttons["right"]=false;
             client.BoostResult=(delta,before)=> {
                 var after=Copy(before);after.available+=delta;after.cumulative+=delta;
@@ -497,36 +569,36 @@ namespace Tappo {
                 panel.ReadStatus=()=>status;
                 var images=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"previews");Directory.CreateDirectory(images);
                 panel.Render(Path.Combine(images,"running.png"));
-                Check(panel.E<ScrollViewer>("MainScroll").ScrollableHeight<1,"default layout scrolls");Check(panel.E<Border>("ChestArea").ActualHeight<100,"chests too tall");
+                Check(panel.Window.FindName("MainScroll")==null,"main panel still scrolls");Check(panel.E<Border>("ChestArea").ActualHeight<100,"chests too tall");
                 Check(panel.E<TextBlock>("LeftTime").Text.Contains(":"),"server countdown missing");
                 Check(panel.E<TextBlock>("RightTime").Text=="已就绪","ready slot missing");
-                Check(!panel.E<Button>("StartButton").IsEnabled&&panel.E<Button>("PauseButton").IsEnabled,"running controls");
+                Check(panel.E<Button>("StartButton").IsEnabled&&(string)panel.E<Button>("StartButton").Content=="停止运行","running controls");
                 status.readRetryAt=RuntimeStore.Now+10000;status.readRetryError="读取服务器状态失败";panel.Refresh();
-                Check(panel.E<TextBlock>("StatusLabel").Text=="等待重试"&&panel.E<TextBlock>("DetailMessage").Text.Contains("不补数、不领取"),"retry status missing");
-                Check(panel.E<Button>("RetryButton").Visibility==Visibility.Visible&&panel.E<Button>("RetryButton").IsEnabled,"retry button missing");
+                Check(panel.E<TextBlock>("StatusLabel").Text=="等待重试"&&panel.E<TextBlock>("DetailMessage").Text.Contains("秒后重试"),"retry status missing");
+                Check(panel.Window.FindName("RetryButton")==null,"removed retry entry is still present");
                 string retryAction=null;panel.DispatchOverride=action=>retryAction=action;
-                panel.E<Button>("RetryButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                Check(retryAction=="retry","retry button sent wrong command");panel.DispatchOverride=null;
-                status.readRetryNotBefore=RuntimeStore.Now+60000;panel.Refresh();
-                Check(!panel.E<Button>("RetryButton").IsEnabled,"server wait allowed retry");status.readRetryNotBefore=null;
-                status.retrying=true;panel.Refresh();Check(!panel.E<Button>("RetryButton").IsEnabled&&(string)panel.E<Button>("RetryButton").Content=="正在重试…","retry in progress allowed duplicate");status.retrying=false;
+                panel.E<Button>("StartButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Check(retryAction=="pause","retrying run cannot be stopped");
+                status.paused=true;status.manuallyPaused=true;panel.Refresh();retryAction=null;
+                panel.E<Button>("StartButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Check(retryAction=="resume","restart did not dispatch the retry-capable resume action");panel.DispatchOverride=null;
+                status.paused=false;status.manuallyPaused=false;
                 status.paused=true;panel.Refresh();Check(panel.E<TextBlock>("StatusLabel").Text=="已暂停","retry hid manual pause");
                 status.paused=false;status.readRetryAt=null;status.readRetryError=null;panel.Refresh();
-                Check(panel.E<Button>("RetryButton").Visibility==Visibility.Collapsed,"healthy state retained retry button");
                 Check(panel.Window.FindName("ExitButton")==null,"unexpected title exit button");
-                Check(panel.E<MenuItem>("ExitMenuItem").IsEnabled&&panel.TrayExitEnabled,"exit entry unavailable");
+                Check(panel.Window.FindName("ExitMenuItem")==null&&panel.E<Border>("RootSurface").ContextMenu==null&&panel.TrayExitEnabled,"exit entry unavailable");
                 panel.ReadStatus=()=>{throw new UnauthorizedAccessException("模拟读取失败");};panel.Refresh();
-                Check(panel.TrayExitEnabled&&panel.E<MenuItem>("ExitMenuItem").IsEnabled,"status error disabled exit");panel.ReadStatus=()=>status;panel.Refresh();
-                Check(panel.E<TextBlock>("ActivityText").Visibility==Visibility.Collapsed,"empty activities not collapsed");
-                status.paused=true;panel.Refresh();Check((string)panel.E<Button>("PauseButton").Content=="继续运行","pause label");
-                File.WriteAllText(store.FilePath("pending.json"),"{\"historical\":true}");status.manuallyPaused=true;panel.Refresh();Check(!panel.E<Button>("PauseButton").IsEnabled&&panel.E<Button>("StopButton").IsEnabled,"pending controls");
+                Check(panel.TrayExitEnabled&&panel.E<Border>("RootSurface").ContextMenu==null,"status error disabled exit");panel.ReadStatus=()=>status;panel.Refresh();
+                Check(panel.E<TextBlock>("ActivityText").Visibility==Visibility.Visible&&panel.Window.FindName("ActivityScroll")==null&&panel.Window.FindName("ViewLogsButton")==null,"activity still exposes scrolling or a log window entry");
+                status.paused=true;panel.Refresh();Check((string)panel.E<Button>("StartButton").Content=="启动后台","resume label");
+                File.WriteAllText(store.FilePath("pending.json"),"{\"historical\":true}");status.manuallyPaused=true;panel.Refresh();Check(!panel.E<Button>("StartButton").IsEnabled,"pending controls");
                 status.recovering=true;status.manuallyPaused=false;panel.Refresh();
-                var trayPause=(System.Windows.Forms.ToolStripMenuItem)typeof(Panel).GetField("trayPause",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic).GetValue(panel);
-                Check(panel.E<Button>("PauseButton").IsEnabled&&(string)panel.E<Button>("PauseButton").Content=="暂停"&&trayPause.Enabled&&trayPause.Text=="暂停自动化","automatic recovery disabled pause");
+                var trayRun=(System.Windows.Forms.ToolStripMenuItem)typeof(Panel).GetField("trayRun",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic).GetValue(panel);
+                Check(panel.E<Button>("StartButton").IsEnabled&&(string)panel.E<Button>("StartButton").Content=="停止运行"&&trayRun.Enabled&&trayRun.Text=="停止运行","automatic recovery disabled stop");
                 string pauseCommand=null;panel.DispatchOverride=action=>pauseCommand=action;
-                panel.E<Button>("PauseButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Check(pauseCommand=="pause","pending panel requested resume instead of manual pause");
-                pauseCommand=null;trayPause.PerformClick();Check(pauseCommand=="pause","pending tray requested resume instead of manual pause");panel.DispatchOverride=null;
-                status.manuallyPaused=true;panel.Refresh();Check(!panel.E<Button>("PauseButton").IsEnabled&&!trayPause.Enabled&&panel.E<TextBlock>("DetailMessage").Text.Contains("新操作保持暂停"),"pending manual pause allowed resume or hid intent");
+                panel.E<Button>("StartButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Check(pauseCommand=="pause","pending panel requested resume instead of manual pause");
+                pauseCommand=null;trayRun.PerformClick();Check(pauseCommand=="pause","pending tray requested resume instead of manual pause");panel.DispatchOverride=null;
+                status.manuallyPaused=true;panel.Refresh();Check(!panel.E<Button>("StartButton").IsEnabled&&!trayRun.Enabled&&panel.E<TextBlock>("DetailMessage").Text.Contains("检查后也不会自动继续"),"pending manual pause allowed resume or hid intent");
                 status.recovering=false;
                 store.Log("started");store.Log("boost-confirmed",new {delta=100});store.Log("claim-confirmed",new {side="left"});panel.Render(Path.Combine(images,"paused.png"));
                 Check(panel.E<TextBlock>("ActivityText").Text.Split('\n').Length==3,"activity history");
@@ -539,12 +611,11 @@ namespace Tappo {
                 status.chestTimes.error=null;status.chestTimes.updatedAt=RuntimeStore.Now-100000;panel.Refresh();Check(panel.E<TextBlock>("LeftTime").Text=="等待同步","expired time");
                 status.running=false;panel.Render(Path.Combine(images,"disconnected.png"));Check(panel.E<TextBlock>("LeftTime").Text=="未连接","disconnected view");
                 status.fault="桌宠主窗口尚未就绪";panel.Refresh();Check(panel.E<TextBlock>("DetailMessage").Text==status.fault,"stopped failure hidden behind restart hint");status.fault=null;
-                panel.E<Expander>("UsageHint").IsExpanded=true;panel.SetPath(@"C:\Long installation path\Long installation path\Long installation path\WuwaTappo.exe");panel.Render(Path.Combine(images,"minimum.png"),820,660);
-                Check(panel.E<ScrollViewer>("MainScroll").ScrollableHeight>0,"minimum expanded window does not scroll");
-                var surface=panel.E<Border>("RootSurface");var start=panel.E<Button>("StartButton").TranslatePoint(new Point(),surface);var stop=panel.E<Button>("StopButton").TranslatePoint(new Point(),surface);
-                Check(start.Y==stop.Y&&stop.X+panel.E<Button>("StopButton").ActualWidth<796,"control row overflow");
+                panel.SetPath(@"C:\Long installation path\Long installation path\Long installation path\WuwaTappo.exe");panel.Render(Path.Combine(images,"minimum.png"),820,660);
+                var surface=panel.E<Border>("RootSurface");var start=panel.E<Button>("StartButton").TranslatePoint(new Point(),surface);
+                Check(start.X+panel.E<Button>("StartButton").ActualWidth<796&&panel.Window.FindName("PauseButton")==null&&panel.Window.FindName("StopButton")==null,"single run control missing or overflowing");
                 var modes=panel.E<ListBox>("ModeSelector");modes.SelectedIndex=0;
-                Check(panel.E<StackPanel>("ReserveOptions").Visibility==Visibility.Collapsed,"brute shows parameters");
+                Check(panel.E<StackPanel>("ReserveOptions").Visibility==Visibility.Visible&&panel.E<ComboBox>("ReserveTarget").Visibility==Visibility.Collapsed&&panel.E<TextBlock>("FixedReserve").Visibility==Visibility.Visible&&panel.E<TextBlock>("FixedSpeed").Text=="到期补足","brute fixed parameters missing");
                 modes.SelectedIndex=1;
                 Check(panel.E<StackPanel>("ReserveOptions").Visibility==Visibility.Visible&&panel.E<StackPanel>("SpeedOptions").Visibility==Visibility.Visible,"clicker missing parameters");
                 var target=panel.E<ComboBox>("ReserveTarget");var rate=panel.E<ComboBox>("ClickerRate");
@@ -555,8 +626,6 @@ namespace Tappo {
                 target.SelectedIndex=3;Check(store.Read<Preference>("preferences.json").reserveTarget==20000,"20000 target not persisted");
                 target.SelectedIndex=4;Check(store.Read<Preference>("preferences.json").reserveTarget==50000,"50000 target not persisted");
                 Check(((ComboBoxItem)rate.SelectedItem).Content.ToString()=="1,000 次/秒","speed label still approximate");
-                panel.E<Expander>("UsageHint").IsExpanded=false;
-                panel.E<ScrollViewer>("MainScroll").ScrollToEnd();
                 panel.Render(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"previews","clicker-options.png"),820,660);
                 var speedPosition=rate.TranslatePoint(new Point(),panel.E<Border>("RootSurface"));
                 Check(speedPosition.X>=0&&speedPosition.X+rate.ActualWidth<796&&rate.ActualHeight>=32,"parameter controls overflow");
@@ -573,7 +642,7 @@ namespace Tappo {
                 Check(!rate.IsDropDownOpen,"Escape did not close parameter popup");
                 panel.Window.Hide();
                 modes.SelectedIndex=2;Check(store.Read<Preference>("preferences.json").mode=="human","mode not persisted");
-                Check(panel.E<StackPanel>("ReserveOptions").Visibility==Visibility.Visible&&panel.E<StackPanel>("SpeedOptions").Visibility==Visibility.Collapsed,"human parameter visibility");
+                Check(panel.E<StackPanel>("ReserveOptions").Visibility==Visibility.Visible&&panel.E<ComboBox>("ClickerRate").Visibility==Visibility.Collapsed&&panel.E<TextBlock>("FixedSpeed").Text=="波动慢速","human parameter visibility");
                 Check((int)((ComboBoxItem)target.SelectedItem).Tag==50000,"switch lost target");
                 using(var reopened=new Panel(store,true)) {
                     Check((int)((ComboBoxItem)reopened.E<ComboBox>("ReserveTarget").SelectedItem).Tag==50000&&(int)((ComboBoxItem)reopened.E<ComboBox>("ClickerRate").SelectedItem).Tag==1000,"reopen lost parameters");
@@ -583,11 +652,10 @@ namespace Tappo {
                 rate.SelectedIndex=0;Check(rate.SelectedIndex==2,"failed save changed speed");
                 modes.SelectedIndex=1;Check((string)((ListBoxItem)modes.SelectedItem).Tag=="human","failed save changed selection");Directory.Delete(store.FilePath("preferences.json"));
             }
-            foreach(var entry in new[]{"context","tray"}) using(var panel=new Panel(Store())) {
+            using(var panel=new Panel(Store())) {
                 panel.InitializeTray();panel.ReadStatus=()=>new Status {running=true,pid=Process.GetCurrentProcess().Id};string dispatched=null;panel.DispatchOverride=action=>dispatched=action;
-                if(entry=="context") panel.E<MenuItem>("ExitMenuItem").RaiseEvent(new RoutedEventArgs(MenuItem.ClickEvent));
-                else ((System.Windows.Forms.ToolStripMenuItem)typeof(Panel).GetField("trayExit",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic).GetValue(panel)).PerformClick();
-                Check(dispatched=="disconnect",entry+" exit requested restore");
+                ((System.Windows.Forms.ToolStripMenuItem)typeof(Panel).GetField("trayExit",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic).GetValue(panel)).PerformClick();
+                Check(dispatched=="disconnect","tray exit requested pet closure");
             }
         }
         static void UpdatePanels() {
@@ -601,20 +669,21 @@ namespace Tappo {
                 store.Log("started");store.Log("claim-confirmed",new {side="right"});store.Log("boost-confirmed",new {delta=100});
                 var previewActivities=File.ReadAllText(store.FilePath("events.jsonl"));
                 var versionLabel="v"+Updates.DisplayVersion+" · ";
-                Check(panel.E<Button>("UpdateButton").Content.ToString().StartsWith(versionLabel),"initial UI missing local version");
+                Check(panel.Window.FindName("VersionLabel")==null&&panel.E<Button>("UpdateButton").Content.ToString()==versionLabel+"检查更新","version and update action are not in one button");
                 panel.UpdateCheck=token=>Task.FromResult(new UpdateInfo {version="0.1.1",available=false});
                 panel.CheckForUpdates().GetAwaiter().GetResult();Check(panel.E<Button>("UpdateButton").Content.ToString().Contains("已是最新"),"up-to-date UI");
                 Check(panel.E<Button>("UpdateButton").Content.ToString().StartsWith(versionLabel),"up-to-date UI missing local version");
+                Check(panel.E<Button>("UpdateButton").ToolTip==null,"normal update retains a tooltip");
                 panel.UpdateCheck=token=>Task.FromResult(new UpdateInfo {version="0.1.17",available=true,url="https://github.com/kano0222/WuwaTappo-helper/releases/tag/v0.1.17"});
                 panel.CheckForUpdates().GetAwaiter().GetResult();string opened=null;panel.OpenUpdatePage=url=>opened=url;
                 panel.Render(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"previews","update-available.png"),820,660);
                 RenderUpdateState(panel,"update-available");
                 var updateButton=panel.E<Button>("UpdateButton");var position=updateButton.TranslatePoint(new Point(),panel.E<Border>("RootSurface"));
-                Check(updateButton.Content.ToString()=="发现新版 v0.1.17 · 自动下载"&&updateButton.ToolTip.ToString().Contains(Updates.BuildVersion),"new release unclear or installed version missing");
-                Check((string)updateButton.Tag=="update"&&((System.Windows.Media.SolidColorBrush)updateButton.Background).Color==System.Windows.Media.Color.FromRgb(255,245,222),"new update not highlighted");
+                Check(updateButton.Content.ToString()==versionLabel+"下载新版"&&updateButton.ToolTip==null,"new release hides installed version or retains a tooltip");
+                Check((string)updateButton.Tag=="update"&&((System.Windows.Media.SolidColorBrush)updateButton.Background).Color==System.Windows.Media.Color.FromRgb(246,232,210),"new update not highlighted");
                 Check(position.X>=0&&position.X+updateButton.ActualWidth<=820&&position.Y+updateButton.ActualHeight<=660,"update button overflow");
                 int downloads=0;panel.UpdateDownload=(info,progress,token)=>{downloads++;throw new IOException("offline");};
-                panel.UpdateAction().GetAwaiter().GetResult();Check(downloads==1&&opened==null&&updateButton.Content.ToString().Contains("下载失败"),"download failure or browser fallback");
+                panel.UpdateAction().GetAwaiter().GetResult();Check(downloads==1&&opened==null&&updateButton.Content.ToString()==versionLabel+"重试下载","download failure or browser fallback");
                 RenderUpdateState(panel,"update-download-failed");
                 panel.UpdateAction().GetAwaiter().GetResult();Check(downloads==2&&updateButton.IsEnabled,"download retry unavailable");
                 var feedback=panel.E<Button>("FeedbackButton");
@@ -622,23 +691,24 @@ namespace Tappo {
                 var feedbackPosition=feedback.TranslatePoint(new Point(),panel.E<Border>("RootSurface"));
                 Check(feedbackPosition.X>=0&&feedbackPosition.X+feedback.ActualWidth<=position.X,"feedback not left of updates");
                 panel.OpenUpdatePage=url=>{throw new InvalidOperationException("browser failed");};
-                feedback.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Check(feedback.ToolTip.ToString().Contains(Updates.IssuesUrl),"feedback browser failure not handled");
+                feedback.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));Check(feedback.ToolTip==null&&panel.E<TextBlock>("DetailMessage").Text.Contains(Updates.IssuesUrl),"feedback browser failure not visible or retains a tooltip");
                 foreach(var kind in new[]{"main-not-ready","incompatible","debug-unavailable"}) {
                     store.Log("read-query-retry",new {stage="query",connectionFailure=kind});panel.Refresh();
                     Check(panel.E<TextBlock>("ActivityText").Text.Split('\n')[0].Contains(Connection.RetryMessage("query",kind)),"connection activity misclassified");
                 }
                 panel.UpdateCheck=token=>{throw new InvalidOperationException("GitHub 暂时限制查询");};panel.CheckForUpdates().GetAwaiter().GetResult();
-                Check(panel.E<Button>("UpdateButton").IsEnabled&&panel.E<Button>("UpdateButton").Content.ToString().Contains("失败"),"update failure disabled controls");
-                Check(updateButton.Content.ToString().StartsWith(versionLabel)&&updateButton.ToolTip.ToString().Contains(Updates.BuildVersion),"failed check hid local version");
+                Check(panel.E<Button>("UpdateButton").IsEnabled&&panel.E<Button>("UpdateButton").Content.ToString()==versionLabel+"重试检查","update failure disabled controls");
+                Check(updateButton.Content.ToString().StartsWith(versionLabel)&&updateButton.ToolTip==null,"failed check hid version or retains a tooltip");
                 panel.UpdateCheck=token=>{throw new System.Net.Http.HttpRequestException("offline");};panel.CheckForUpdates().GetAwaiter().GetResult();
-                Check(updateButton.Content.ToString().StartsWith(versionLabel)&&updateButton.ToolTip.ToString().Contains(Updates.BuildVersion),"offline check hid local version");
+                Check(updateButton.Content.ToString().StartsWith(versionLabel)&&updateButton.ToolTip==null,"offline check hid local version or retains a tooltip");
                 panel.Render(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"previews","update-failed.png"),820,660);
                 int retries=0;panel.UpdateCheck=token=>{retries++;return Task.FromResult(new UpdateInfo {version="0.1.1"});};
                 panel.UpdateAction().GetAwaiter().GetResult();Check(retries==1,"retry opened stale update page");
                 Check(!store.Exists("control.json")&&panel.ReadStatus().running,"update check changed automation");
                 var waiting=new TaskCompletionSource<UpdateInfo>();int calls=0;
                 panel.UpdateCheck=token=>{calls++;return waiting.Task;};var first=panel.CheckForUpdates();
-                Check(updateButton.Content.ToString().StartsWith(versionLabel),"pending check hid local version");
+                Check(updateButton.Content.ToString()==versionLabel+"检查中…","pending check hid local version");
+                Check(updateButton.ToolTip==null,"checking update retains a tooltip");
                 panel.CheckForUpdates().GetAwaiter().GetResult();Check(calls==1&&!panel.E<Button>("UpdateButton").IsEnabled,"overlapping update requests");
                 waiting.SetResult(new UpdateInfo {version="0.1.1"});panel.Window.Dispatcher.Invoke(new Action(()=>{}),DispatcherPriority.ApplicationIdle);first.GetAwaiter().GetResult();
                 Check(panel.E<Button>("UpdateButton").IsEnabled,"update button not restored");
@@ -651,20 +721,21 @@ namespace Tappo {
                 panel.Window.Dispatcher.Invoke(new Action(()=>{}),DispatcherPriority.ApplicationIdle);
                 RenderUpdateState(panel,"update-downloading");
                 download.SetResult("isolated-stage");panel.Window.Dispatcher.Invoke(new Action(()=>{}),DispatcherPriority.ApplicationIdle);downloading.GetAwaiter().GetResult();
-                Check(updateButton.Content.ToString()=="重启并更新"&&updateButton.IsEnabled,"download did not enable restart");
+                Check(updateButton.Content.ToString()==versionLabel+"重启更新"&&updateButton.IsEnabled,"download did not enable restart");
+                Check(updateButton.ToolTip.ToString().Contains("多开窗口")&&updateButton.ToolTip.ToString().Contains("自动运行"),"ready update omits its impact on instances or the background");
                 RenderUpdateState(panel,"update-ready");
-                panel.CheckForUpdates().GetAwaiter().GetResult();Check(updateButton.Content.ToString()=="重启并更新","automatic check discarded staged update");
+                panel.CheckForUpdates().GetAwaiter().GetResult();Check(updateButton.Content.ToString()==versionLabel+"重启更新","automatic check discarded staged update");
                 int installs=0;panel.InstallUpdate=stage=>{Check(stage=="isolated-stage","wrong update stage");installs++;throw new IOException("launch failed");};
-                panel.UpdateAction().GetAwaiter().GetResult();Check(installs==1&&updateButton.IsEnabled&&updateButton.ToolTip.ToString().Contains("启动失败"),"installer launch failure lost retry");
+                panel.UpdateAction().GetAwaiter().GetResult();Check(installs==1&&updateButton.IsEnabled&&panel.E<TextBlock>("DetailMessage").Text.Contains("启动失败")&&updateButton.ToolTip.ToString().Contains("自动运行"),"installer launch failure lost retry or update impact");
                 panel.InstallUpdate=stage=>installs++;panel.UpdateAction().GetAwaiter().GetResult();Check(installs==2&&downloads==1,"restart downloaded again");
                 panel.InstallUpdate=UpdateInstaller.Launch;
                 panel.UpdateAction().GetAwaiter().GetResult();
-                Check(updateButton.IsEnabled&&updateButton.Content.ToString()=="更新失效 · 自动下载"&&updateButton.ToolTip.ToString().Contains("重新下载"),"missing update did not restore download");
+                Check(updateButton.IsEnabled&&updateButton.Content.ToString()==versionLabel+"重新下载"&&updateButton.ToolTip==null,"missing update did not restore download or clear impact hint");
                 Check(!panel.AllowExit&&!store.Exists("control.json")&&panel.ReadStatus().running,"invalid update stopped automation or closed panel");
                 RenderUpdateState(panel,"update-invalid");
                 panel.UpdateDownload=(info,progress,token)=>{downloads++;return Task.FromResult("replacement-stage");};
                 panel.UpdateAction().GetAwaiter().GetResult();
-                Check(downloads==2&&updateButton.Content.ToString()=="重启并更新","invalid update could not be downloaded again");
+                Check(downloads==2&&updateButton.Content.ToString()==versionLabel+"重启更新","invalid update could not be downloaded again");
                 panel.InstallUpdate=stage=>{Check(stage=="replacement-stage","invalid stage reused after download");installs++;};
                 panel.UpdateAction().GetAwaiter().GetResult();Check(installs==3,"replacement update did not reach installer");
                 Check(!store.Exists("control.json"),"download or launch directly mutated automation");
@@ -683,10 +754,11 @@ namespace Tappo {
                 }
                 var button=panel.E<Button>("UpdateButton");var feedback=panel.E<Button>("FeedbackButton");var surface=panel.E<Border>("RootSurface");
                 var position=button.TranslatePoint(new Point(),surface);var other=feedback.TranslatePoint(new Point(),surface);
-                Check(button.ActualWidth==240&&button.ActualHeight==feedback.ActualHeight&&Math.Abs(position.Y-other.Y)<1,"update footer controls changed size or alignment: "+name);
+                Check(button.ActualWidth==180&&button.ActualHeight==feedback.ActualHeight&&Math.Abs(position.Y-other.Y)<1,"update footer controls changed size or alignment: "+name);
+                Check(button.Content.ToString().StartsWith("v"+Updates.DisplayVersion+" · ")&&(button.Content.ToString().EndsWith("重启更新")?button.ToolTip!=null:button.ToolTip==null),"update state hides version or retains an unrelated tooltip");
                 Check(other.X>=0&&other.X+feedback.ActualWidth+5<=position.X&&position.X+button.ActualWidth<=size.Width-20&&position.Y+button.ActualHeight<=size.Height,"update footer overflow: "+name);
                 var text=new TextBlock {Text=button.Content.ToString(),FontFamily=button.FontFamily,FontSize=button.FontSize,FontWeight=button.FontWeight};text.Measure(new Size(double.PositiveInfinity,double.PositiveInfinity));
-                Check(text.DesiredSize.Width<=button.ActualWidth-button.Padding.Left-button.Padding.Right-2,"update label clipped: "+name);
+                Check(text.DesiredSize.Width<=button.ActualWidth-button.Padding.Left-button.Padding.Right-button.BorderThickness.Left-button.BorderThickness.Right+0.01,"update label clipped: "+name);
                 Check(button.Opacity==1,"update progress text faded: "+name);
             }
         }

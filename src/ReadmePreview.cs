@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
@@ -40,10 +40,14 @@ namespace Tappo {
                         panel.DispatchOverride=action=>{throw new InvalidOperationException("预览禁止执行自动化。");};
                         panel.SetPath(@"C:\WuwaTappo\WuwaTappo.exe");
                         panel.Render(Path.Combine(output,frame.ToString("000")+".png"));
-                        if(panel.E<ScrollViewer>("MainScroll").ScrollableHeight>=1)
-                            throw new InvalidOperationException("预览面板内容未完整显示。");
                         if(panel.E<TextBlock>("StatusLabel").Text!=(status.paused?"已暂停":"运行中"))
                             throw new InvalidOperationException("模拟状态渲染失败。");
+                        if(frame==4) {
+                            panel.E<ListBox>("ModeSelector").SelectedIndex=0;
+                            panel.E<ListBox>("ModeSelector").SelectedIndex=1;
+                            panel.Render(Path.Combine(output,"console-preview.png"),960,1000);
+                            panel.Render(Path.Combine(output,"console-minimum.png"),820,660);
+                        }
                     }
                 }
             } finally {

@@ -41,7 +41,7 @@ namespace Tappo {
     <StackPanel>
       <Grid x:Name='TitleGrip' Background='Transparent' Margin='0,0,0,18'>
         <TextBlock Text='关闭助手' Foreground='#918678' FontSize='12' VerticalAlignment='Center'/>
-        <Button x:Name='CancelButton' Content='×' HorizontalAlignment='Right' Width='30' Height='30' Padding='0' Background='Transparent' BorderThickness='0' FontSize='20' FontWeight='Normal' ToolTip='取消关闭' AutomationProperties.Name='取消关闭'/>
+        <Button x:Name='CancelButton' Content='×' HorizontalAlignment='Right' Width='30' Height='30' Padding='0' Background='Transparent' BorderThickness='0' FontSize='20' FontWeight='Normal' AutomationProperties.Name='取消关闭'/>
       </Grid>
       <TextBlock Text='确认要离开吗？' FontSize='21' FontWeight='SemiBold'/>
       <TextBlock Text='你可以选择退出，或让助手在托盘继续运行。' Foreground='#81796F' TextWrapping='Wrap' LineHeight='23' Margin='0,10,0,24'/>

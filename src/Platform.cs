@@ -144,21 +144,18 @@ namespace Tappo {
                 SaveStartupRecord(()=>store.Write("debug-startup-session.json",record));
             }
         }
-        public static async Task Restore(IAppClient client,string app) {
-            if(client==null) throw new InvalidOperationException("没有可用连接；未尝试强制结束桌宠，请手动退出后普通启动。");
+        public static async Task ClosePet(IAppClient client,string app) {
+            if(client==null) throw new InvalidOperationException("无法连接桌宠，请手动退出。");
             var port=Instances.PortFor(app);
             try { await client.Quit().ConfigureAwait(false); } catch { }
             for(int i=0;i<30;i++) {
                 bool open=CheckRunningApp(app)||IPGlobalProperties.GetIPGlobalProperties().GetActiveTcpListeners().Any(p=>p.Port==port);
                 if(!open) {
-                    await Task.Delay(1000).ConfigureAwait(false);
-                    var info=AppStartInfo(app,false);
-                    using(var child=Process.Start(info)) { if(child==null) throw new InvalidOperationException("普通桌宠启动失败。"); }
                     return;
                 }
                 await Task.Delay(400).ConfigureAwait(false);
             }
-            throw new InvalidOperationException("桌宠未完成正常退出；没有强制结束，请手动退出以关闭调试端口。");
+            throw new InvalidOperationException("桌宠尚未退出，请手动关闭。");
         }
     }
 }

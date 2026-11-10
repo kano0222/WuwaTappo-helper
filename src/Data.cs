@@ -55,16 +55,18 @@ namespace Tappo {
     internal sealed class Status {
         public int reserveTarget=2000,clickerRate=100;
         public string at, fault, mode, message, resetCommandId, resetError; public int pid, claimsThisRun;
-        public bool running, paused, normalStartupRestored, automationDisconnected;
+        public bool running, paused, petClosed, automationDisconnected;
         public bool recovering,manuallyPaused; public string recoveryStage;
         public long? readRetryAt; public int readRetryCount; public string readRetryError,readRetryStage;
         public long? readRetryNotBefore; public string retryCommandId; public bool retrying;
         public bool? connected; public long? disconnectedSince; public string connectionFailure;
-        public bool stoppedWithoutRestore;
+        public bool stoppedWithoutClose;
         public Snapshot state; public ChestTimes chestTimes;
     }
     internal sealed class Preference {
+        public const string DefaultMode="clicker";
         public string mode;
+        public bool autoRun;
         public int reserveTarget=2000,clickerRate=100;
         public static readonly int[] ReserveTargets={2000,5000,10000,20000,50000},ClickerRates={100,500,1000};
         public void Validate() {
@@ -77,9 +79,9 @@ namespace Tappo {
     internal sealed class LauncherStatus { public string failedAt, error, requestedAt; public int runnerId; }
     internal sealed class Journal { public string id, at; public Plan action; public Snapshot before; public ServerState server; }
     internal sealed class RuntimeStore {
-        public readonly string Root, Runtime, InstanceId;
+        public readonly string Root, Runtime, InstanceId, BaseRoot;
         static readonly UTF8Encoding Utf8 = new UTF8Encoding(false);
-        public RuntimeStore(string root,string instanceId=null) { InstanceId=instanceId; Root = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar); Runtime = Path.Combine(Root,"runtime"); Directory.CreateDirectory(Runtime); }
+        public RuntimeStore(string root,string instanceId=null,string baseRoot=null) { InstanceId=instanceId; Root = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar); BaseRoot=baseRoot==null?Root:Path.GetFullPath(baseRoot); Runtime = Path.Combine(Root,"runtime"); Directory.CreateDirectory(Runtime); }
         public string FilePath(string name) { return Path.Combine(Runtime,name); }
         public bool Exists(string name) { return File.Exists(FilePath(name)); }
         public static string ReadText(string path) {

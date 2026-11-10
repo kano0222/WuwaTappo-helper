@@ -43,7 +43,9 @@ namespace Tappo {
                     Check(extra.Window.Title.Contains("global"),"instance title missing");
                     extra.Render(Path.Combine(root,"panel.png"),820,660);
                     var button=extra.E<System.Windows.Controls.Button>("AnotherAppButton");
-                    Check(button.ActualWidth>=120&&button.ActualHeight>=28,"second instance button clipped");
+                    var caption=new System.Windows.Controls.TextBlock {Text=button.Content.ToString(),FontFamily=button.FontFamily,FontSize=button.FontSize,FontWeight=button.FontWeight};
+                    caption.Measure(new System.Windows.Size(double.PositiveInfinity,double.PositiveInfinity));
+                    Check(button.Content.ToString()=="+ 多开"&&button.ActualWidth>=caption.DesiredSize.Width+button.Padding.Left+button.Padding.Right&&button.ActualHeight>=28,"second instance button clipped");
                     Check(!extra.E<System.Windows.Controls.Button>("BrowseAppButton").IsEnabled,"secondary profile can be rebound");
                 }
                 return 19+EndpointChecks.Run();

@@ -27,10 +27,10 @@ namespace Tappo {
                     Worker worker=null;
                     worker=new Worker(store,connect,c=>{restores++;return Task.FromResult(0);},ms=> {
                         var status=worker.Status;var hint=Connection.Hint(status,now);
-                        if(hint=="正在等待桌宠重新连接")sawWait=true;
-                        if(scenario=="main"&&now-100000>60000&&hint=="桌宠主窗口尚未就绪，正在等待桌宠完成启动。")sawSpecific=true;
-                        if(scenario=="incompatible"&&hint=="当前桌宠版本暂不兼容，请检查助手更新。")sawSpecific=true;
-                        if(hint!=null&&hint.Contains("先点击“停止后台”")) {sawGuidance=true;if(now-100000<=60000)sawEarlyGuidance=true;}
+                        if(hint=="正在重新连接桌宠")sawWait=true;
+                        if(scenario=="main"&&now-100000>60000&&hint=="桌宠还未启动完成，请稍候。")sawSpecific=true;
+                        if(scenario=="incompatible"&&hint=="请检查助手是否有新版本。")sawSpecific=true;
+                        if(hint!=null&&hint.Contains("请先停止运行")) {sawGuidance=true;if(now-100000<=60000)sawEarlyGuidance=true;}
                         if(status.connectionFailure==kind)sawCategory=true;
                         if(status.connected==true&&status.disconnectedSince==null&&status.connectionFailure==null) {
                             sawRecovered=true;Check(Connection.Hint(status,now)==null,"connection hint survived recovery");
@@ -59,13 +59,13 @@ namespace Tappo {
                     },()=>now,()=>{reconnects++;throw new Exception("stop must precede reconnect");});
                     await worker.Run();
                     Check(restores==(scenario=="connected"?1:0)&&client.Quits==restores,"stop restarted disconnected or newly recovered pet");
-                    Check(worker.Status.stoppedWithoutRestore==(scenario!="connected"),"stop result did not distinguish background-only stop");
+                    Check(worker.Status.stoppedWithoutClose==(scenario!="connected"),"stop result did not distinguish background-only stop");
                     Check(reconnects==0&&!worker.Status.running,"stop attempted reconnect or left worker running");
                     Check(store.Exists("pending.json")==pending,"stop confirmed pending operation");
                 }
                 var boundary=new Status {connected=false,disconnectedSince=1000,connectionFailure="debug-unavailable"};
-                Check(!Connection.Hint(boundary,61000).Contains("停止后台"),"guidance at exactly sixty seconds");
-                Check(Connection.Hint(boundary,61001).Contains("停止后台"),"guidance missing after sixty seconds");
+                Check(!Connection.Hint(boundary,61000).Contains("停止运行"),"guidance at exactly sixty seconds");
+                Check(Connection.Hint(boundary,61001).Contains("停止运行"),"guidance missing after sixty seconds");
                 Check(Connection.Classify(new ReadQueryException("reconnect",new MainWindowNotReadyException()))=="main-not-ready","main timeout classification lost");
                 return checks;
             } finally {Directory.Delete(root,true);}
@@ -79,21 +79,21 @@ namespace Tappo {
                     long now=RuntimeStore.Now;
                     var status=new Status {running=true,pid=Process.GetCurrentProcess().Id,at=DateTimeOffset.UtcNow.ToString("o"),connected=false,disconnectedSince=now-61000,connectionFailure="debug-unavailable"};
                     panel.ReadStatus=()=>status;panel.ReadClock=()=>now;panel.InitializeTray();panel.Refresh();
-                    if((string)panel.E<Button>("StopButton").Content!="停止后台"||!panel.E<TextBlock>("DetailMessage").Text.Contains("先点击“停止后台”"))throw new Exception("disconnected stop UI missing");count++;
+                    if((string)panel.E<Button>("StartButton").Content!="停止运行"||!panel.E<TextBlock>("DetailMessage").Text.Contains("请先停止运行"))throw new Exception("disconnected stop UI missing");count++;
                     status.connected=true; // Connection recovers after rendering, before the click.
                     string action=null;panel.DispatchOverride=x=>action=x;
-                    panel.E<Button>("StopButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                    if(action!="stop-background")throw new Exception("stale stop UI restored pet");count++;
+                    panel.E<Button>("StartButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    if(action!="pause")throw new Exception("single stop action closed or disconnected the pet");count++;
                     store.Write("pending.json",new {historical=true});status.paused=true;status.manuallyPaused=true;status.recovering=true;
                     panel.Refresh();
                     var detail=panel.E<TextBlock>("DetailMessage").Text;
-                    if(!detail.Contains("停止后台")||!detail.Contains("新操作保持暂停"))throw new Exception("connection hint overwrote recovery or manual pause");count++;
+                    if(!detail.Contains("停止运行")||!detail.Contains("检查后也不会自动继续"))throw new Exception("connection hint overwrote recovery or manual pause");count++;
                     status.disconnectedSince=null;status.connectionFailure=null;panel.Refresh();
                     detail=panel.E<TextBlock>("DetailMessage").Text;
-                    if(detail.Contains("停止后台")||!detail.Contains("新操作保持暂停")||!store.Exists("pending.json"))throw new Exception("recovery cleared pause or pending");count++;
-                    if((string)panel.E<Button>("StopButton").Content!="停止并恢复桌宠")throw new Exception("connected stop label missing");count++;
+                    if(detail.Contains("请先停止运行")||!detail.Contains("检查后也不会自动继续")||!store.Exists("pending.json"))throw new Exception("recovery cleared pause or pending");count++;
+                    if((string)panel.E<Button>("StartButton").Content!="启动后台")throw new Exception("connected stop label missing");count++;
                     File.Delete(store.FilePath("pending.json"));status.paused=false;status.manuallyPaused=false;status.recovering=false;status.state=new Snapshot {locked=true};panel.Refresh();
-                    if(panel.E<TextBlock>("DetailMessage").Text!="桌宠正在更新，自动操作已暂停。")throw new Exception("update lock hint missing");count++;
+                    if(panel.E<TextBlock>("DetailMessage").Text!="更新完成后自动继续。")throw new Exception("update lock hint missing");count++;
                     status.state.locked=false;panel.Refresh();
                     if(panel.E<TextBlock>("DetailMessage").Text.Contains("正在更新"))throw new Exception("update hint survived recovery");count++;
                 }
@@ -103,19 +103,19 @@ namespace Tappo {
                         long now=RuntimeStore.Now;
                         var status=new Status {running=true,pid=Process.GetCurrentProcess().Id,at=DateTimeOffset.UtcNow.ToString("o"),connected=true,state=new Snapshot()};
                         panel.ReadStatus=()=>status;panel.ReadClock=()=>now;panel.Refresh();
-                        panel.E<ListBox>("ModeSelector").SelectedIndex=1;
+                        panel.E<ListBox>("ModeSelector").SelectedIndex=0;panel.E<ListBox>("ModeSelector").SelectedIndex=1;
                         if(panel.E<TextBlock>("DetailMessage").Text!="模式与参数已保存。")throw new Exception("mode success fixture missing");count++;
                         string expected;
                         switch(scenario) {
-                            case "disconnect":status.connected=false;status.disconnectedSince=now-61000;status.connectionFailure="debug-unavailable";expected="先点击“停止后台”";break;
-                            case "update":status.state.locked=true;expected="桌宠正在更新";break;
-                            case "incompatible":status.connectionFailure="incompatible";expected="当前桌宠版本暂不兼容";break;
-                            case "pending":notices.Write("pending.json",new {historical=true});status.paused=true;expected="上次操作结果待确认";break;
-                            case "recovering":notices.Write("pending.json",new {historical=true});status.recovering=true;expected="连接或查询恢复后继续确认";break;
-                            case "manual-pause":status.paused=true;status.manuallyPaused=true;expected="计数与领取已暂停";break;
+                            case "disconnect":status.connected=false;status.disconnectedSince=now-61000;status.connectionFailure="debug-unavailable";expected="请先停止运行";break;
+                            case "update":status.state.locked=true;expected="更新完成后自动继续";break;
+                            case "incompatible":status.connectionFailure="incompatible";expected="请检查助手是否有新版本";break;
+                            case "pending":notices.Write("pending.json",new {historical=true});status.paused=true;expected="请查看上次领取或补充是否成功";break;
+                            case "recovering":notices.Write("pending.json",new {historical=true});status.recovering=true;expected="无需重复操作";break;
+                            case "manual-pause":status.paused=true;status.manuallyPaused=true;expected="桌宠不受影响";break;
                             case "retry":status.readRetryAt=now+5000;status.readRetryError="test query retry";expected="test query retry";break;
                             case "fault":status.fault="test operation fault";expected=status.fault;break;
-                            default:status.at=DateTimeOffset.UtcNow.AddMinutes(-2).ToString("o");expected="不代表当前状态";break;
+                            default:status.at=DateTimeOffset.UtcNow.AddMinutes(-2).ToString("o");expected="当前显示的是上次记录";break;
                         }
                         panel.Refresh();
                         if(!panel.E<TextBlock>("DetailMessage").Text.Contains(expected))throw new Exception("success notice hid status: "+scenario);count++;

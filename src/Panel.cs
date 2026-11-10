@@ -20,13 +20,19 @@ using Forms=System.Windows.Forms;
 namespace Tappo {
     internal sealed class Panel : IDisposable {
         readonly RuntimeStore store; public readonly Window Window;
+        readonly ActivityLog activityLog;
         public bool Busy {get;private set;} public bool AllowExit;
         internal bool TrayExitEnabled {get {return trayExit!=null&&trayExit.Enabled;}}
-        string notice,savedMode="brute"; bool selecting,choosingClose,noticeIsSuccess;
+        string notice,savedMode=Preference.DefaultMode; bool selecting,choosingClose,noticeIsSuccess;
         int savedTarget=2000,savedRate=100;
-        string stopAction="stop";
-        bool retryRequested;
-        Forms.NotifyIcon tray; Forms.ContextMenuStrip menu; Forms.ToolStripMenuItem trayPause,trayStop,trayExit,trayStatus;
+        string runAction="start";
+        bool startupEnabled;
+        bool autoRun,autoRunAttempted;
+        internal Func<bool> ReadStartup=()=>false;
+        internal Action<bool> WriteStartup=enabled=>{};
+        internal Forms.ToolStripMenuItem TrayStartup {get;private set;}
+        internal Forms.ToolStripMenuItem TrayAutoRun {get;private set;}
+        Forms.NotifyIcon tray; Forms.ContextMenuStrip menu; Forms.ToolStripMenuItem trayRun,trayExit,trayStatus;
         DispatcherTimer timer; Mutex mutex; EventWaitHandle showEvent; bool ownsMutex; System.Drawing.Icon icon;
         public Func<Status> ReadStatus; public Action<string> DispatchOverride;
         internal Func<bool> ConfirmReset;
@@ -40,9 +46,16 @@ namespace Tappo {
         bool checkingUpdates,downloadingUpdate,launchingUpdate,disposed; long nextUpdateCheck; UpdateInfo update; string updateStage;
         internal Func<long> ReadClock=()=>RuntimeStore.Now;
         public Panel(RuntimeStore store,bool preview=false) {
-            this.store=store; Window=(Window)XamlReader.Parse(Resources.Text("Panel.xaml"));
+            this.store=store;activityLog=new ActivityLog(store.FilePath("events.jsonl")); Window=(Window)XamlReader.Parse(Resources.Text("Panel.xaml"));
+            if(!preview) {
+                var startup=new LogonStartup(System.Reflection.Assembly.GetExecutingAssembly().Location,store);
+                ReadStartup=()=>startup.Enabled;WriteStartup=startup.SetEnabled;
+            }
+            E<CheckBox>("StartupCheckBox").Click+=(s,e)=>SetStartup(E<CheckBox>("StartupCheckBox").IsChecked==true);
+            E<CheckBox>("AutoRunCheckBox").Click+=(s,e)=>SetAutoRun(E<CheckBox>("AutoRunCheckBox").IsChecked==true);
             ReadStatus=()=>store.Read<Status>("status.json");
             var preference=store.Read<Preference>("preferences.json");
+            autoRun=preference!=null&&preference.autoRun;E<CheckBox>("AutoRunCheckBox").IsChecked=autoRun;
             if(preference!=null&&Policy.Modes.Contains(preference.mode)) savedMode=preference.mode;
             if(preference!=null&&Preference.ReserveTargets.Contains(preference.reserveTarget)) savedTarget=preference.reserveTarget;
             if(preference!=null&&Preference.ClickerRates.Contains(preference.clickerRate)) savedRate=preference.clickerRate;
@@ -52,22 +65,17 @@ namespace Tappo {
             E<ListBox>("ModeSelector").SelectionChanged+=(s,e)=>SaveMode();
             E<ComboBox>("ReserveTarget").SelectionChanged+=(s,e)=>SaveMode();
             E<ComboBox>("ClickerRate").SelectionChanged+=(s,e)=>SaveMode();
-            E<Button>("StartButton").Click+=async(s,e)=>await UserAction("start");
-            E<Button>("PauseButton").Click+=async(s,e)=>{await UserAction(PauseAction(ReadStatus(),store.Exists("pending.json")));};
-            E<Button>("StopButton").Click+=async(s,e)=>await UserAction(stopAction);
-            E<Button>("RetryButton").Click+=async(s,e)=>await UserAction("retry");
+            E<Button>("StartButton").Click+=async(s,e)=>{if(E<Button>("StartButton").IsEnabled)await UserAction(runAction);};
             E<Button>("ResetPendingButton").Click+=async(s,e)=>await ResetPending();
-            E<Button>("BrowseAppButton").Click+=(s,e)=>ChoosePath(true);
+            E<Button>("BrowseAppButton").Click+=async(s,e)=>await ChoosePath(true);
             E<Button>("AnotherAppButton").Click+=(s,e)=>OpenAnother();
             E<Button>("MinimizeButton").Click+=(s,e)=>Window.WindowState=WindowState.Minimized;
             E<Button>("CloseButton").Click+=async(s,e)=>await RequestClose();
-            E<MenuItem>("ExitMenuItem").Click+=async(s,e)=>await Exit();
-            E<Button>("UpdateButton").Content="v"+Updates.DisplayVersion+" · 检查更新";
-            E<Button>("UpdateButton").ToolTip="当前构建："+Updates.BuildVersion;
+            UpdateCaption("检查更新");
             E<Button>("UpdateButton").Click+=async(s,e)=>await UpdateAction();
             E<Button>("FeedbackButton").Click+=(s,e)=>{
                 try {OpenUpdatePage(Updates.IssuesUrl);}
-                catch {E<Button>("FeedbackButton").ToolTip="无法打开浏览器，请手动访问 "+Updates.IssuesUrl;}
+                catch {SetNotice("无法打开浏览器，请手动访问 "+Updates.IssuesUrl);Refresh();}
             };
             E<System.Windows.Controls.Grid>("TitleGrip").MouseLeftButtonDown+=(s,e)=>{
                 if(e.ClickCount==2) Window.WindowState=Window.WindowState==WindowState.Maximized?WindowState.Normal:WindowState.Maximized;
@@ -75,14 +83,14 @@ namespace Tappo {
             };
             Window.Closing+=(s,e)=>{if(!AllowExit){e.Cancel=true;Window.Dispatcher.BeginInvoke(new Action(async()=>await RequestClose()));}};
             Window.Closed+=(s,e)=>Life("closed");
-            Window.ContentRendered+=async(s,e)=>{Life("visible");if(AutoCheckUpdates&&RuntimeStore.Now>=nextUpdateCheck)await CheckForUpdates();};
+            Window.ContentRendered+=async(s,e)=>{Life("visible");if(!preview)await AutoRunOnOpen();if(AutoCheckUpdates&&RuntimeStore.Now>=nextUpdateCheck)await CheckForUpdates();};
             var path=preview?null:Platform.Discover(store);SetPath(path);
             Refresh();
         }
         public T E<T>(string name) where T:class { var value=Window.FindName(name) as T; if(value==null) throw new InvalidOperationException("界面元素缺失："+name);return value; }
         void Text(string name,string text) { E<TextBlock>(name).Text=text; }
         void SetNotice(string message,bool success=false) {notice=message;noticeIsSuccess=success;}
-        public void SetPath(string path) {Text("AppPathText",path==null?"桌宠：启动时自动查找，也可手动选择":"桌宠："+path);E<TextBlock>("AppPathText").ToolTip=path;
+        public void SetPath(string path) {Text("AppPathText",path??"选择桌宠程序");E<Button>("BrowseAppButton").ToolTip=path;
             var label=path==null?null:new DirectoryInfo(Path.GetDirectoryName(path)).Name;
             Window.Title="Wuwa Tappo · 后台助手"+(label==null?"":" · "+label);
             Text("InstanceTitle","WUWA TAPPO  /  后台助手"+(label==null?"":"  /  "+label));
@@ -98,6 +106,7 @@ namespace Tappo {
             try {ownsMutex=mutex.WaitOne(0);} catch(AbandonedMutexException){ownsMutex=true;}
             if(!ownsMutex) showEvent.Set(); return ownsMutex;
         }
+        internal void FitToWorkArea(double height) {Window.Height=Math.Max(Window.MinHeight,Math.Min(Window.Height,height-40));}
         public void Show() {Window.ShowInTaskbar=true;Window.Show();Window.WindowState=WindowState.Normal;Window.Activate();Life("restored");}
         internal async Task RequestClose() {
             if(choosingClose) return;
@@ -112,11 +121,14 @@ namespace Tappo {
         public void InitializeTray() {
             menu=new Forms.ContextMenuStrip();trayStatus=(Forms.ToolStripMenuItem)menu.Items.Add("后台：未运行");trayStatus.Enabled=false;
             menu.Items.Add("打开控制面板",null,(s,e)=>Show());
-            trayPause=(Forms.ToolStripMenuItem)menu.Items.Add("暂停自动化",null,async(s,e)=>{await UserAction(PauseAction(ReadStatus(),store.Exists("pending.json")));});
-            trayStop=(Forms.ToolStripMenuItem)menu.Items.Add("停止并恢复普通桌宠",null,async(s,e)=>await UserAction(stopAction));
+            trayRun=(Forms.ToolStripMenuItem)menu.Items.Add("启动后台",null,async(s,e)=>{if(trayRun.Enabled)await UserAction(runAction);});
+            menu.Items.Add(new Forms.ToolStripSeparator());
+            TrayStartup=(Forms.ToolStripMenuItem)menu.Items.Add("开机自启",null,(s,e)=>SetStartup(!startupEnabled));
+            TrayAutoRun=(Forms.ToolStripMenuItem)menu.Items.Add("自动运行",null,(s,e)=>SetAutoRun(!autoRun));TrayAutoRun.Checked=autoRun;
+            menu.Opening+=(s,e)=>Refresh();RefreshStartup();
             menu.Items.Add(new Forms.ToolStripSeparator());trayExit=(Forms.ToolStripMenuItem)menu.Items.Add("退出助手",null,async(s,e)=>await Exit());
             using(var stream=System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream("helper.ico")) icon=new System.Drawing.Icon(stream);
-            tray=new Forms.NotifyIcon {Icon=icon,ContextMenuStrip=menu,Text="Wuwa Tappo 助手",Visible=true};tray.DoubleClick+=(s,e)=>Show();SetPath(Platform.Discover(store));
+            tray=new Forms.NotifyIcon {Icon=icon,ContextMenuStrip=menu,Text="Wuwa Tappo 助手",Visible=true};tray.DoubleClick+=(s,e)=>Show();SetPath(Platform.Discover(store));Refresh();
         }
         public void StartTimer() {
             timer=new DispatcherTimer {Interval=TimeSpan.FromSeconds(1)};
@@ -129,53 +141,85 @@ namespace Tappo {
                 if(showEvent!=null&&showEvent.WaitOne(0)) Show();Refresh();if(AutoCheckUpdates&&RuntimeStore.Now>=nextUpdateCheck)await CheckForUpdates();
             };timer.Start();
         }
+        internal void SetStartup(bool enabled) {
+            var previous=startupEnabled;
+            try {WriteStartup(enabled);var actual=ReadStartup();if(actual!=enabled)throw new InvalidOperationException("设置未能保存，请重试。");startupEnabled=actual;}
+            catch {startupEnabled=previous;SetNotice("未能保存开机自启设置，请重试。");}
+            Refresh();
+        }
+        internal void SetAutoRun(bool enabled) {
+            try {
+                store.Write("preferences.json",new Preference {mode=savedMode,reserveTarget=savedTarget,clickerRate=savedRate,autoRun=enabled});
+                autoRun=enabled;
+            } catch {SetNotice("未能保存自动运行设置，请重试。");}
+            E<CheckBox>("AutoRunCheckBox").IsChecked=autoRun;if(TrayAutoRun!=null)TrayAutoRun.Checked=autoRun;Refresh();
+        }
+        internal async Task AutoRunOnOpen() {
+            if(autoRunAttempted)return;autoRunAttempted=true;
+            if(!autoRun||Busy||disposed)return;
+            try {
+                Refresh();
+                if(store.Exists("pending.json")||!E<Button>("StartButton").IsEnabled||runAction=="pause")return;
+                if(runAction=="start"&&Platform.Discover(store)==null) {
+                    SetNotice("请先选择桌宠程序，再点击“启动后台”。");Refresh();return;
+                }
+                await UserAction(runAction);
+            } catch(Exception error) {SetNotice(error.Message);Refresh();}
+        }
+        void RefreshStartup() {
+            string error=null;
+            try {startupEnabled=ReadStartup();}catch {error="暂时无法读取开机自启设置。";}
+            var toggle=E<CheckBox>("StartupCheckBox");toggle.IsChecked=startupEnabled;toggle.IsEnabled=error==null;
+            if(TrayStartup!=null) {TrayStartup.Checked=startupEnabled;TrayStartup.Enabled=error==null;}
+        }
+        void UpdateCaption(string text) {
+            var button=E<Button>("UpdateButton");button.Content="v"+Updates.DisplayVersion+" · "+text;
+            button.ToolTip=updateStage==null?null:"更新会重启当前助手及其多开窗口，桌宠保留；后台按“自动运行”设置启动。";
+        }
         internal async Task UpdateAction() {
             if(checkingUpdates||downloadingUpdate||launchingUpdate||disposed)return;
             var button=E<Button>("UpdateButton");
             if(updateStage!=null) {
                 try {
-                    launchingUpdate=true;button.IsEnabled=false;button.Content="正在校验并准备更新…";
+                    launchingUpdate=true;button.IsEnabled=false;UpdateCaption("准备更新…");
                     InstallUpdate(updateStage);
                     // Keep the panel available on updater failure; its event coordinates a successful exit.
-                    button.Content="重启并更新";
+                    UpdateCaption("重启更新");
                 } catch(InvalidUpdateFilesException error) {
-                    updateStage=null;button.Content="更新失效 · 自动下载";
-                    button.ToolTip="当前构建："+Updates.BuildVersion+"；"+error.Message;
+                    updateStage=null;UpdateCaption("重新下载");
                     SetNotice(error.Message);Refresh();
-                } catch(Exception error) {button.Content="重启并更新";button.ToolTip="更新启动失败："+error.Message;}
+                } catch {UpdateCaption("重启更新");SetNotice("更新启动失败，请重试。");Refresh();}
                 finally {launchingUpdate=false;if(!disposed)button.IsEnabled=true;}
                 return;
             }
             if(update!=null&&update.available) {
-                downloadingUpdate=true;button.IsEnabled=false;button.Content="正在下载更新…";
+                downloadingUpdate=true;button.IsEnabled=false;UpdateCaption("下载中…");
                 try {
                     updateStage=await UpdateDownload(update,percent=>Window.Dispatcher.BeginInvoke(new Action(()=>{
-                        if(!disposed&&downloadingUpdate)button.Content="正在下载更新 · "+percent+"%";
+                        if(!disposed&&downloadingUpdate)UpdateCaption("下载 "+percent+"%");
                     })),updateCancellation.Token);
                     if(disposed)return;
-                    button.Content="重启并更新";button.ToolTip="已下载并校验 v"+update.version+"。点击退出此目录下所有助手窗口和后台，保留配置与运行记录；更新后请手动启动后台。";
-                } catch(Exception error) {
+                    UpdateCaption("重启更新");
+                } catch {
                     if(disposed)return;
-                    button.Content="下载失败 · 重试";button.ToolTip=error is InvalidOperationException?error.Message:"下载失败，请稍后重试。";
+                    UpdateCaption("重试下载");
                 } finally {downloadingUpdate=false;if(!disposed)button.IsEnabled=true;}
             } else await CheckForUpdates();
         }
         internal async Task CheckForUpdates() {
             if(checkingUpdates||downloadingUpdate||launchingUpdate||updateStage!=null||disposed)return;
             checkingUpdates=true;nextUpdateCheck=RuntimeStore.Now+6*60*60*1000L;
-            var currentVersion="v"+Updates.DisplayVersion;
-            var button=E<Button>("UpdateButton");button.IsEnabled=false;button.Content=currentVersion+" · 正在检查更新…";
+            var button=E<Button>("UpdateButton");button.IsEnabled=false;UpdateCaption("检查中…");
             try {
                 var result=await UpdateCheck(updateCancellation.Token);
                 if(disposed)return;
                 update=result;button.Tag=result.available?"update":null;
-                button.Content=result.available?"发现新版 v"+result.version+" · 自动下载":currentVersion+" · 已是最新";
-                button.ToolTip="当前构建："+Updates.BuildVersion+"；"+(result.available?"点击下载更新，下载完成后可点击“重启并更新”。":"点击重新检查。");
-            } catch(Exception error) {
+                UpdateCaption(result.available?"下载新版":"已是最新");
+            } catch {
                 if(disposed)return;
                 update=null;button.Tag=null;
                 nextUpdateCheck=RuntimeStore.Now+15*60*1000L;
-                button.Content=currentVersion+" · 更新检查失败 · 重试";button.ToolTip="当前构建："+Updates.BuildVersion+"；"+(error is InvalidOperationException?error.Message:"暂时无法连接 GitHub，请稍后重试。");
+                UpdateCaption("重试检查");
             } finally {checkingUpdates=false;if(!disposed)button.IsEnabled=true;}
         }
         void OpenAnother() {
@@ -198,21 +242,41 @@ namespace Tappo {
                 using(var process=Process.Start(new ProcessStartInfo(Platform.Executable,Instances.Arguments(target)) {UseShellExecute=true,WorkingDirectory=baseRoot})) { }
             } catch(Exception error) {SetNotice(error.Message);Refresh();}
         }
-        bool ChoosePath(bool force) {
+        async Task<bool> ChoosePath(bool force) {
             try {
                 var path=force?null:Platform.Discover(store);
                 if(path==null) {
                     var dialog=new Microsoft.Win32.OpenFileDialog {Title="选择已安装的 WuwaTappo.exe",Filter="Wuwa Tappo (WuwaTappo.exe)|WuwaTappo.exe",CheckFileExists=true};
                     if(dialog.ShowDialog(Window)!=true) return false;path=dialog.FileName;
                 }
+                if(!Platform.ValidPath(path))throw new InvalidOperationException("请选择 Wuwa Tappo 安装目录中的 WuwaTappo.exe。");
+                var previous=Instances.SavedPath(store.Root);
+                await PreparePathChange(path);
                 var baseRoot=AppDomain.CurrentDomain.BaseDirectory;
                 using(Instances.LockBindings(baseRoot)) {
                     var other=Path.Combine(baseRoot,"runtime","instances",Instances.Key(path),"config.local.json");
-                    if(store.InstanceId==null&&File.Exists(other))throw new InvalidOperationException("此桌宠已有独立窗口，请通过“连接另一个桌宠”打开。");
+                    if(store.InstanceId==null&&File.Exists(other))throw new InvalidOperationException("此桌宠已有独立窗口，请通过“多开桌宠”打开。");
                     Platform.SavePath(store,path);
                 }
-                SetPath(path);return true;
+                SetPath(path);
+                if(force&&(previous==null||Instances.Key(previous)!=Instances.Key(path))) {
+                    try {store.Log("program-selected");}
+                    catch {SetNotice("程序位置已保存，但活动记录写入失败。");}
+                }
+                Refresh();return true;
             } catch(Exception error) {SetNotice(error.Message);Refresh();return false;}
+        }
+        internal async Task PreparePathChange(string path) {
+            var previous=Instances.SavedPath(store.Root);
+            if(previous!=null&&Instances.Key(previous)==Instances.Key(path))return;
+            if(Busy||store.InstanceId!=null||store.Exists("pending.json"))throw new InvalidOperationException("请先停止运行并核对待确认操作，再更换程序位置。");
+            var status=ReadStatus();
+            if(Alive(status)) {
+                DateTimeOffset at;
+                if(!status.paused||!status.manuallyPaused||!DateTimeOffset.TryParse(status.at,out at)||(DateTimeOffset.FromUnixTimeMilliseconds(ReadClock())-at).TotalSeconds>45)throw new InvalidOperationException("请先停止运行，等待状态确认后再更换程序位置。");
+                await Act("stop-background");
+                if(Alive(ReadStatus()))throw new InvalidOperationException("旧后台尚未退出，请稍后再更换程序位置。");
+            }
         }
         void RestoreSelection() {
             selecting=true;
@@ -224,13 +288,19 @@ namespace Tappo {
         }
         void SaveMode() {
             if(selecting) return;
+            bool saved=false;
             try {
                 var item=E<ListBox>("ModeSelector").SelectedItem as ListBoxItem;var mode=item==null?null:item.Tag as string;
-                var preference=new Preference {mode=mode,reserveTarget=(int)((ComboBoxItem)E<ComboBox>("ReserveTarget").SelectedItem).Tag,clickerRate=(int)((ComboBoxItem)E<ComboBox>("ClickerRate").SelectedItem).Tag};
+                var preference=new Preference {mode=mode,reserveTarget=(int)((ComboBoxItem)E<ComboBox>("ReserveTarget").SelectedItem).Tag,clickerRate=(int)((ComboBoxItem)E<ComboBox>("ClickerRate").SelectedItem).Tag,autoRun=autoRun};
                 preference.Validate();
-                store.Write("preferences.json",preference);savedMode=mode;savedTarget=preference.reserveTarget;savedRate=preference.clickerRate;SetNotice("模式与参数已保存。",true);
+                var modeChanged=savedMode!=mode;var targetChanged=savedTarget!=preference.reserveTarget;var rateChanged=savedRate!=preference.clickerRate;
+                store.Write("preferences.json",preference);savedMode=mode;savedTarget=preference.reserveTarget;savedRate=preference.clickerRate;saved=true;
+                if(modeChanged)store.Log("mode-selected",new {mode=mode});
+                if(targetChanged)store.Log("reserve-target-selected",new {target=savedTarget});
+                if(rateChanged)store.Log("clicker-rate-selected",new {rate=savedRate});
+                SetNotice("模式与参数已保存。",true);
             } catch(Exception error) {
-                SetNotice("设置保存失败："+error.Message);RestoreSelection();
+                SetNotice(saved?"设置已保存，但活动记录写入失败。":"设置保存失败："+error.Message);RestoreSelection();
             }
             Refresh();
         }
@@ -245,8 +315,8 @@ namespace Tappo {
             if(UpdateInstaller.Requested(AppDomain.CurrentDomain.BaseDirectory))throw new InvalidOperationException("助手正在退出以安装更新，请稍候。");
             if(Busy) return;
             if(DispatchOverride!=null) {DispatchOverride(action);return;}
-            if(action=="start"&&!ChoosePath(false)) return;
-            Busy=true;retryRequested=action=="retry";SetNotice(null);Refresh();var requested=DateTimeOffset.UtcNow;
+            if(action=="start"&&!await ChoosePath(false)) return;
+            Busy=true;SetNotice(null);Refresh();var requested=DateTimeOffset.UtcNow;
             string commandId=Guid.NewGuid().ToString();
             try {
                 if(action=="reset"&&!Alive(ReadStatus())) {
@@ -273,27 +343,28 @@ namespace Tappo {
                     if(launcher!=null&&launcher.error!=null&&DateTimeOffset.TryParse(launcher.failedAt,out failed)&&failed>=requested) throw new InvalidOperationException(launcher.error);
                     DateTimeOffset at;
                     if(status==null||!DateTimeOffset.TryParse(status.at,out at)||at<requested) continue;
-                    if(action=="retry"&&status.retryCommandId==commandId&&!status.retrying) return;
                     if(action=="reset"&&status.resetCommandId==commandId) {
                         if(status.resetError!=null) throw new InvalidOperationException(status.resetError);
                         SetNotice("已继续运行，上次操作不会重发。",true);return;
                     }
-                    if(action=="start"&&Alive(status)||action=="pause"&&Alive(status)&&status.manuallyPaused||action=="resume"&&Alive(status)&&!status.paused) return;
+                    if(action=="start"&&Alive(status)||action=="pause"&&Alive(status)&&status.manuallyPaused||action=="resume"&&Alive(status)&&!status.paused&&!status.retrying) return;
                     if((action=="stop"||action=="stop-background"||action=="disconnect")&&!status.running) {
+                        if(RuntimeStore.Alive(status.pid)) continue;
                         if(action=="disconnect"&&!status.automationDisconnected) throw new InvalidOperationException("自动化停止尚未确认。");
-                        if(action=="stop"&&!status.normalStartupRestored&&!status.stoppedWithoutRestore) throw new InvalidOperationException(status.fault??"后台已停止，但桌宠未恢复普通启动。");
-                        if(!status.normalStartupRestored) SetNotice("后台已停止。请从桌宠菜单正常退出，再点击“启动后台”。",true);
+                        if(action=="stop"&&!status.petClosed&&!status.stoppedWithoutClose) throw new InvalidOperationException(status.fault??"后台已停止，但桌宠关闭尚未确认。");
+                        SetNotice(null);
                         return;
                     }
                     if(action=="start"&&!status.running&&status.fault!=null) throw new InvalidOperationException(status.fault);
                 }
-                throw new TimeoutException("操作尚未确认完成，请核对管理员提示与后台状态，不要重复启动。");
+                throw new TimeoutException("等待超时，请查看是否有管理员确认窗口，再检查后台是否已启动。");
             } catch(Exception error) {SetNotice(error.Message);throw;}
-            finally {Busy=false;retryRequested=false;Refresh();}
+            finally {Busy=false;Refresh();}
         }
         async Task UserAction(string action) {
             try {await Act(action);}
             catch(Exception error) {
+                SetNotice(error.Message);
                 try {store.Log("panel-action-failed",new {action=action,errorType=error.GetType().Name,message=error.Message});} catch { }
                 Refresh();
             }
@@ -320,137 +391,113 @@ namespace Tappo {
             } catch(Exception error) {SetNotice("退出未完成："+error.Message);Refresh();Show();}
         }
         public void Refresh() {
+            RefreshStartup();
             try {
                 var s=ReadStatus();var alive=Alive(s);DateTimeOffset at;
                 var stale=alive&&(!DateTimeOffset.TryParse(s.at,out at)||(DateTimeOffset.FromUnixTimeMilliseconds(ReadClock())-at).TotalSeconds>45);
                 var pending=store.Exists("pending.json");
-                string label="未运行",color="#EAE7E1",message="后台助手尚未运行",detail="先退出普通启动的桌宠，再点击“启动后台”。";
+                string label="未运行",color="#EAE7E1",message="准备启动后台",detail="请先退出已打开的桌宠，再启动后台。";
                 if(alive) {
-                    label="运行中";color="#E2EFDD";message="后台正在照看桌宠";detail="自动补足领取所需次数，并按原有冷却检查宝箱。";
-                    if(s.readRetryAt.HasValue) {label="等待重试";color="#FFF0D1";message=Connection.RetryMessage(s.readRetryStage,s.connectionFailure);detail=(s.readRetryError??"状态暂时无法读取")+"；约 "+Math.Max(0,(long)Math.Ceiling((s.readRetryAt.Value-ReadClock())/1000.0))+" 秒后重试，期间不补数、不领取。";}
-                    if(s.paused) {label="已暂停";color="#FFF0D1";message="自动操作已暂停";detail="计数与领取已暂停，连接仍保留。";}
-                    if(pending&&!s.paused&&s.fault==null) {label="处理中";color="#FFF0D1";message="正在确认操作结果";detail="等待桌宠与服务器同步，期间不会重复提交。";}
-                    if(s.fault!=null||pending&&s.paused) {label="需处理";color="#F8E0D8";message="后台已暂停，等待确认";detail=s.fault??"上次操作结果待确认，请先停止并核对桌宠。";}
-                    if(s.recovering) {label="核对中";color="#FFF0D1";message="正在自动核对操作结果";detail=s.fault??"连接或查询恢复后继续确认，不会重复执行操作。";if(s.manuallyPaused)detail+=" 新操作保持暂停。";}
+                    label="运行中";color="#E2EFDD";message="后台运行中";detail="自动补充次数，领取到期宝箱。";
+                    if(s.readRetryAt.HasValue) {label="等待重试";color="#FFF0D1";message=Connection.RetryMessage(s.readRetryStage,s.connectionFailure);detail=(s.readRetryError??"暂时无法获取桌宠信息")+"；约 "+Math.Max(0,(long)Math.Ceiling((s.readRetryAt.Value-ReadClock())/1000.0))+" 秒后重试。";}
+                    if(s.paused) {label=s.manuallyPaused?"已停止":"已暂停";color="#FFF0D1";message=s.manuallyPaused?"已停止运行":"已暂停运行";detail=s.manuallyPaused?"桌宠不受影响，点击“启动后台”可继续。":"";}
+                    if(pending&&!s.paused&&s.fault==null) {label="处理中";color="#FFF0D1";message="正在检查领取或补充是否成功";detail="";}
+                    if(s.fault!=null||pending&&s.paused) {label="需处理";color="#F8E0D8";message="后台已暂停，需要确认";detail=s.fault??"请查看上次领取或补充是否成功，再点击“确认并继续”。";}
+                    if(s.recovering) {label="检查中";color="#FFF0D1";message="正在检查上次领取或补充是否成功";detail=s.fault??"无需重复操作。";if(s.manuallyPaused)detail+=" 已停止运行，检查后也不会自动继续。";}
                     var connectionHint=Connection.Hint(s,ReadClock());
                     if(connectionHint!=null) {
                         if(pending||s.manuallyPaused||s.fault!=null||s.recovering) detail=connectionHint+" "+detail;
-                        else {label=s.connectionFailure=="incompatible"?"需处理":s.connected!=false&&s.state!=null&&s.state.locked?"等待更新":"等待连接";color="#FFF0D1";message=s.connectionFailure=="incompatible"?"桌宠接口不兼容":s.connectionFailure=="main-not-ready"?"正在等待桌宠主窗口就绪":s.connected!=false&&s.state!=null&&s.state.locked?"等待桌宠更新完成":"正在等待桌宠重新连接";detail=connectionHint;}
+                        else {label=s.connectionFailure=="incompatible"?"需处理":s.connected!=false&&s.state!=null&&s.state.locked?"等待更新":"等待连接";color="#FFF0D1";message=s.connectionFailure=="incompatible"?"暂不支持当前桌宠版本":s.connectionFailure=="main-not-ready"?"正在等待桌宠启动":s.connected!=false&&s.state!=null&&s.state.locked?"等待桌宠更新完成":"正在重新连接桌宠";detail=connectionHint;}
                     }
-                    if(stale) {label="状态未更新";color="#FFF0D1";message="暂时没有收到新的后台状态";detail="以下数值是上次记录，不代表当前状态。";}
-                } else if(s!=null&&s.stoppedWithoutRestore) {message="后台已停止";detail="请从桌宠菜单正常退出，再点击“启动后台”。";if(pending)detail+=" 待确认记录已保留，启动后继续核对。";}
-                else if(s!=null&&s.fault!=null) {label="启动或运行失败";color="#F8E0D8";message="后台已停止";detail=s.fault;}
-                else if(s!=null&&s.normalStartupRestored) {message="桌宠已恢复普通运行";detail="要重新开启助手，请先从桌宠设置或托盘退出应用，再点击启动。";}
-                else if(s!=null&&s.running) {message="后台进程已退出";detail="当前显示上次记录，请核对桌宠状态。";}
-                if(Busy) {label="处理中";message=retryRequested?"正在重试连接与状态查询…":"正在等待后台完成操作";detail=retryRequested?"正在检查连接与最新状态，请稍候。":"请按需处理管理员提示，不要重复启动。";}
+                    if(stale) {label="状态未更新";color="#FFF0D1";message="后台状态暂未更新";detail="当前显示的是上次记录。";}
+                } else if(s!=null&&s.fault!=null) {label="启动或运行失败";color="#F8E0D8";message="后台已停止";detail=s.fault;}
+                else if(pending) {label="需处理";color="#FFF0D1";message="上次领取或补充需要确认";detail="请查看桌宠，再点击“确认并继续”。";}
+                else if(s!=null&&s.running) {message="后台意外停止";detail="点击“启动后台”重新启动。";}
+                if(alive&&s.connected==false&&detail==message) detail="连接后自动继续。";
+                if(Busy) {label="处理中";message="正在处理，请稍候";detail="如弹出管理员确认窗口，请允许。";}
                 Text("StatusLabel",label);E<Border>("StatusPill").Background=(Brush)new BrushConverter().ConvertFromString(color);
                 var statusNeedsAttention=pending||stale||s!=null&&s.fault!=null||
                     alive&&(s.paused||s.manuallyPaused||s.recovering||s.readRetryAt.HasValue||Connection.Hint(s,ReadClock())!=null);
                 if(statusNeedsAttention&&noticeIsSuccess) SetNotice(null);
                 Text("MainMessage",message);Text("DetailMessage",notice??detail);
-                var retryButton=E<Button>("RetryButton");
-                retryButton.Visibility=alive&&(s.readRetryAt.HasValue||s.retrying||retryRequested)?Visibility.Visible:Visibility.Collapsed;
-                retryButton.IsEnabled=alive&&!stale&&!Busy&&!s.retrying&&s.readRetryAt.HasValue&&(!s.readRetryNotBefore.HasValue||ReadClock()>=s.readRetryNotBefore.Value);
-                retryButton.Content=retryRequested||s!=null&&s.retrying?"正在重试…":"立即重试";
-                retryButton.ToolTip=s!=null&&s.readRetryNotBefore.HasValue&&ReadClock()<s.readRetryNotBefore.Value?"需等待服务器或操作核对的安全间隔结束。":"立即检查连接与状态，保留手动暂停，不重发未确认操作。";
-                var pauseAction=PauseAction(s,pending);var pauseEnabled=alive&&!Busy&&(!pending||!s.manuallyPaused);
-                stopAction=s!=null&&s.connected==false?"stop-background":"stop";
-                var stopText=stopAction=="stop-background"?"停止后台":"停止并恢复桌宠";
-                E<Button>("StopButton").Content=stopText;
-                E<Button>("StartButton").IsEnabled=!alive&&!Busy;E<Button>("PauseButton").IsEnabled=pauseEnabled;
-                E<Button>("PauseButton").Content=pauseAction=="resume"?"继续运行":"暂停";
-                E<Button>("StopButton").IsEnabled=alive&&!Busy;E<Button>("BrowseAppButton").IsEnabled=!alive&&!Busy&&Instances.Arguments(store)=="";
+                var pauseAction=alive?PauseAction(s,pending):"pause";var pauseEnabled=alive&&!Busy&&(!pending||!s.manuallyPaused);
+                runAction=alive?pauseAction:"start";
+                E<Button>("StartButton").Content=runAction=="pause"?"停止运行":"启动后台";
+                E<Button>("StartButton").Tag=runAction;
+                E<Button>("StartButton").IsEnabled=!Busy&&(!alive||pauseEnabled)&&!(runAction=="resume"&&stale);
+                E<Button>("BrowseAppButton").IsEnabled=!Busy&&!pending&&Instances.Arguments(store)==""&&(!alive||!stale&&s.paused&&s.manuallyPaused);
                 E<Button>("AnotherAppButton").IsEnabled=!Busy;
-                E<Button>("ResetPendingButton").Visibility=pending?Visibility.Visible:Visibility.Collapsed;
-                E<Button>("ResetPendingButton").IsEnabled=pending&&!Busy&&(!alive||!stale&&s.paused&&s.fault!=null);
-                Text("ActionHint",Busy?"处理中…":"每秒刷新");
+                var canConfirm=pending&&(!alive||!stale&&s.paused&&s.fault!=null);
+                E<Button>("ResetPendingButton").Visibility=canConfirm?Visibility.Visible:Visibility.Collapsed;
+                E<Button>("ResetPendingButton").IsEnabled=canConfirm&&!Busy;
                 var state=s==null?null:s.state;
                 Text("AvailableValue",state==null||!state.available.HasValue?"—":state.available.Value.ToString("N0"));
-                Text("TotalValue",state==null||!state.cumulative.HasValue?"—":state.cumulative.Value.ToString("N0"));
-                Text("ClaimsValue",state==null?"—":s.claimsThisRun.ToString("N0"));
-                Text("CountCaption",state==null?"等待首次读取":alive&&!stale?"来自后台最近一次读取":"上次运行的记录");Text("ClaimsCaption",alive?"本次运行领取":"上次运行领取");
-                var names=new Dictionary<string,string>{{"brute","暴力模式"},{"clicker","连点器模式"},{"human","人类模式"}};
-                E<FrameworkElement>("ReserveOptions").Visibility=savedMode=="brute"?Visibility.Collapsed:Visibility.Visible;
-                E<FrameworkElement>("SpeedOptions").Visibility=savedMode=="clicker"?Visibility.Visible:Visibility.Collapsed;
+                try {
+                    Text("TotalValue",new ClaimHistory(store,Instances.SavedPath(store.Root)).Total.ToString("N0"));
+                    Text("CountCaption","助手领取的宝箱数");
+                } catch {
+                    Text("TotalValue","—");Text("CountCaption","统计读取失败");
+                }
+                Text("ClaimsValue",s==null?"—":s.claimsThisRun.ToString("N0"));
+                var snapshotCurrent=alive&&!stale&&s.connected!=false;
+                Text("ClaimsCaption",s==null?"运行领取":alive?"本次运行领取":"上次运行领取");
+                Text("ClaimsHint","后台重启后重计");
+                E<FrameworkElement>("ReserveTarget").Visibility=savedMode=="brute"?Visibility.Collapsed:Visibility.Visible;
+                E<FrameworkElement>("FixedReserve").Visibility=savedMode=="brute"?Visibility.Visible:Visibility.Collapsed;
+                E<FrameworkElement>("ClickerRate").Visibility=savedMode=="clicker"?Visibility.Visible:Visibility.Collapsed;
+                E<FrameworkElement>("FixedSpeed").Visibility=savedMode=="clicker"?Visibility.Collapsed:Visibility.Visible;
+                Text("FixedSpeed",savedMode=="brute"?"到期补足":"波动慢速");
+                E<Label>("SpeedLabel").Content=savedMode=="clicker"?"补充速度":"补充方式";
                 Text("ReserveCaption","每箱消耗 1,000 · 储备目标 "+(savedMode=="brute"?2000:savedTarget).ToString("N0"));
-                var behavior=savedMode=="brute"?"需要补数时一次补足至 2,000 次。":"提前累积，储备目标为 "+savedTarget.ToString("N0")+" 次，到期后逐个领取。";
-                if(savedMode=="clicker") behavior+="补充速度 "+savedRate.ToString("N0")+" 次/秒，以实际操作耗时为准。";
+                var behavior=savedMode=="brute"?"到期且不足领取时，补足至 2,000 次。":savedMode=="clicker"?"目标 "+savedTarget.ToString("N0")+" 次 · "+savedRate.ToString("N0")+" 次/秒。":"目标 "+savedTarget.ToString("N0")+" 次。";
                 var applied=alive&&s.mode==savedMode&&(savedMode=="brute"||s.reserveTarget==savedTarget)&&(savedMode!="clicker"||s.clickerRate==savedRate);
-                Text("ModeHint",!alive?"已选择："+names[savedMode]+"，启动后台后生效。"+behavior:!applied?"模式与参数已保存，等待后台应用。":"已应用："+names[savedMode]+(s.paused||s.fault!=null||pending?"，当前已暂停或正在确认操作。":"。"+behavior));
+                Text("ModeHint",behavior+(alive&&!applied?" 等待后台应用。":""));
                 var clock=s==null?null:s.chestTimes;
                 bool valid=clock!=null&&clock.updatedAt.HasValue&&clock.left.HasValue&&clock.right.HasValue&&clock.error==null&&ReadClock()-clock.updatedAt>=0&&ReadClock()-clock.updatedAt<=90000;
-                Text("SnapshotLabel",!alive||stale?"等待连接":clock!=null&&clock.error!=null?"宝箱时间查询失败":valid?"接口同步 "+DateTimeOffset.FromUnixTimeMilliseconds(clock.updatedAt.Value).ToOffset(TimeSpan.FromHours(8)).ToString("HH:mm:ss"):"等待接口同步");
-                Chest("Left","left",s,alive&&!stale,valid);Chest("Right","right",s,alive&&!stale,valid);
-                Activity();
+                Text("SnapshotLabel",!alive?state==null?"启动后同步":"上次运行已结束":stale?"状态未更新":s.connected==false?"连接已断开":clock!=null&&clock.error!=null?"宝箱时间查询失败":valid?"上次同步 "+DateTimeOffset.FromUnixTimeMilliseconds(clock.updatedAt.Value).ToOffset(TimeSpan.FromHours(8)).ToString("HH:mm:ss"):"等待接口同步");
+                Chest("Left","left",s,snapshotCurrent,valid);Chest("Right","right",s,snapshotCurrent,valid);
+                Activity(s);
                 if(tray!=null) {
                     tray.Text="Wuwa Tappo 助手 · "+label;trayStatus.Text="后台："+label;
-                    trayPause.Text=pauseAction=="resume"?"继续运行":"暂停自动化";trayPause.Enabled=pauseEnabled;
-                    trayStop.Text=stopText;trayStop.Enabled=alive&&!Busy;trayExit.Enabled=true;trayExit.Text=alive?"停止自动化并退出助手":"退出助手";
+                    trayRun.Text=E<Button>("StartButton").Content.ToString();trayRun.Enabled=E<Button>("StartButton").IsEnabled;
+                    trayExit.Enabled=true;trayExit.Text="退出助手";
                 }
             } catch(Exception error) {
-                Text("MainMessage","状态暂时无法读取");Text("DetailMessage",error is IOException?"正在等待状态文件更新；不会自动重试领取。":error.Message);
-                E<Button>("StartButton").IsEnabled=false;E<Button>("PauseButton").IsEnabled=false;E<Button>("StopButton").IsEnabled=false;
+                Text("MainMessage","暂时无法获取后台状态");Text("DetailMessage",error is IOException?"请稍候。":error.Message);
+                E<Button>("StartButton").IsEnabled=false;
                 E<Button>("ResetPendingButton").IsEnabled=false;
-                if(tray!=null) {trayPause.Enabled=false;trayStop.Enabled=false;trayExit.Enabled=true;trayStatus.Text="后台：状态读取失败";}
+                if(tray!=null) {trayRun.Enabled=false;trayExit.Enabled=true;trayStatus.Text="后台：状态读取失败";}
             }
         }
         void Chest(string prefix,string side,Status s,bool alive,bool valid) {
-            var state=s==null?null:s.state;double progress=0;string text="未连接",tag="未连接",hint="";
+            var state=s==null?null:s.state;double progress=0;string text=s==null?"--:--":!s.running?"未连接":s.connected==false?"连接已断开":!alive?"状态未更新":state==null?"等待首次读取":"等待同步";
+            if(alive&&state!=null&&!state.loggedIn) text="等待登录";
             if(alive&&state!=null&&state.loggedIn) {
-                if(!valid) {text="等待同步";tag="接口时间未就绪";hint=s.chestTimes==null?"等待服务端宝箱时间":s.chestTimes.error??"等待服务端宝箱时间，暂不显示旧倒计时";}
+                if(!valid) text="等待同步";
                 else {
                     var target=side=="left"?s.chestTimes.left:s.chestTimes.right;var remaining=Math.Max(0,(long)Math.Ceiling((target.Value-ReadClock())/1000.0));
-                    if(remaining>0) {text=(remaining/60).ToString("00")+":"+(remaining%60).ToString("00");tag="计时中";hint="服务端冷却时间，每 30 秒同步；显示每秒更新";progress=Math.Max(0,Math.Min(1,1-remaining/1800.0));}
-                    else {text=state.Button(side)?"已就绪":"冷却已结束";tag=state.Button(side)?"待领取":"等待同步";hint=s.paused?"恢复运行后继续检查领取":"由后台核对并按顺序领取";progress=1;}
+                    if(remaining>0) {text=(remaining/60).ToString("00")+":"+(remaining%60).ToString("00");progress=Math.Max(0,Math.Min(1,1-remaining/1800.0));}
+                    else {text=state.Button(side)?"已就绪":"冷却已结束";progress=1;}
                 }
             }
-            Text(prefix+"Time",text);Text(prefix+"Tag",tag);Text(prefix+"Hint",hint);
+            Text(prefix+"Time",text);
             E<Border>(prefix+"Fill").Width=Math.Max(0,E<Border>(prefix+"Track").ActualWidth*progress);
         }
-        void Activity() {
-            var path=store.FilePath("events.jsonl");var lines=new List<string>();
-            if(File.Exists(path)) {
-                foreach(var row in Tail(path,12).Reverse()) {
-                    try {
-                        var ev=Json.Decode<Dictionary<string,object>>(row);var name=ev["event"] as string;string text=null;
-                        if(name=="started") text="后台已连接";
-                        else if(name=="claim-confirmed") text="已领取"+((string)ev["side"]=="left"?"宝箱一":"宝箱二")+" · 消耗 1,000 次";
-                        else if(name=="boost-confirmed") text="已补充 "+ev["delta"]+" 次";
-                        else if(name=="boost-recovered") {
-                            var after=ev.ContainsKey("after")?Json.Convert<Snapshot>(ev["after"]):null;
-                            text=after!=null&&after.boostOverwritten?"本次补数被旧上报覆盖，按最新计数继续":"已补充 "+ev["delta"]+" 次";
-                        }
-                        else if(name=="paused-on-error") text="后台暂停，等待处理";
-                        else if(name=="pending-resolved") text="已确认继续，上次操作不重发";
-                        else if(name=="read-query-retry") {
-                            object stage,kind;ev.TryGetValue("stage",out stage);ev.TryGetValue("connectionFailure",out kind);
-                            text=Connection.RetryMessage(stage as string,kind as string);
-                        }
-                        else if(name=="operation-state") {
-                            object stage;ev.TryGetValue("stage",out stage);object error;ev.TryGetValue("errorType",out error);
-                            if(error!=null)text=(string)stage=="local-save"?"计数保存失败，正在重试":(string)stage=="request"?"领取回执未确认，正在核对":(string)stage=="verify"?"领取结果查询失败，正在重试":"领取结果仍在核对中";
-                        }
-                        else if(name=="read-query-recovered") text="状态查询已恢复";
-                        else if(name=="connection-restored") text="桌宠连接已恢复";
-                        else if(name=="app-version-validated") text="已校验桌宠 "+ev["version"]+" 接口";
-                        else if(name=="boost-overwritten") text="本次补数被旧上报覆盖，按最新计数继续";
-                        else if(name=="cleanup-needs-attention") text="停止后需要检查桌宠状态";
-                        if(text!=null) lines.Add(DateTimeOffset.Parse((string)ev["at"]).ToOffset(TimeSpan.FromHours(8)).ToString("MM-dd HH:mm:ss")+"    "+text);
-                        if(lines.Count>=3) break;
-                    } catch { }
-                }
+        void Activity(Status status) {
+            activityLog.Refresh();var entries=activityLog.Recent.Take(3).ToList();
+            DateTimeOffset at;
+            if(status!=null) {
+                if(!DateTimeOffset.TryParse(status.at,out at))at=DateTimeOffset.FromUnixTimeMilliseconds(ReadClock());
+                if(status.running&&!Alive(status)) {
+                    entries.Add(new ActivityRecord {at=at,message="后台意外退出，未记录原因（时间为最后状态时间）",error=true});
+                } else if(!status.running&&string.IsNullOrWhiteSpace(status.fault)&&(status.petClosed||status.stoppedWithoutClose))entries.Add(new ActivityRecord {at=at,message=status.petClosed?"后台和桌宠已关闭":"后台已停止，未关闭桌宠"});
             }
-            Text("ActivityHeading",lines.Count==0?"最近活动 · 暂无记录":"最近活动");Text("ActivityText",string.Join("\n",lines));
-            E<TextBlock>("ActivityText").Visibility=lines.Count==0?Visibility.Collapsed:Visibility.Visible;
+            if(activityLog.ReadError!=null)entries.Insert(0,new ActivityRecord {at=DateTimeOffset.FromUnixTimeMilliseconds(ReadClock()),message="运行记录暂时无法读取，请稍后重试。",error=true});
+            var shown=entries.OrderByDescending(entry=>entry.at).Take(3).ToList();var lines=shown.Select(entry=>entry.Line).ToList();
+            Text("ActivityText",string.Join("\n",lines));
+            E<FrameworkElement>("ActivityEmpty").Visibility=lines.Count==0?Visibility.Visible:Visibility.Collapsed;
         }
-        static IEnumerable<string> Tail(string path,int count) {
-            using(var stream=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete)) {
-                long start=stream.Length;int lines=0;
-                while(start>0) {stream.Position=--start;if(stream.ReadByte()==10&&++lines>count) {start++;break;}}
-                stream.Position=start;using(var reader=new StreamReader(stream,Encoding.UTF8,true)) return reader.ReadToEnd().Split(new[]{'\r','\n'},StringSplitOptions.RemoveEmptyEntries);
-            }
-        }
-        public void Render(string path,int width=960,int height=900) {
+        public void Render(string path,int width=880,int height=874) {
             var surface=E<Border>("RootSurface");Refresh();surface.Measure(new Size(width,height));surface.Arrange(new Rect(0,0,width,height));surface.UpdateLayout();Refresh();surface.UpdateLayout();
             var image=new RenderTargetBitmap(width,height,96,96,PixelFormats.Pbgra32);image.Render(surface);
             var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(image));

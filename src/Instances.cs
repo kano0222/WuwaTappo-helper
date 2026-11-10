@@ -23,7 +23,7 @@ namespace Tappo {
         internal static RuntimeStore Open(string baseRoot,string id) {
             if(id==null)return new RuntimeStore(baseRoot);
             if(id.Length!=64||id.Any(c=>!Uri.IsHexDigit(c)))throw new InvalidOperationException("实例标识无效。");
-            return new RuntimeStore(Path.Combine(baseRoot,"runtime","instances",id.ToUpperInvariant()),id.ToUpperInvariant());
+            return new RuntimeStore(Path.Combine(baseRoot,"runtime","instances",id.ToUpperInvariant()),id.ToUpperInvariant(),baseRoot);
         }
         internal static string ForPath(string baseRoot,string path) {
             var saved=SavedPath(baseRoot);

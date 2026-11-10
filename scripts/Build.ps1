@@ -23,6 +23,7 @@ if (-not $releaseBuild) {
 $assemblyVersion=$buildVersion+'.0'
 $localBuild=-not $releaseBuild -and $env:GITHUB_ACTIONS -ne 'true'
 if ($localBuild) {
+    if ($OutputDirectory) { throw 'Local development builds use build/X.Y.Z.N. Omit -OutputDirectory; custom output directories are reserved for explicit -Version builds and CI.' }
     $buildRoot=Join-Path $root 'build'
     $pattern='^'+[Regex]::Escape($buildVersion)+'\.(\d+)$'
     $revision=0

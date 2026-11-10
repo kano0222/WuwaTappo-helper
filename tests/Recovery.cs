@@ -55,6 +55,7 @@ namespace Tappo {
                     Check(old.Claims==(restarted?0:1)&&fresh.Claims==0,scenario+" mutation resent during recovery");
                     Check(store.Exists("pending.json")==blocked,scenario+" pending record ownership");
                     Check(worker.Status.claimsThisRun==(blocked?0:1),scenario+" confirmation attribution");
+                    Check(new ClaimHistory(store,null).Total==(blocked?0:1),scenario+" persistent recovery counted twice or unconfirmed claim counted");
                     if(scenario=="account")Check(old.Recoveries==0,"recovery ran for another account");
                     if(scenario=="manual-pause")Check(worker.Status.paused&&worker.Status.manuallyPaused,"automatic recovery overrode manual pause");
                     if(scenario=="disconnect"||scenario=="startup-disconnect")Check(reconnections==1,"pending prevented reconnect");
