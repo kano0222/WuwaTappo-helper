@@ -19,7 +19,7 @@ namespace Tappo {
             try {
                 foreach(var scenario in new[]{"query","post-query","save","disconnect","manual-pause","account","slot","wrong-id","receipt-lost","restart","startup-disconnect"}) {
                     var store=new RuntimeStore(Path.Combine(root,scenario));var old=new FakeClient();var fresh=new FakeClient();long now=100000;int loops=0,reconnections=0;
-                    old.State.left=4000;old.State.appVersion="1.0.2";fresh.State=Tests.Copy(old.State);
+                    old.State.left=4000;old.State.time=7000;old.State.appVersion="1.0.2";fresh.State=Tests.Copy(old.State);
                     var restarted=scenario=="restart"||scenario=="startup-disconnect";
                     if(restarted)store.Begin(new Plan {kind="claim",side="left"},Tests.Copy(old.State),Server(old.State));
                     old.ClaimResult=()=> {
@@ -141,7 +141,7 @@ namespace Tappo {
                     Check(RuntimeStore.ReadText(store.FilePath("events.jsonl")).Contains("\"httpStatus\":429"),"rate limit diagnostic missing");
                 }
                 {
-                    var store=new RuntimeStore(Path.Combine(root,"cooldown"));var client=new FakeClient();client.State.left=4000;long now=100000;int loops=0;
+                    var store=new RuntimeStore(Path.Combine(root,"cooldown"));var client=new FakeClient();client.State.left=4000;client.State.time=7000;long now=100000;int loops=0;
                     client.ClaimResult=()=> {
                         var after=Tests.Copy(client.State);
                         if(client.Claims<=2){after.rejected=true;after.code=70006;}

@@ -197,7 +197,17 @@ namespace Tappo {
             Check(Policy.Choose(s,"brute",true,random).kind=="wait","brute behavior changed");
             s.left=s.time;Check(Policy.Choose(s,"brute",true,random).delta==2000,"due chest without button must replenish");
             s.available=379;Check(Policy.Choose(s,"brute",true,random).delta==1621,"low balance after wake must replenish");
-            s.available=2000;Check(Policy.Choose(s,"brute",true,random).kind=="claim","API claim must not require a button");
+            s.available=2000;Check(Policy.Choose(s,"brute",true,random).kind=="wait","claim at cooldown boundary");
+            s.time+=2999;Check(Policy.Choose(s,"brute",true,random).kind=="wait","claim before safety margin");
+            s.time++;Check(Policy.Choose(s,"brute",true,random).kind=="claim","API claim must not require a button after safety margin");
+            foreach(var mode in Policy.Modes) {
+                var boundary=State();boundary.left=boundary.time-2999;
+                Check(Policy.Choose(boundary,mode,true,random).kind=="wait",mode+" claimed inside safety margin");
+                boundary.left--;
+                Check(Policy.Choose(boundary,mode,true,random).side=="left",mode+" missed safety margin boundary");
+                boundary.left=boundary.time;boundary.right=boundary.time-3000;
+                Check(Policy.Choose(boundary,mode,true,random).side=="right",mode+" blocked eligible other slot");
+            }
             s.available=0;
             Check(Policy.Choose(s,"clicker",true,random).delta==100,"clicker rate");
             Check(Policy.Choose(s,"human",true,random).delta==5,"human rate");
@@ -206,12 +216,12 @@ namespace Tappo {
             s.left=s.time+1000;s.available=1234;
             var fullBatch=Policy.Choose(s,"clicker",true,random,2000,1000);s.available+=fullBatch.delta;
             Check(s.available==2234&&Policy.Choose(s,"clicker",true,random,2000,1000).kind=="wait","1234 to 2234 reserve threshold");
-            s=State();s.available=1000;s.left=s.right=4000;Check(Policy.Choose(s,"brute",false,random).side=="left","serial slots");
+            s=State();s.time=7000;s.available=1000;s.left=s.right=4000;Check(Policy.Choose(s,"brute",false,random).side=="left","serial slots");
             s.claimBusy=true;Check(Policy.Choose(s,"clicker",true,random).kind=="wait","animation lock");
             s=State();s.available=null;Reject(()=>Policy.Choose(s,"brute",true,random),"missing count accepted");
             s=State();s.left=null;Reject(()=>Policy.Choose(s,"brute",true,random),"missing cooldown accepted");
             s=State();s.loggedIn=false;Check(Policy.Choose(s,"brute",true,random).kind=="wait","logged out");s.loggedIn=true;s.locked=true;Check(Policy.Choose(s,"brute",true,random).kind=="wait","update lock");
-            var before=State();before.left=before.right=4000;var after=Copy(before);after.consumed+=1000;after.available-=1000;after.left=9000;
+            var before=State();before.time=7000;before.left=before.right=4000;var after=Copy(before);after.consumed+=1000;after.available-=1000;after.left=9000;
             var a=new ServerState {accountKey="test-key",total=4000,consumed=2000,left=4000,right=4000};var b=new ServerState {accountKey="test-key",total=4000,consumed=3000,left=9000,right=4000};
             Policy.Confirm("left",before,after,a,b);checks++;
             Check(Policy.Choose(after,"brute",true,random).side=="right","second slot after confirmation");
@@ -278,7 +288,7 @@ namespace Tappo {
                 bool historical=action=="disconnect"||action=="stop-background"||action=="stop"||action=="poll";
                 if(historical) File.WriteAllText(store.FilePath("pending.json"),"{\"historical\":true}");
                 if(action=="disconnect"||action=="stop-background"||action=="stop") store.Write("control.json",new Command {id="fixture",action=action});
-                if(!historical) {client.State.left=4000;client.State.time=5000;}
+                if(!historical) {client.State.left=4000;client.State.time=7000;}
                 if(action=="timeout") client.ThrowClaim=true;
                 if(action=="reject") client.ClaimResult=()=>{var s=Copy(client.State);s.rejected=true;s.code=70006;return s;};
                 if(action=="success") client.ClaimResult=()=>{var s=Copy(client.State);s.left=90000;s.consumed+=1000;s.available-=1000;return s;};
@@ -312,7 +322,7 @@ namespace Tappo {
         }
         static async Task VersionPreflight() {
             foreach(var scenario in new[]{"upgrade","failure"}) {
-                var store=Store();var client=new FakeClient();client.State.appVersion="1.0.1";client.State.left=4000;
+                var store=Store();var client=new FakeClient();client.State.appVersion="1.0.1";client.State.left=4000;client.State.time=7000;
                 client.SnapshotResult=()=>Copy(client.State);
                 client.VersionResult=()=> {
                     if(scenario=="failure") throw new IOException("version unavailable");
@@ -332,7 +342,7 @@ namespace Tappo {
             }
         }
         static async Task ServerChestConfirmation() {
-            var store=Store();var client=new FakeClient();client.State.left=client.State.right=4000;
+            var store=Store();var client=new FakeClient();client.State.left=client.State.right=4000;client.State.time=7000;
             // The other local slot is already stale before this claim starts.
             client.State.right=3000;
             var raw=client.State;
@@ -519,7 +529,7 @@ namespace Tappo {
                 old.State.left=old.State.right=fresh.State.left=fresh.State.right=900000;
                 if(scenario=="pending") File.WriteAllText(store.FilePath("pending.json"),"{\"historical\":true}");
                 old.SnapshotResult=()=>{if(scenario!="http")old.Connected=false;if(scenario!="claim-disconnect")throw new IOException("connection lost");return old.State;};
-                if(scenario=="claim-disconnect") {old.State.left=4000;old.ClaimResult=()=>{old.Connected=false;throw new IOException("claim connection lost");};}
+                if(scenario=="claim-disconnect") {old.State.left=4000;old.State.time=7000;old.ClaimResult=()=>{old.Connected=false;throw new IOException("claim connection lost");};}
                 Worker worker=null;
                 worker=new Worker(store,()=>{initial++;return Task.FromResult<IAppClient>(old);},c=>{throw new Exception("must not restart pet");},ms=> {
                     now+=ms;loops++;

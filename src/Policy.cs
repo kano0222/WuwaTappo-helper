@@ -6,6 +6,8 @@ namespace Tappo {
     internal sealed class Plan { public string kind, side, reason; public int delta, delayMs; }
     internal static class Policy {
         public static readonly string[] Modes={"brute","clicker","human"};
+        // Near-boundary requests can still receive 70006 despite the published timestamp.
+        internal const int ClaimSafetyMarginMs=3000;
         public static Plan Choose(Snapshot s,string mode,bool boostDue,Func<double> random,int reserveTarget=2000,int clickerRate=100) {
             new Preference {mode=mode,reserveTarget=reserveTarget,clickerRate=clickerRate}.Validate();
             var target=mode=="brute"?2000:reserveTarget;
@@ -14,7 +16,8 @@ namespace Tappo {
             if(!new[]{s.left,s.right}.All(v=>v.HasValue&&v>=0&&v<=9007199254740991L)) throw new InvalidOperationException("宝箱时间尚未就绪");
             if(s.claimBusy) return Wait("等待当前宝箱领取完成");
             var ready=new[]{"left","right"}.FirstOrDefault(side=>s.Slot(side)<=s.time);
-            if(ready!=null&&s.available>=1000) return new Plan {kind="claim",side=ready};
+            var claimReady=new[]{"left","right"}.FirstOrDefault(side=>s.Slot(side)<=s.time-ClaimSafetyMarginMs);
+            if(claimReady!=null&&s.available>=1000) return new Plan {kind="claim",side=claimReady};
             if(s.available<target&&(mode!="brute"||ready!=null)) {
                 if(!boostDue) return Wait("按所选速率补充次数");
                 if(mode=="brute") return new Plan {kind="boost",delta=(int)(target-s.available.Value)};
