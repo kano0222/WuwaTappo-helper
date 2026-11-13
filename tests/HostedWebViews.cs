@@ -1,0 +1,107 @@
+using System;
+using System.Collections.Generic;
+using System.Diagnostics;
+using System.IO;
+using System.Linq;
+using System.Net;
+using System.Net.Sockets;
+using System.Threading;
+
+namespace Tappo {
+    internal static class HostedWebViewChecks {
+        static int checks;
+        static void Check(bool value,string message) {if(!value)throw new Exception(message);checks++;}
+        static string Args(int host,int port) {
+            return "--embedded-browser-webview=1 --webview-exe-name=WuwaTappo.exe --mojo-named-platform-channel-pipe="+host+".99.123456 --remote-debugging-port="+port;
+        }
+        internal static int Fixture(string[] args) {
+            TcpListener listener=null;
+            try {
+                if(args.Contains("--listener")) {
+                    var explicitPort=args.FirstOrDefault(arg=>arg.StartsWith("--listen-port=",StringComparison.Ordinal));
+                    var port=explicitPort==null?Instances.DebugPort(Environment.CommandLine):int.Parse(explicitPort.Substring("--listen-port=".Length));
+                    listener=new TcpListener(IPAddress.Loopback,port);listener.Start();
+                }
+                File.WriteAllText(Path.Combine(args[1],"ready"),"ready");
+                var until=DateTime.UtcNow.AddSeconds(30);
+                while(!File.Exists(Path.Combine(args[1],"quit"))&&DateTime.UtcNow<until)Thread.Sleep(20);
+                return 0;
+            } finally {if(listener!=null)listener.Stop();}
+        }
+        static Process Start(string root,string name,string arguments) {
+            Directory.CreateDirectory(root);var exe=Path.Combine(root,name);File.Copy(Platform.Executable,exe);
+            var child=Process.Start(new ProcessStartInfo(exe,"--hosted-webview-fixture \""+root+"\" "+arguments) {UseShellExecute=false,CreateNoWindow=true});
+            try {
+                var until=DateTime.UtcNow.AddSeconds(8);
+                while(!child.HasExited&&!File.Exists(Path.Combine(root,"ready"))&&DateTime.UtcNow<until)Thread.Sleep(20);
+                if(child.HasExited||!File.Exists(Path.Combine(root,"ready")))throw new Exception("hosted WebView fixture failed to start");
+                return child;
+            } catch {if(!child.HasExited){child.Kill();child.WaitForExit();}child.Dispose();throw;}
+        }
+        internal static int Run() {
+            checks=0;
+            const int hostPid=1001,debugPort=58269;
+            var args="msedgewebview2.exe "+Args(hostPid,debugPort);
+            Check(HostedWebViews.IsBound(args,hostPid),"broker-launched browser rejected");
+            Check(!HostedWebViews.IsBound(args,hostPid+1),"another host's browser accepted");
+            Check(!HostedWebViews.IsBound(args+" --type=renderer",hostPid),"renderer accepted as browser root");
+            Check(!HostedWebViews.IsBound(args.Replace("WuwaTappo.exe","Other.exe"),hostPid),"another WebView app accepted");
+            Check(!HostedWebViews.IsBound("msedgewebview2.exe "+Args(hostPid*10,debugPort),hostPid),"partial host PID accepted");
+            Check(!HostedWebViews.IsBound(args+" --mojo-named-platform-channel-pipe="+hostPid+".88.9",hostPid),"ambiguous host binding accepted");
+            Check(!HostedWebViews.IsBound("msedgewebview2.exe --user-agent=\""+Args(hostPid,debugPort)+"\"",hostPid),"binding inside another argument accepted");
+            Check(HostedWebViews.IsBound(args.Replace("="+hostPid+".99.123456","=\""+hostPid+".99.123456\""),hostPid),"quoted host binding rejected");
+
+            var root=Path.Combine(Path.GetTempPath(),"tappo-hosted-webview-"+Guid.NewGuid().ToString("N"));
+            var hostRoot=Path.Combine(root,"host");var browserRoot=Path.Combine(root,"browser");var otherRoot=Path.Combine(root,"other-host");var otherBrowserRoot=Path.Combine(root,"other-browser");
+            Process host=null,browser=null,other=null,otherBrowser=null;
+            try {
+                var port=Instances.AvailablePort();
+                host=Start(hostRoot,"WuwaTappo.exe","--remote-debugging-port="+port);
+                // Both processes are launched by this test, reproducing a browser
+                // outside the pet's parent/child tree, as in the supplied report.
+                browser=Start(browserRoot,"msedgewebview2.exe",Args(host.Id,port)+" --listener");
+                Check(!Instances.ProbePort(port,new HashSet<int>{host.Id}),"fixture unexpectedly passed parent-tree-only ownership");
+                Func<string,bool> fixtureTrust=path=>path==Path.Combine(browserRoot,"msedgewebview2.exe")||path==Path.Combine(otherBrowserRoot,"msedgewebview2.exe");
+                using(var hostIdentity=ProcessIdentity.Open(host.Id))using(var browserIdentity=ProcessIdentity.Open(browser.Id)) {
+                    Check(!WebViewExecutable.IsTrusted(browserIdentity.Path),"unsigned renamed fixture was trusted as Microsoft WebView2");
+                    Check(!RootIds(hostIdentity,WebViewExecutable.IsTrusted).Contains(browser.Id),"production discovery trusted an unsigned impersonator");
+                    bool rejected=false;try {Instances.OwnedPort(host.Id);}catch(ConnectionFailureException){rejected=true;}
+                    Check(rejected,"production port resolution accepted unsigned impersonator");
+                    Check(RootIds(hostIdentity,fixtureTrust).Contains(browser.Id),"native WMI host binding not discovered");
+                    Check(Instances.OwnedPort(host.Id,fixtureTrust)==port,"broker-launched owned browser could not connect");
+
+                    var targetPort=Instances.AvailablePort();var auxiliaryPort=Instances.AvailablePort();
+                    while(auxiliaryPort==targetPort)auxiliaryPort=Instances.AvailablePort();
+                    other=Start(otherRoot,"WuwaTappo.exe","--remote-debugging-port="+targetPort+" --listen-port="+auxiliaryPort+" --listener");
+                    using(var newerHost=ProcessIdentity.Open(other.Id)) {
+                        Check(browserIdentity.Created<newerHost.Created,"stale-browser fixture did not precede new host");
+                        Check(!HostedWebViews.Accept(newerHost,browserIdentity,"msedgewebview2.exe "+Args(newerHost.Id,port),fixtureTrust),
+                            "old browser accepted with a reused host PID binding");
+                        Check(!RootIds(newerHost,fixtureTrust).Contains(browser.Id),"browser attached to another pet's process");
+                    }
+                    otherBrowser=Start(otherBrowserRoot,"msedgewebview2.exe",Args(other.Id,targetPort)+" --listener");
+                    Check(Instances.OwnedPort(other.Id,fixtureTrust)==targetPort,"auxiliary host listener masked the hosted browser debug port");
+
+                    File.WriteAllText(Path.Combine(browserRoot,"quit"),"quit");Check(browser.WaitForExit(3000),"browser fixture did not exit");
+                    Check(!browserIdentity.Alive,"held browser identity survived process exit");
+                    Check(!Instances.ProcessTree(hostIdentity,new[]{browserIdentity}).Contains(browser.Id),"dead cached browser was re-admitted by numeric PID");
+                    File.WriteAllText(Path.Combine(hostRoot,"quit"),"quit");Check(host.WaitForExit(3000),"host fixture did not exit");
+                    Check(!hostIdentity.Alive,"held host identity survived process exit");
+                    bool deadHostRejected=false;
+                    try {Instances.ProcessTree(hostIdentity,new ProcessIdentity[0]);}catch(ConnectionFailureException){deadHostRejected=true;}
+                    Check(deadHostRejected,"dead host identity was allowed to bind a replacement process");
+                }
+            } finally {
+                foreach(var folder in new[]{hostRoot,browserRoot,otherRoot,otherBrowserRoot})if(Directory.Exists(folder))File.WriteAllText(Path.Combine(folder,"quit"),"quit");
+                foreach(var child in new[]{host,browser,other,otherBrowser})if(child!=null) {if(!child.WaitForExit(3000)){child.Kill();child.WaitForExit();}child.Dispose();}
+                if(Directory.Exists(root))Directory.Delete(root,true);
+            }
+            return checks;
+        }
+        static int[] RootIds(ProcessIdentity host,Func<string,bool> trusted) {
+            var roots=HostedWebViews.Roots(host,trusted);
+            try {return roots.Select(browser=>browser.Id).ToArray();}
+            finally {foreach(var browser in roots)browser.Dispose();}
+        }
+    }
+}

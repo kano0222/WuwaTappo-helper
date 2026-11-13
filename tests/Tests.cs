@@ -40,7 +40,8 @@ namespace Tappo {
         static void Reject(Action action,string message) {bool rejected=false;try{action();}catch{rejected=true;}Check(rejected,message);}
         static RuntimeStore Store() {return new RuntimeStore(Path.Combine(root,Guid.NewGuid().ToString("N")));}
         [STAThread] public static int Main(string[] args) {
-            if(args.Length==2&&args[0]=="--pet-fixture")return PetLifecycleChecks.Fixture(args[1]);
+            if(args.Length>=2&&args[0]=="--hosted-webview-fixture")return HostedWebViewChecks.Fixture(args);
+            if(args.Length>=2&&args[0]=="--pet-fixture")return PetLifecycleChecks.Fixture(args[1]);
             if(args.Length==2&&args[0]=="--apply-update")return UpdateInstaller.Apply(args[1]);
             if(args.Length==2&&args[0]=="--update-participant") {
                 var isolatedRoot=AppDomain.CurrentDomain.BaseDirectory;
