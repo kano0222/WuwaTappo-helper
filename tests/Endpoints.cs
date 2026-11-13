@@ -55,9 +55,9 @@ namespace Tappo {
             row=Row(11,58269);row.localAddress=IPAddress.Any;
             Check(!Instances.OwnsConnection(new[]{row},tree,58269,44000),"wildcard server proof accepted");
             var port=Instances.AvailablePort();bool probed=false;
-            Check(Instances.ResolvePort(tree,()=>new Instances.TcpRow[0],()=>port,(p,t)=>{probed=p==port&&t==tree;return true;})==port&&probed,"missing listener did not use verified fallback");
-            Reject(()=>Instances.ResolvePort(tree,()=>new Instances.TcpRow[0],()=>port,(p,t)=>false),"unowned candidate accepted");
-            Reject(()=>Instances.ResolvePort(tree,()=>new[]{Row(10,123,state:2),Row(11,124,state:2)},()=>port,(p,t)=>true),"ambiguous listeners bypassed by fallback");
+            Check(Instances.ResolvePort(()=>port,p=>{probed=p==port;return true;})==port&&probed,"candidate did not require ownership proof");
+            Reject(()=>Instances.ResolvePort(()=>port,p=>false),"unowned candidate accepted");
+            Reject(()=>Instances.ResolvePort(()=>{throw new InvalidOperationException("ambiguous candidate");},p=>true),"ambiguous candidate accepted");
             var pid=Process.GetCurrentProcess().Id;
             Check(!string.IsNullOrEmpty(Instances.CommandLine(pid)),"WMI could not read selected process command line");
             var listener=new TcpListener(IPAddress.Loopback,0);
@@ -66,16 +66,13 @@ namespace Tappo {
                 Check(Instances.ProbePort(port,new HashSet<int>{pid}),"native established owner verification failed");
                 Check(!Instances.ProbePort(port,new HashSet<int>{-1}),"native probe accepted wrong process tree");
                 // Simulate this incident: only the established server row is visible.
-                Check(Instances.ResolvePort(new HashSet<int>{pid},()=>new Instances.TcpRow[0],()=>port,
-                    Instances.ProbePort)==port,"listener omission prevented actual owned connection");
+                Check(Instances.ResolvePort(()=>port,p=>Instances.ProbePort(p,new HashSet<int>{pid}))==port,"listener omission prevented actual owned connection");
             } finally {listener.Stop();}
-            Reject(()=>Instances.ResolvePort(new HashSet<int>{pid},()=>new Instances.TcpRow[0],()=>port,
-                Instances.ProbePort),"closed endpoint accepted");
+            Reject(()=>Instances.ResolvePort(()=>port,p=>Instances.ProbePort(p,new HashSet<int>{pid})),"closed endpoint accepted");
             listener=new TcpListener(IPAddress.Any,0);
             try {
                 listener.Start();port=((IPEndPoint)listener.LocalEndpoint).Port;
-                Reject(()=>Instances.ResolvePort(new HashSet<int>{pid},()=>new Instances.TcpRow[0],()=>port,
-                    Instances.ProbePort),"fallback accepted publicly bound endpoint");
+                Reject(()=>Instances.ResolvePort(()=>port,p=>Instances.ProbePort(p,new HashSet<int>{pid})),"fallback accepted publicly bound endpoint");
             } finally {listener.Stop();}
             return checks+HostedWebViewChecks.Run();
         }

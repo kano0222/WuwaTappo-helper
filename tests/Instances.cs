@@ -35,7 +35,7 @@ namespace Tappo {
                 var info=Platform.AppStartInfo(first,true,23456);
                 Check(info.Arguments.Contains("--remote-debugging-port=23456"),"assigned port missing");
                 var port=Instances.AvailablePort();var listener=new TcpListener(IPAddress.Loopback,port);
-                try {listener.Start();Platform.CheckListeners(port);Check(Instances.OwnedPort(Process.GetCurrentProcess().Id)==port,"native TCP owner lookup failed");}finally {listener.Stop();}
+                try {listener.Start();Platform.CheckListeners(port);Check(Instances.ProbePort(port,new HashSet<int>{Process.GetCurrentProcess().Id}),"native TCP owner lookup failed");}finally {listener.Stop();}
                 Check(Instances.Arguments(original)==""&&Instances.Arguments(store)==" --instance "+id,"worker instance arguments lost");
                 using(var primary=new Panel(original,preview:true))using(var extra=new Panel(store,preview:true)) {
                     Check(primary.ClaimInstance()&&extra.ClaimInstance()&&Child(store.Root,"--panel-lease-check")==2,"panel instance isolation failed");

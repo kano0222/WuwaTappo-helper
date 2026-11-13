@@ -68,16 +68,17 @@ namespace Tappo {
             do {changed=false;foreach(var pair in parents)if(result.Contains(pair.Value)&&result.Add(pair.Key))changed=true;}while(changed);
             return result;
         }
-        static HashSet<int> ProcessTree(int pid,int[] hosted=null) {
+        internal static HashSet<int> ProcessTree(ProcessIdentity host,ProcessIdentity[] hosted) {
+            if(!host.Alive)throw new ConnectionFailureException("debug-unavailable","所选桌宠进程已退出。");
             var handle=CreateToolhelp32Snapshot(2,0);
             if(handle==new IntPtr(-1))throw new InvalidOperationException("无法核实桌宠进程树。");
             try {
                 var parents=new Dictionary<int,int>();var entry=new Entry {size=(uint)Marshal.SizeOf(typeof(Entry))};
                 if(!Process32FirstW(handle,ref entry))throw new InvalidOperationException("无法读取桌宠进程树。");
                 do {parents[(int)entry.pid]=(int)entry.parent;}while(Process32NextW(handle,ref entry));
-                var tree=Descendants(pid,parents);
-                if(hosted!=null&&parents.ContainsKey(pid))foreach(var browser in hosted)
-                    if(parents.ContainsKey(browser))tree.UnionWith(Descendants(browser,parents));
+                var tree=Descendants(host.Id,parents);
+                foreach(var browser in hosted)if(browser.Alive&&parents.ContainsKey(browser.Id))tree.UnionWith(Descendants(browser.Id,parents));
+                if(!host.Alive)throw new ConnectionFailureException("debug-unavailable","所选桌宠进程已退出。");
                 return tree;
             } finally {CloseHandle(handle);}
         }
@@ -92,15 +93,21 @@ namespace Tappo {
             return OwnedPort(pid);
         }
         internal static int OwnedPort(int pid) {
-            int[] hosted=null;
-            Func<HashSet<int>> tree=()=>ProcessTree(pid,hosted);
-            return ResolvePort(tree(),ReadTcpRows,()=> {
-                // Windows can launch the browser under explorer rather than the
-                // host. Its Mojo channel names the actual hosting pet process.
-                hosted=HostedWebViews.Roots(pid);
-                return DebugPortFor(pid,tree(),CommandLine,
-                    child=>string.Equals(Path.GetFileName(Platform.ProcessPath(child)),"msedgewebview2.exe",StringComparison.OrdinalIgnoreCase));
-            },(port,ignored)=>ProbePort(port,tree,true));
+            return OwnedPort(pid,WebViewExecutable.IsTrusted);
+        }
+        // The explicit verifier lets isolated fixtures exercise the same native
+        // ownership path without requiring an installed runtime or a signed fake.
+        internal static int OwnedPort(int pid,Func<string,bool> trustedBrowser) {
+            using(var host=ProcessIdentity.Open(pid)) {
+                if(host==null)throw new ConnectionFailureException("debug-unavailable","无法读取所选桌宠的进程身份。");
+                var hosted=HostedWebViews.Roots(host,trustedBrowser);
+                try {
+                    Func<HashSet<int>> tree=()=>ProcessTree(host,hosted);
+                    return ResolvePort(()=>DebugPortFor(pid,tree(),CommandLine,
+                        child=>hosted.Any(browser=>browser.Id==child&&browser.Alive)),
+                        port=>ProbePort(port,tree,true));
+                } finally {foreach(var browser in hosted)browser.Dispose();}
+            }
         }
         internal sealed class TcpRow {
             public int state,localPort,remotePort,pid;
@@ -195,24 +202,21 @@ namespace Tappo {
         }
         internal static bool WaitForOwner(int port,int clientPort,Func<TcpRow[]> read,Func<HashSet<int>> tree,Action<int> delay) {
             for(int attempt=0;attempt<5;attempt++) {
+                // Read rows before revalidating held process identities: if a PID
+                // in these rows is a replacement, its old handle is already dead.
+                var rows=read();
                 var currentTree=tree();
-                if(OwnsConnection(read(),currentTree,port,clientPort))return true;
+                if(OwnsConnection(rows,currentTree,port,clientPort))return true;
                 if(attempt<4)delay(20);
             }
             return false;
         }
-        internal static int ResolvePort(HashSet<int> tree,Func<TcpRow[]> read,Func<int> candidate,Func<int,HashSet<int>,bool> probe) {
-            var rows=read();
-            var ports=new HashSet<int>(rows.Where(row=>row.state==2&&tree.Contains(row.pid)&&IPAddress.IsLoopback(row.localAddress)).Select(row=>row.localPort));
-            if(ports.Count>1)throw new InvalidOperationException("所选桌宠存在多个监听端口，无法确认调试入口。");
-            if(ports.Count==1) {
-                var port=ports.Single();Platform.CheckListeners(port,true);return port;
-            }
+        internal static int ResolvePort(Func<int> candidate,Func<int,bool> probe) {
             int fallback;
             try {
                 fallback=candidate();
                 Platform.CheckListeners(fallback,true);
-                if(!probe(fallback,tree))throw new InvalidOperationException("未能核实调试端口的服务端进程归属。");
+                if(!probe(fallback))throw new InvalidOperationException("未能核实调试端口的服务端进程归属。");
             } catch(Exception error) {
                 throw new ConnectionFailureException("debug-unavailable","所选桌宠调试入口验证失败："+error.Message);
             }

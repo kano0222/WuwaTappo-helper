@@ -12,7 +12,7 @@ namespace Tappo {
         static void Check(bool pass,string message) {checks++;if(!pass)throw new Exception(message);}
         // A real isolated process and TCP listener, with no game, account or CDP mutations.
         public static int Fixture(string root) {
-            var listener=new TcpListener(IPAddress.Loopback,0);listener.Start();
+            var listener=new TcpListener(IPAddress.Loopback,Instances.DebugPort(Environment.CommandLine));listener.Start();
             try {
                 File.WriteAllText(Path.Combine(root,"ready"),"ready");
                 var until=DateTime.UtcNow.AddSeconds(30);
@@ -25,7 +25,7 @@ namespace Tappo {
             var app=Path.Combine(root,"WuwaTappo.exe");
             if(!File.Exists(app))File.Copy(Platform.Executable,app);
             File.Delete(Path.Combine(root,"quit"));File.Delete(Path.Combine(root,"ready"));
-            var child=Process.Start(new ProcessStartInfo(app,"--pet-fixture \""+root+"\"") {UseShellExecute=false,CreateNoWindow=true});
+            var child=Process.Start(new ProcessStartInfo(app,"--pet-fixture \""+root+"\" --remote-debugging-port="+Instances.AvailablePort()) {UseShellExecute=false,CreateNoWindow=true});
             try {
                 var until=DateTime.UtcNow.AddSeconds(8);
                 while(!child.HasExited&&!File.Exists(Path.Combine(root,"ready"))&&DateTime.UtcNow<until)Thread.Sleep(20);
