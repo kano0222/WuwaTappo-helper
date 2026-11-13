@@ -38,8 +38,23 @@ namespace Tappo {
         }
         internal static bool CheckRunningApp(string app) {
             var processes=Process.GetProcessesByName("WuwaTappo");
-            try {return MatchRunningApp(app,processes.Select(p=>ProcessPath(p.Id)).ToArray());}
+            try {return MatchRunningProcesses(app,processes,ProcessPath);}
             finally {foreach(var process in processes)process.Dispose();}
+        }
+        internal static bool MatchRunningProcesses(string app,Process[] processes,Func<int,string> readPath) {
+            var paths=new List<string>();
+            foreach(var process in processes) {
+                var path=readPath(process.Id);
+                if(path==null) {
+                    // A process may exit between enumeration and querying its image path.
+                    // Unknown live processes must still fail the ownership check.
+                    try {if(process.HasExited)continue;}
+                    catch(InvalidOperationException) { }
+                    catch(System.ComponentModel.Win32Exception) { }
+                }
+                paths.Add(path);
+            }
+            return MatchRunningApp(app,paths.ToArray());
         }
         internal static ProcessStartInfo AppStartInfo(string app,bool debug,int port=19222) {
             var info=new ProcessStartInfo(app) {WorkingDirectory=Path.GetDirectoryName(app),UseShellExecute=false,WindowStyle=ProcessWindowStyle.Hidden};

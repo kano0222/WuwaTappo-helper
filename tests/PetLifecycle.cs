@@ -46,12 +46,18 @@ namespace Tappo {
             Process first=null,second=null,restarted=null;
             try {
                 first=Start(one);second=Start(two);
+                bool unknownLiveRejected=false;
+                try {Platform.MatchRunningProcesses(app,new[]{first},pid=>null);}
+                catch(ConnectionFailureException error) {unknownLiveRejected=error.Kind=="app-mismatch";}
+                Check(unknownLiveRejected,"unreadable live process bypassed ownership check");
                 var client=new FakeClient {QuitResult=()=>{File.WriteAllText(Path.Combine(one,"quit"),"quit");return Task.FromResult(0);}};
                 using(Instances.Acquire(other)) {
                     using(Instances.Acquire(app)) {
                         Check(Probe(app)==2,"running lease not held");
                         Platform.ClosePet(client,app).GetAwaiter().GetResult();
                         Check(first.WaitForExit(3000)&&first.ExitCode==0&&!Platform.CheckRunningApp(app),"selected pet not closed");
+                        Check(!Platform.MatchRunningProcesses(app,new[]{first},pid=>null),"process exiting after enumeration was treated as an unknown live pet");
+                        Check(Platform.MatchRunningProcesses(other,new[]{first,second},pid=>pid==second.Id?other:null),"exited process prevented identifying the remaining live pet");
                         Check(!second.HasExited&&Platform.CheckRunningApp(other),"closing selected pet affected another pet");
                     }
                     Check(Probe(app)==0&&Probe(other)==2,"stop did not release only selected lease");
