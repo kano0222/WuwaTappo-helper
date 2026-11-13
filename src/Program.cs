@@ -52,6 +52,7 @@ namespace Tappo {
                     if(render) {panel.Render(Path.GetFullPath(args[1]));return 0;}
                     if(!panel.ClaimInstance()) return 0;
                     panel.AutoCheckUpdates=true;
+                    panel.AutoShowReleaseNotes=true;
                     var app=new Application {ShutdownMode=ShutdownMode.OnExplicitShutdown};
                     app.DispatcherUnhandledException+=(s,e)=>{RuntimeStore.Append(store.FilePath("panel-launcher-error.log"),e.Exception.Message+"\n");e.Handled=true;};
                     panel.FitToWorkArea(SystemParameters.WorkArea.Height);

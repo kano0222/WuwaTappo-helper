@@ -51,6 +51,12 @@ foreach ($assembly in @('System.dll','System.Core.dll','System.Management.dll','
     $arguments+=('/reference:'+(Join-Path $framework $assembly))
 }
 $arguments+=('/resource:'+(Join-Path $root 'src\Panel.xaml')+',Panel.xaml')
+$notes=@([regex]::Matches([IO.File]::ReadAllText((Join-Path $root 'CHANGELOG.md')),'(?ms)^## \[(\d+\.\d+\.\d+(?:-beta\.[1-9]\d*)?)\] - \d{4}-\d{2}-\d{2}\s*\r?\n(.*?)(?=^## |\z)') | ForEach-Object {
+    @{version=$_.Groups[1].Value;body=$_.Groups[2].Value.Trim()}
+})
+$notesPath=Join-Path $OutputDirectory 'ReleaseNotes.json'
+[IO.File]::WriteAllText($notesPath,(ConvertTo-Json -InputObject $notes -Depth 3))
+$arguments+=('/resource:'+$notesPath+',ReleaseNotes.json')
 $arguments+=('/resource:'+(Join-Path $root 'assets\helper.ico')+',helper.ico')
 foreach ($file in Get-ChildItem -LiteralPath (Join-Path $root 'src\Bridge') -Filter '*.js') { $arguments+=('/resource:'+$file.FullName+',bridge.'+$file.Name) }
 & $compiler @arguments @sources

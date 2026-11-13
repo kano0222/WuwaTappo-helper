@@ -354,7 +354,7 @@
             <CheckBox x:Name="StartupCheckBox" Template="{StaticResource FooterToggleTemplate}" Content="开机自启" FocusVisualStyle="{x:Null}" Width="112" Height="28" FontSize="11" Foreground="#665D52" Margin="0,0,6,0" Cursor="Hand">
 
             </CheckBox>
-            <CheckBox x:Name="AutoRunCheckBox" Template="{StaticResource FooterToggleTemplate}" Content="自动运行" FocusVisualStyle="{x:Null}" Width="112" Height="28" FontSize="11" Foreground="#665D52" Margin="0,0,6,0" Cursor="Hand"/>
+            <CheckBox x:Name="AutoRunCheckBox" Template="{StaticResource FooterToggleTemplate}" Content="自动运行" ToolTip="打开助手后自动启动后台，正常运行后收进托盘。" FocusVisualStyle="{x:Null}" Width="112" Height="28" FontSize="11" Foreground="#665D52" Margin="0,0,6,0" Cursor="Hand"/>
           </StackPanel>
           <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
             <Button x:Name="FeedbackButton" Height="28" Padding="9,0" FontSize="11" Margin="0,0,6,0" AutomationProperties.Name="反馈，打开 GitHub Issues">
