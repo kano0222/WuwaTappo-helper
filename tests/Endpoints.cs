@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Management;
 using System.Net;
 using System.Net.Sockets;
 
@@ -22,9 +23,31 @@ namespace Tappo {
                 "--remote-debugging-port=42suffix","--remote-debugging-port=12 --remote-debugging-port=13","x--remote-debugging-port=12"})
                 Reject(()=>Instances.DebugPort(args),"invalid or ambiguous port accepted");
             var tree=new HashSet<int>{10,11};var row=Row(11,58269);
+            Check(Instances.DebugPortFor(10,tree,p=>p==10?null:"--remote-debugging-port=58269",p=>p==11)==58269,
+                "unreadable host command line prevented child port discovery");
+            Check(Instances.DebugPortFor(10,tree,p=>{if(p==10)throw new ManagementException();return "--remote-debugging-port=58269";},p=>p==11)==58269,
+                "host WMI failure prevented readable browser fallback");
+            Check(Instances.DebugPortFor(10,new HashSet<int>{10,11,12},p=>p==10?null:"--remote-debugging-port=58269",p=>p!=10)==58269,
+                "same browser port on multiple descendants was considered ambiguous");
+            Reject(()=>Instances.DebugPortFor(10,new HashSet<int>{10,11,12},p=>p==10?null:"--remote-debugging-port="+p,p=>true),
+                "conflicting descendant debug ports accepted");
+            Reject(()=>Instances.DebugPortFor(10,tree,p=>p==10?null:"--remote-debugging-port=58269",p=>false),
+                "non-browser descendant used as a debug candidate");
+            Reject(()=>Instances.DebugPortFor(10,new HashSet<int>{10},p=>p==10?null:"--remote-debugging-port=58269",p=>true),
+                "process outside selected tree used as a debug candidate");
             Check(Instances.OwnsConnection(new[]{row},tree,58269,44000),"owned established server not accepted");
             Check(!Instances.OwnsConnection(new[]{row},new HashSet<int>{20},58269,44000),"other pet accepted");
             Check(!Instances.OwnsConnection(new[]{row},tree,58269,44001),"another client connection used as proof");
+            int reads=0,delays=0;
+            Check(Instances.WaitForOwner(58269,44000,()=>++reads<3?new Instances.TcpRow[0]:new[]{Row(11,58269)},
+                ()=>tree,ms=>delays++)&&reads==3&&delays==2,"delayed server record prevented ownership verification");
+            int snapshots=0;
+            Check(Instances.WaitForOwner(58269,44000,()=>new[]{Row(12,58269)},
+                ()=>++snapshots==1?tree:new HashSet<int>{10,11,12},ms=>{}),"new browser descendant was not recognized during probe");
+            Check(!Instances.WaitForOwner(58269,44000,()=>new[]{Row(20,58269)},()=>tree,ms=>{}),
+                "another process was accepted after waiting");
+            Check(!Instances.WaitForOwner(58269,44000,()=>new Instances.TcpRow[0],()=>tree,ms=>{}),
+                "missing server records bypassed ownership verification");
             Check(!Instances.OwnsConnection(new[]{Row(11,44000,58269)},tree,58269,44000),"outbound client row used as server proof");
             Check(!Instances.OwnsConnection(new[]{Row(11,58269,state:8)},tree,58269,44000),"closed connection accepted");
             row.remoteAddress=IPAddress.Parse("192.0.2.1");
@@ -54,7 +77,7 @@ namespace Tappo {
                 Reject(()=>Instances.ResolvePort(new HashSet<int>{pid},()=>new Instances.TcpRow[0],()=>port,
                     Instances.ProbePort),"fallback accepted publicly bound endpoint");
             } finally {listener.Stop();}
-            return checks;
+            return checks+HostedWebViewChecks.Run();
         }
     }
 }
