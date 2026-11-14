@@ -73,8 +73,18 @@ namespace Tappo {
             catch(IOException){return false;}
             catch(UnauthorizedAccessException){return false;}
         }
+        static void DeleteFixture(string root) {
+            var until=DateTime.UtcNow.AddSeconds(5);
+            while(true) {
+                try {Directory.Delete(root,true);return;}
+                catch(IOException) {if(DateTime.UtcNow>=until)throw;}
+                catch(UnauthorizedAccessException) {if(DateTime.UtcNow>=until)throw;}
+                Thread.Sleep(50);
+            }
+        }
         public static async Task<int> Run() {
             checks=0;var root=Path.Combine(Path.GetTempPath(),"tappo-installer-tests-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
+            Exception failure=null;
             try {
                 var zip=Path.Combine(root,"package.zip");Package(zip);
                 var asset=new ReleaseAsset {name=UpdateInstaller.PackageName,state="uploaded",size=new FileInfo(zip).Length,digest="sha256:"+UpdateInstaller.Hash(zip),browser_download_url="https://github.com/kano0222/WuwaTappo-helper/releases/download/v"+Updates.CurrentVersion+"/"+UpdateInstaller.PackageName};
@@ -151,7 +161,11 @@ namespace Tappo {
                 Check(!Directory.Exists(stage),"completed update not cleaned");
                 await CrossProcess(root,zip).ConfigureAwait(false);
                 return checks;
-            } finally {Directory.Delete(root,true);}
+            } catch(Exception error) {failure=error;throw;}
+            finally {
+                try {DeleteFixture(root);}
+                catch(Exception cleanupError) {if(failure==null)throw;Console.Error.WriteLine("Installer fixture cleanup also failed: "+cleanupError);}
+            }
         }
     }
 }
