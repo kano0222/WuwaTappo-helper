@@ -29,6 +29,8 @@ namespace Tappo {
             Check(ReleaseNotes.Select(beta,"0.2.3","0.2.3-beta.1").Single().version=="0.2.3","beta to stable update ignored");
             var embedded=Json.Decode<ReleaseNote[]>(Resources.Text("ReleaseNotes.json"));
             Check(embedded.Length>0&&embedded.Any(n=>n.version=="0.2.2"&&n.body.Contains("安全余量")),"embedded changelog missing release content");
+            var consolidated=ReleaseNotes.Select(embedded,"0.2.4",null);
+            Check(consolidated.Length==1&&consolidated[0].body.Contains("自动运行")&&consolidated[0].body.Contains("更新内容窗口")&&consolidated[0].body.Contains("桌宠正在退出")&&!embedded.Any(n=>n.version=="0.2.3"),"first upgrade notice does not include the consolidated 0.2.4 changes");
             var root=Path.Combine(Path.GetTempPath(),"tappo-notes-"+Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(root);
             try {

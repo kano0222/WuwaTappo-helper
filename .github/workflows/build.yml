@@ -113,6 +113,12 @@ jobs:
           if [[ "$RELEASE_TAG" == *-beta.* ]]; then
             flags+=(--prerelease --latest=false)
           fi
-          gh release create "$RELEASE_TAG" \
-            release-assets/WuwaTappoHelper-win-x64.zip \
-            --verify-tag --title "$RELEASE_TAG" --notes-file release-notes.md "${flags[@]}"
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" \
+              release-assets/WuwaTappoHelper-win-x64.zip --clobber
+            gh release edit "$RELEASE_TAG" --notes-file release-notes.md
+          else
+            gh release create "$RELEASE_TAG" \
+              release-assets/WuwaTappoHelper-win-x64.zip \
+              --verify-tag --title "$RELEASE_TAG" --notes-file release-notes.md "${flags[@]}"
+          fi
