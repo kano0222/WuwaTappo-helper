@@ -60,15 +60,18 @@ namespace Tappo {
                     Check(first.HasExited&&second.HasExited&&primary.Exists("update-stopped.json")&&secondary.Exists("update-stopped.json"),"files replaced before participants exited");
                     Check(File.Exists(Path.Combine(stage,"completed"))&&File.ReadAllText(Path.Combine(install,"README.md"))=="new README.md","cross-process installation incomplete");
                     Check(primary.Exists("pending.json")&&secondary.Exists("pending.json"),"cross-process update lost pending journals");
-                    await WaitFor(()=>!Directory.Exists(stage)||CanOpenRunner(stage),"updater still running").ConfigureAwait(false);
+                    await WaitFor(()=>!Directory.Exists(stage)||CanOpenExecutable(stage,"updater.exe"),"updater still running").ConfigureAwait(false);
+                    await WaitFor(()=>CanOpenExecutable(install,"WuwaTappoHelper.exe"),"restarted fixtures have not released the installed executable").ConfigureAwait(false);
                 } finally {
                     // These are test-owned inert participants only; never terminate a real helper or pet.
                     if(!first.HasExited)first.Kill();if(!second.HasExited)second.Kill();first.WaitForExit();second.WaitForExit();
                 }
             }
         }
-        static bool CanOpenRunner(string stage) {
-            try {using(var file=new FileStream(Path.Combine(stage,"updater.exe"),FileMode.Open,FileAccess.ReadWrite,FileShare.None))return true;}catch(IOException){return false;}
+        static bool CanOpenExecutable(string directory,string name) {
+            try {using(var file=new FileStream(Path.Combine(directory,name),FileMode.Open,FileAccess.ReadWrite,FileShare.None))return true;}
+            catch(IOException){return false;}
+            catch(UnauthorizedAccessException){return false;}
         }
         public static async Task<int> Run() {
             checks=0;var root=Path.Combine(Path.GetTempPath(),"tappo-installer-tests-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
