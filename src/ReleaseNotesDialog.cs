@@ -29,7 +29,6 @@ namespace Tappo {
         <ControlTemplate.Triggers>
           <Trigger Property='IsMouseOver' Value='True'><Setter TargetName='Surface' Property='Opacity' Value='0.85'/></Trigger>
           <Trigger Property='IsPressed' Value='True'><Setter TargetName='Surface' Property='Opacity' Value='0.65'/></Trigger>
-          <Trigger Property='IsKeyboardFocused' Value='True'><Setter TargetName='Surface' Property='BorderBrush' Value='#A5702E'/><Setter TargetName='Surface' Property='BorderThickness' Value='2'/></Trigger>
         </ControlTemplate.Triggers>
       </ControlTemplate></Setter.Value></Setter>
     </Style>
@@ -45,10 +44,10 @@ namespace Tappo {
         <TextBlock x:Name='Heading' FontSize='21' FontWeight='SemiBold' TextWrapping='Wrap'/>
         <TextBlock x:Name='Summary' Foreground='#81796F' Margin='0,8,0,0' TextWrapping='Wrap'/>
       </StackPanel>
-      <ScrollViewer x:Name='NotesScroll' Grid.Row='2' VerticalScrollBarVisibility='Auto' HorizontalScrollBarVisibility='Disabled' CanContentScroll='False'>
+      <ScrollViewer x:Name='NotesScroll' Grid.Row='2' VerticalScrollBarVisibility='Auto' HorizontalScrollBarVisibility='Disabled' CanContentScroll='False' FocusVisualStyle='{x:Null}'>
         <StackPanel x:Name='Entries' Margin='0,0,12,0'/>
       </ScrollViewer>
-      <Button x:Name='DismissButton' Grid.Row='3' Content='知道了' Width='112' HorizontalAlignment='Right' Margin='0,20,0,0' IsDefault='True'/>
+      <Button x:Name='DismissButton' Grid.Row='3' Content='知道了' Width='112' HorizontalAlignment='Right' Margin='0,20,0,0'/>
     </Grid>
   </Border>
 </Window>");
@@ -66,7 +65,6 @@ namespace Tappo {
             ((Button)Window.FindName("CloseButton")).Click+=(s,e)=>Window.Close();
             ((Button)Window.FindName("DismissButton")).Click+=(s,e)=>Window.Close();
             ((Grid)Window.FindName("TitleGrip")).MouseLeftButtonDown+=(s,e)=>{if(e.LeftButton==MouseButtonState.Pressed)Window.DragMove();};
-            Window.PreviewKeyDown+=(s,e)=>{if(e.Key==Key.Escape){e.Handled=true;Window.Close();}};
         }
     }
 }

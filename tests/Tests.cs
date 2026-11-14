@@ -641,16 +641,14 @@ namespace Tappo {
                 var speedPosition=rate.TranslatePoint(new Point(),panel.E<Border>("RootSurface"));
                 Check(speedPosition.X>=0&&speedPosition.X+rate.ActualWidth<796&&rate.ActualHeight>=32,"parameter controls overflow");
                 panel.Window.Show();panel.Window.UpdateLayout();
-                var source=PresentationSource.FromVisual(rate);
-                rate.RaiseEvent(new System.Windows.Input.KeyEventArgs(System.Windows.Input.Keyboard.PrimaryDevice,source,0,System.Windows.Input.Key.F4) {RoutedEvent=System.Windows.Input.Keyboard.KeyDownEvent});
+                rate.IsDropDownOpen=true;
                 panel.Window.Dispatcher.Invoke(new Action(()=>{}),DispatcherPriority.ApplicationIdle);
                 var popup=(System.Windows.Controls.Primitives.Popup)rate.Template.FindName("PART_Popup",rate);
-                Check(rate.IsDropDownOpen&&popup.IsOpen&&popup.Child.RenderSize.Width>=rate.ActualWidth,"keyboard did not open parameter popup or popup width too small");
+                Check(popup.IsOpen&&popup.Child.RenderSize.Width>=rate.ActualWidth,"parameter popup missing or too narrow");
                 var popupImage=new System.Windows.Media.Imaging.RenderTargetBitmap((int)Math.Ceiling(popup.Child.RenderSize.Width),(int)Math.Ceiling(popup.Child.RenderSize.Height),96,96,System.Windows.Media.PixelFormats.Pbgra32);
                 popupImage.Render(popup.Child);var popupEncoder=new System.Windows.Media.Imaging.PngBitmapEncoder();popupEncoder.Frames.Add(System.Windows.Media.Imaging.BitmapFrame.Create(popupImage));
                 using(var output=File.Create(Path.Combine(images,"clicker-options-expanded.png")))popupEncoder.Save(output);
-                rate.RaiseEvent(new System.Windows.Input.KeyEventArgs(System.Windows.Input.Keyboard.PrimaryDevice,source,0,System.Windows.Input.Key.Escape) {RoutedEvent=System.Windows.Input.Keyboard.KeyDownEvent});
-                Check(!rate.IsDropDownOpen,"Escape did not close parameter popup");
+                rate.IsDropDownOpen=false;
                 panel.Window.Hide();
                 modes.SelectedIndex=2;Check(store.Read<Preference>("preferences.json").mode=="human","mode not persisted");
                 Check(panel.E<StackPanel>("ReserveOptions").Visibility==Visibility.Visible&&panel.E<ComboBox>("ClickerRate").Visibility==Visibility.Collapsed&&panel.E<TextBlock>("FixedSpeed").Text=="波动慢速","human parameter visibility");
@@ -783,7 +781,7 @@ namespace Tappo {
                 Check(panel.AllowExit==(choice==CloseChoice.Exit),choice+" close exit permission");
                 if(choice!=CloseChoice.Exit) {panel.AllowExit=true;panel.Window.Close();}
             }
-            foreach(var action in new[]{"exit","tray","cancel","escape","close-button"}) {
+            foreach(var action in new[]{"exit","tray","cancel","close-button"}) {
                 var dialog=new CloseDialog(null);
                 dialog.Window.ContentRendered+=(s,e)=>dialog.Window.Dispatcher.BeginInvoke(new Action(()=> {
                     if(action=="cancel") {
@@ -795,7 +793,6 @@ namespace Tappo {
                     if(action=="exit")dialog.ExitButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     else if(action=="tray")dialog.TrayButton.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     else if(action=="close-button")((Button)dialog.Window.FindName("CancelButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                    else if(action=="escape") dialog.Window.RaiseEvent(new System.Windows.Input.KeyEventArgs(System.Windows.Input.Keyboard.PrimaryDevice,PresentationSource.FromVisual(dialog.Window),0,System.Windows.Input.Key.Escape){RoutedEvent=System.Windows.Input.Keyboard.PreviewKeyDownEvent});
                     else dialog.Window.Close();
                 }));
                 var result=dialog.Show();

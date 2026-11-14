@@ -32,7 +32,6 @@ namespace Tappo {
         <ControlTemplate.Triggers>
           <Trigger Property='IsMouseOver' Value='True'><Setter TargetName='Surface' Property='Opacity' Value='0.85'/></Trigger>
           <Trigger Property='IsPressed' Value='True'><Setter TargetName='Surface' Property='Opacity' Value='0.65'/></Trigger>
-          <Trigger Property='IsKeyboardFocused' Value='True'><Setter TargetName='Surface' Property='BorderBrush' Value='#A5702E'/><Setter TargetName='Surface' Property='BorderThickness' Value='2'/></Trigger>
         </ControlTemplate.Triggers>
       </ControlTemplate></Setter.Value></Setter>
     </Style>
@@ -47,7 +46,7 @@ namespace Tappo {
       <TextBlock Text='你可以选择退出，或让助手在托盘继续运行。' Foreground='#81796F' TextWrapping='Wrap' LineHeight='23' Margin='0,10,0,24'/>
       <Grid>
         <Grid.ColumnDefinitions><ColumnDefinition Width='*'/><ColumnDefinition Width='12'/><ColumnDefinition Width='*'/></Grid.ColumnDefinitions>
-        <Button x:Name='ExitButton' Content='退出' IsDefault='True' Background='#EDB65E' BorderBrush='#EDB65E' Foreground='#382917'/>
+        <Button x:Name='ExitButton' Content='退出' Background='#EDB65E' BorderBrush='#EDB65E' Foreground='#382917'/>
         <Button x:Name='TrayButton' Grid.Column='2' Content='最小化到托盘'/>
       </Grid>
     </StackPanel>
@@ -60,7 +59,6 @@ namespace Tappo {
             ((Grid)Window.FindName("TitleGrip")).MouseLeftButtonDown+=(s,e)=>{if(e.LeftButton==MouseButtonState.Pressed)Window.DragMove();};
             ExitButton.Click+=(s,e)=>{choice=CloseChoice.Exit;Window.Close();};
             TrayButton.Click+=(s,e)=>{choice=CloseChoice.Tray;Window.Close();};
-            Window.PreviewKeyDown+=(s,e)=>{if(e.Key==Key.Escape){e.Handled=true;Window.Close();}};
         }
         public CloseChoice Show() {Window.ShowDialog();return choice;}
     }

@@ -118,7 +118,6 @@
             <Setter TargetName="OptionRing" Property="Stroke" Value="#CA9249"/>
             <Setter TargetName="OptionDot" Property="Opacity" Value="1"/>
           </Trigger>
-          <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="OptionSurface" Property="BorderBrush" Value="#CA9249"/></Trigger>
         </ControlTemplate.Triggers>
       </ControlTemplate></Setter.Value></Setter>
     </Style>
@@ -133,7 +132,6 @@
         <ControlTemplate.Triggers>
           <Trigger Property="IsSelected" Value="True"><Setter TargetName="ItemSurface" Property="Background" Value="#F6E8D2"/></Trigger>
           <Trigger Property="IsHighlighted" Value="True"><Setter TargetName="ItemSurface" Property="Background" Value="#F1EDE6"/><Setter TargetName="ItemSurface" Property="BorderBrush" Value="#D8A55D"/></Trigger>
-          <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="ItemSurface" Property="BorderBrush" Value="#CA9249"/></Trigger>
         </ControlTemplate.Triggers>
       </ControlTemplate></Setter.Value></Setter>
     </Style>
@@ -153,14 +151,13 @@
           <Popup x:Name="PART_Popup" IsOpen="{TemplateBinding IsDropDownOpen}" Placement="Bottom" AllowsTransparency="True" Focusable="False" PopupAnimation="None" VerticalOffset="4">
             <Border Background="#FFFEFB" BorderBrush="#D8A55D" BorderThickness="1" CornerRadius="9" Padding="3" MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}">
               <ScrollViewer MaxHeight="240" HorizontalScrollBarVisibility="Disabled" VerticalScrollBarVisibility="Auto" CanContentScroll="True" FocusVisualStyle="{x:Null}">
-                <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/>
+                <ItemsPresenter/>
               </ScrollViewer>
             </Border>
           </Popup>
         </Grid>
         <ControlTemplate.Triggers>
           <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="SelectSurface" Property="Background" Value="#F1EDE6"/><Setter TargetName="SelectSurface" Property="BorderBrush" Value="#D8A55D"/></Trigger>
-          <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="SelectSurface" Property="BorderBrush" Value="#CA9249"/></Trigger>
           <Trigger Property="IsDropDownOpen" Value="True"><Setter TargetName="SelectSurface" Property="BorderBrush" Value="#CA9249"/></Trigger>
           <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.38"/></Trigger>
         </ControlTemplate.Triggers>
@@ -297,7 +294,7 @@
               <Grid Margin="0,0,0,12">
                 <TextBlock Text="次数增加模式" FontWeight="SemiBold"/>
               </Grid>
-              <ListBox x:Name="ModeSelector" SelectedIndex="1" SelectionMode="Single" Background="Transparent" BorderThickness="0" ItemContainerStyle="{StaticResource ModeOption}" KeyboardNavigation.DirectionalNavigation="Contained">
+              <ListBox x:Name="ModeSelector" SelectedIndex="1" SelectionMode="Single" Background="Transparent" BorderThickness="0" ItemContainerStyle="{StaticResource ModeOption}">
                 <ListBox.Template><ControlTemplate TargetType="ListBox"><ItemsPresenter/></ControlTemplate></ListBox.Template>
                 <ListBox.ItemsPanel><ItemsPanelTemplate><UniformGrid Columns="3"/></ItemsPanelTemplate></ListBox.ItemsPanel>
                 <ListBoxItem Tag="brute" AutomationProperties.Name="暴力模式，到期且不足时补足">

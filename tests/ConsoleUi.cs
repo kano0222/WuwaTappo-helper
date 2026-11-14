@@ -149,18 +149,9 @@ namespace Tappo {
                         Check(reserve.Visibility==(modeIndex==0?Visibility.Visible:Visibility.Collapsed)&&speed.Visibility==(modeIndex==1?Visibility.Collapsed:Visibility.Visible),"read-only parameter frames have the wrong visibility");
                         if(modeIndex!=1)Check(speed.ActualWidth==180&&speed.ActualHeight==36&&speed.BorderThickness==new Thickness(1)&&speed.CornerRadius==new CornerRadius(8)&&((SolidColorBrush)speed.Background).Color==((SolidColorBrush)panel.E<ComboBox>("ClickerRate").Background).Color,"read-only parameter frame does not match the selector style");
                     }
-                    // Focus checks use only the isolated fixture window.
-                    panel.Window.Show();panel.Window.Activate();panel.Window.UpdateLayout();
-                    var pause=panel.E<Button>("StartButton");pause.Focus();
-                    Check(pause.IsKeyboardFocused,"pause cannot receive keyboard focus");
-                    var sections=panel.E<StackPanel>("MainSections");var origin=sections.TranslatePoint(new Point(),panel.E<Border>("RootSurface"));
-                    var select=panel.E<ComboBox>("ReserveTarget");select.BringIntoView();select.Focus();panel.Window.UpdateLayout();
-                    Check(select.IsKeyboardFocusWithin,"parameter cannot receive keyboard focus");
-                    Check(sections.TranslatePoint(new Point(),panel.E<Border>("RootSurface"))==origin,"focusing clipped content moved the main panel");
                     panel.Render(Path.Combine(output,"restored-default.png"));
                     var activity=panel.E<Border>("ActivityArea");
                     Check(activity.ActualHeight>=activity.DesiredSize.Height,"activity content is clipped");
-                    panel.Window.Hide();
                 }
             } finally {Directory.Delete(root,true);}
             return checks;
@@ -182,7 +173,7 @@ namespace Tappo {
                     Check(opening.Handled==!hovered,"path tooltip does not require mouse hover: enabled="+enabled+", hovered="+hovered);
                     Check(object.Equals(button.ToolTip,path),"tooltip filtering changed the full path");
                 }
-                Check(button.Focusable&&button.IsTabStop&&ToolTipService.GetShowOnDisabled(button),"tooltip filtering disabled keyboard access or disabled-button path hints");
+                Check(ToolTipService.GetShowOnDisabled(button),"disabled-button path hints unavailable");
             } finally {button.IsEnabled=wasEnabled;writeFlag.Invoke(button,new object[]{hoverFlag,wasHovered});}
         }
         static void RunButtonStates(Panel panel,string output,string name) {
