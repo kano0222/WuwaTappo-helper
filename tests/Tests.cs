@@ -8,6 +8,7 @@ using System.Threading;
 using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Threading;
 
 namespace Tappo {
@@ -187,17 +188,26 @@ namespace Tappo {
                 s.available=target;Check(Policy.Choose(s,"clicker",true,random,target,rate).kind=="wait","configured target reached");
                 s.available=target+200;Check(Policy.Choose(s,"human",true,random,target,rate).kind=="wait","lower target consumed balance");
             }
+            foreach(var targetValue in new[]{1000,12345,99999999})foreach(var speed in new[]{1,1234,2000}) {
+                s=State();s.available=targetValue-1;
+                var custom=Policy.Choose(s,"brute",true,random,targetValue,speed);
+                Check(custom.delta==speed&&custom.delayMs==1000,"custom brute batch or cadence");
+                s.available+=speed;Check(Policy.Choose(s,"brute",true,random,targetValue,speed).kind=="wait","brute target stop");
+                Check(Policy.Choose(State(),"brute",false,random,targetValue,speed).kind=="wait","brute throttle");
+            }
+            foreach(var invalid in new[]{0,-1,999,100000000,int.MaxValue})Reject(()=>new Preference {mode="brute",bruteReserveTarget=invalid}.Validate(),"invalid brute target accepted");
+            foreach(var invalid in new[]{0,-1,2001,int.MaxValue})Reject(()=>new Preference {mode="brute",bruteRate=invalid}.Validate(),"invalid brute speed accepted");
             s=State();s.available=0;s.left=s.time;
-            Check(Policy.Choose(s,"brute",true,random,10000,1000).delta==2000,"parameters changed brute target");
+            Check(Policy.Choose(s,"brute",true,random,10000,1000).delta==1000,"brute custom rate");
             Reject(()=>Policy.Choose(s,"clicker",true,random,3000,100),"invalid target accepted");
             Reject(()=>Policy.Choose(s,"clicker",true,random,2000,2000),"invalid rate accepted");
-            s=State();
-            Check(Policy.Choose(s,"brute",true,random).kind=="wait","early claim");
-            s.left=5000;s.available=721;Check(Policy.Choose(s,"brute",true,random).delta==1279,"brute delta");
+            s=State();s.available=0;
+            Check(Policy.Choose(s,"brute",true,random).kind=="boost","brute must accumulate early");
+            s.left=5000;s.available=721;Check(Policy.Choose(s,"brute",true,random).delta==100,"brute delta");
             s=State();s.available=0;s.buttons["left"]=false;s.buttons["right"]=false;
-            Check(Policy.Choose(s,"brute",true,random).kind=="wait","brute behavior changed");
-            s.left=s.time;Check(Policy.Choose(s,"brute",true,random).delta==2000,"due chest without button must replenish");
-            s.available=379;Check(Policy.Choose(s,"brute",true,random).delta==1621,"low balance after wake must replenish");
+            Check(Policy.Choose(s,"brute",true,random).kind=="boost","brute must accumulate without buttons");
+            s.left=s.time;Check(Policy.Choose(s,"brute",true,random).delta==100,"due chest without button must replenish");
+            s.available=379;Check(Policy.Choose(s,"brute",true,random).delta==100,"low balance after wake must replenish");
             s.available=2000;Check(Policy.Choose(s,"brute",true,random).kind=="wait","claim at cooldown boundary");
             s.time+=2999;Check(Policy.Choose(s,"brute",true,random).kind=="wait","claim before safety margin");
             s.time++;Check(Policy.Choose(s,"brute",true,random).kind=="claim","API claim must not require a button after safety margin");
@@ -369,7 +379,7 @@ namespace Tappo {
         }
         static async Task WakeReplenishment() {
             var store=Store();var client=new FakeClient();long now=5000;int loops=0;
-            store.Write("preferences.json",new Preference {mode="brute"});
+            store.Write("preferences.json",new Preference {mode="brute",bruteRate=1621});
             client.State.available=379;client.State.buttons["left"]=client.State.buttons["right"]=false;
             client.BoostResult=(delta,before)=> {
                 var after=Copy(before);after.available+=delta;after.cumulative+=delta;
@@ -383,7 +393,7 @@ namespace Tappo {
             worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>Task.FromResult(0),ms=> {
                 // Cross both cooldowns while the worker is suspended, then resume observation.
                 if(++loops==1) {now+=7200000;client.State.time=now;}
-                if(loops==3)worker.RequestDisconnect();return Task.FromResult(0);
+                if(client.Claims>=1||loops>=5)worker.RequestDisconnect();return Task.FromResult(0);
             },()=>now);
             await worker.Run();
             Check(client.Boosts==1&&client.Claims==1,"wake must replenish before API claim");
@@ -391,16 +401,16 @@ namespace Tappo {
             Check(client.State.available==1000&&client.State.consumed==3000,"wake balance confirmation");
         }
         static async Task BoostObservations() {
-            {
+            foreach(var customMode in new[]{false,true}) {
                 var store=Store();var client=new FakeClient();client.State.available=4900;client.State.left=client.State.right=900000;
-                store.Write("preferences.json",new Preference {mode="clicker",reserveTarget=5000,clickerRate=500});
+                store.Write("preferences.json",new Preference {mode=customMode?"brute":"clicker",reserveTarget=5000,clickerRate=500,bruteReserveTarget=5000,bruteRate=500});
                 long time=100000;int loops=0;var deltas=new List<int>();
                 client.BoostResult=(delta,before)=>{deltas.Add(delta);var after=Copy(before);after.available+=delta;after.cumulative+=delta;client.State=after;return after;};
                 Worker worker=null;
                 worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>Task.FromResult(0),ms=>{
                     time+=ms;loops++;
-                    if(deltas.Count==1)store.Write("preferences.json",new Preference {mode="clicker",reserveTarget=10000,clickerRate=1000});
-                    if(deltas.Count==2)store.Write("preferences.json",new Preference {mode="clicker",reserveTarget=2000,clickerRate=100});
+                    if(deltas.Count==1)store.Write("preferences.json",new Preference {mode=customMode?"brute":"clicker",reserveTarget=10000,clickerRate=1000,bruteReserveTarget=10000,bruteRate=1000});
+                    if(deltas.Count==2)store.Write("preferences.json",new Preference {mode=customMode?"brute":"clicker",reserveTarget=2000,clickerRate=100,bruteReserveTarget=2000,bruteRate=100});
                     if(loops>=8)worker.RequestDisconnect();
                     return Task.FromResult(0);
                 },()=>time);
@@ -626,7 +636,29 @@ namespace Tappo {
                 var surface=panel.E<Border>("RootSurface");var start=panel.E<Button>("StartButton").TranslatePoint(new Point(),surface);
                 Check(start.X+panel.E<Button>("StartButton").ActualWidth<796&&panel.Window.FindName("PauseButton")==null&&panel.Window.FindName("StopButton")==null,"single run control missing or overflowing");
                 var modes=panel.E<ListBox>("ModeSelector");modes.SelectedIndex=0;
-                Check(panel.E<StackPanel>("ReserveOptions").Visibility==Visibility.Visible&&panel.E<ComboBox>("ReserveTarget").Visibility==Visibility.Collapsed&&panel.E<TextBlock>("FixedReserve").Visibility==Visibility.Visible&&panel.E<TextBlock>("FixedSpeed").Text=="到期补足","brute fixed parameters missing");
+                Check(panel.E<StackPanel>("ReserveOptions").Visibility==Visibility.Visible&&panel.E<ComboBox>("ReserveTarget").Visibility==Visibility.Collapsed&&panel.E<Border>("BruteTargetBox").Visibility==Visibility.Visible&&panel.E<Border>("BruteRateBox").Visibility==Visibility.Visible,"brute custom parameters missing");
+                var customTarget=panel.E<TextBox>("BruteTarget");var customRate=panel.E<TextBox>("BruteRate");
+                customTarget.Text="12345";customRate.Text="1234";
+                Check(store.Read<Preference>("preferences.json").bruteReserveTarget==12345&&store.Read<Preference>("preferences.json").bruteRate==1234,"custom values not saved immediately");
+                foreach(var invalid in new[]{"","0","-1","1.5","abc","2147483648","100000000"," 2000","2,000"}) {
+                    customTarget.Text=invalid;
+                    Check(store.Read<Preference>("preferences.json").bruteReserveTarget==12345&&panel.E<TextBlock>("BruteError").Text.Length>0,"invalid target changed saved value");
+                }
+                customTarget.Text="12345";
+                foreach(var invalid in new[]{"","0","-1","1.5","abc","2147483648","2001"}) {
+                    customRate.Text=invalid;
+                    Check(store.Read<Preference>("preferences.json").bruteRate==1234,"invalid rate changed saved value");
+                }
+                customRate.RaiseEvent(new KeyboardFocusChangedEventArgs(Keyboard.PrimaryDevice,0,customRate,customTarget) {RoutedEvent=Keyboard.LostKeyboardFocusEvent});
+                Check(customRate.Text=="1234"&&customTarget.Text=="12345"&&panel.E<TextBlock>("BruteError").Text=="","invalid input not restored on blur");
+                customRate.Text="1234";panel.SetAutoRun(true);
+                Check(store.Read<Preference>("preferences.json").bruteRate==1234,"auto run lost custom values");
+                using(var customReopened=new Panel(store,true))Check(customReopened.E<TextBox>("BruteTarget").Text=="12345"&&customReopened.E<TextBox>("BruteRate").Text=="1234","reopen lost custom settings");
+                panel.Render(Path.Combine(images,"brute-custom.png"),820,660);
+                File.Delete(store.FilePath("preferences.json"));Directory.CreateDirectory(store.FilePath("preferences.json"));
+                customRate.Text="999";
+                Check(customRate.Text=="1234"&&customTarget.Text=="12345","failed custom save did not restore input");
+                Directory.Delete(store.FilePath("preferences.json"));customRate.Text="1235";customRate.Text="1234";
                 modes.SelectedIndex=1;
                 Check(panel.E<StackPanel>("ReserveOptions").Visibility==Visibility.Visible&&panel.E<StackPanel>("SpeedOptions").Visibility==Visibility.Visible,"clicker missing parameters");
                 var target=panel.E<ComboBox>("ReserveTarget");var rate=panel.E<ComboBox>("ClickerRate");

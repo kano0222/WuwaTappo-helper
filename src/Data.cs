@@ -68,9 +68,13 @@ namespace Tappo {
         public string mode;
         public bool autoRun;
         public int reserveTarget=2000,clickerRate=100;
+        public int bruteReserveTarget=2000,bruteRate=100;
+        public const int MaxBruteTarget=99999999,MaxBruteRate=2000;
+        public static bool ValidBruteTarget(int value) {return value>=1000&&value<=MaxBruteTarget;}
+        public static bool ValidBruteRate(int value) {return value>=1&&value<=MaxBruteRate;}
         public static readonly int[] ReserveTargets={2000,5000,10000,20000,50000},ClickerRates={100,500,1000};
         public void Validate() {
-            if(!Policy.Modes.Contains(mode)||!ReserveTargets.Contains(reserveTarget)||!ClickerRates.Contains(clickerRate))
+            if(!Policy.Modes.Contains(mode)||!ReserveTargets.Contains(reserveTarget)||!ClickerRates.Contains(clickerRate)||!ValidBruteTarget(bruteReserveTarget)||!ValidBruteRate(bruteRate))
                 throw new InvalidOperationException("增加模式或参数配置无效，请在面板重新选择。");
         }
     }

@@ -145,9 +145,9 @@ namespace Tappo {
                     foreach(var modeIndex in new[]{0,1,2}) {
                         panel.E<ListBox>("ModeSelector").SelectedIndex=modeIndex;panel.Render(Path.Combine(output,"stable-mode-"+modeIndex+".png"));
                         Check(Math.Abs(panel.E<Border>("ActivityArea").TranslatePoint(new Point(),panel.E<Border>("RootSurface")).Y-activityY)<1,"switching mode moves the activity area");
-                        var reserve=panel.E<Border>("FixedReserveBox");var speed=panel.E<Border>("FixedSpeedBox");
-                        Check(reserve.Visibility==(modeIndex==0?Visibility.Visible:Visibility.Collapsed)&&speed.Visibility==(modeIndex==1?Visibility.Collapsed:Visibility.Visible),"read-only parameter frames have the wrong visibility");
-                        if(modeIndex!=1)Check(speed.ActualWidth==180&&speed.ActualHeight==36&&speed.BorderThickness==new Thickness(1)&&speed.CornerRadius==new CornerRadius(8)&&((SolidColorBrush)speed.Background).Color==((SolidColorBrush)panel.E<ComboBox>("ClickerRate").Background).Color,"read-only parameter frame does not match the selector style");
+                        var reserve=panel.E<Border>("BruteTargetBox");var speed=panel.E<Border>("FixedSpeedBox");
+                        Check(reserve.Visibility==(modeIndex==0?Visibility.Visible:Visibility.Collapsed)&&speed.Visibility==(modeIndex==2?Visibility.Visible:Visibility.Collapsed),"read-only parameter frames have the wrong visibility");
+                        if(modeIndex==2)Check(speed.ActualWidth==180&&speed.ActualHeight==36&&speed.BorderThickness==new Thickness(1)&&speed.CornerRadius==new CornerRadius(8)&&((SolidColorBrush)speed.Background).Color==((SolidColorBrush)panel.E<ComboBox>("ClickerRate").Background).Color,"read-only parameter frame does not match the selector style");
                     }
                     panel.Render(Path.Combine(output,"restored-default.png"));
                     var activity=panel.E<Border>("ActivityArea");

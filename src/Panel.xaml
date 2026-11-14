@@ -297,8 +297,8 @@
               <ListBox x:Name="ModeSelector" SelectedIndex="1" SelectionMode="Single" Background="Transparent" BorderThickness="0" ItemContainerStyle="{StaticResource ModeOption}">
                 <ListBox.Template><ControlTemplate TargetType="ListBox"><ItemsPresenter/></ControlTemplate></ListBox.Template>
                 <ListBox.ItemsPanel><ItemsPanelTemplate><UniformGrid Columns="3"/></ItemsPanelTemplate></ListBox.ItemsPanel>
-                <ListBoxItem Tag="brute" AutomationProperties.Name="暴力模式，到期且不足时补足">
-                  <StackPanel><TextBlock Text="暴力模式" FontWeight="SemiBold"/><TextBlock Text="到期且不足时补足" FontSize="11" Foreground="#716557" Margin="0,5,0,0"/></StackPanel>
+                <ListBoxItem Tag="brute" AutomationProperties.Name="暴力模式，提前积累，自定义目标与速率">
+                  <StackPanel><TextBlock Text="暴力模式" FontWeight="SemiBold"/><TextBlock Text="提前积累 · 自定义速率" FontSize="11" Foreground="#716557" Margin="0,5,0,0"/></StackPanel>
                 </ListBoxItem>
                 <ListBoxItem Tag="clicker" AutomationProperties.Name="连点器模式，提前积累，固定可选速率">
                   <StackPanel><TextBlock Text="连点器模式" FontWeight="SemiBold"/><TextBlock Text="提前积累 · 固定速率" FontSize="11" Foreground="#716557" Margin="0,5,0,0"/></StackPanel>
@@ -309,11 +309,11 @@
               </ListBox>
               <StackPanel x:Name="ReserveOptions" Orientation="Horizontal" Margin="0,16,0,0">
                 <StackPanel>
-                  <Label Content="储备目标" Target="{Binding ElementName=ReserveTarget}" Padding="0,0,0,8" Foreground="#716557" FontSize="12"/>
+                  <Label x:Name="ReserveLabel" Content="储备目标" Target="{Binding ElementName=ReserveTarget}" Padding="0,0,0,8" Foreground="#716557" FontSize="12"/>
                   <Grid Width="160" Height="36">
                     <ComboBox x:Name="ReserveTarget" Style="{StaticResource ParameterSelect}" VerticalContentAlignment="Center" IsEditable="False" AutomationProperties.Name="储备目标"/>
-                    <Border x:Name="FixedReserveBox" Style="{StaticResource ReadOnlyParameter}" Visibility="{Binding Visibility, ElementName=FixedReserve}">
-                      <TextBlock x:Name="FixedReserve" Text="2,000 次" Foreground="#4D443B" VerticalAlignment="Center" Visibility="Collapsed"/>
+                    <Border x:Name="BruteTargetBox" Style="{StaticResource ReadOnlyParameter}" Visibility="Collapsed">
+                      <TextBox x:Name="BruteTarget" BorderThickness="0" Background="Transparent" VerticalContentAlignment="Center" AutomationProperties.Name="自定义储备目标（次）" ToolTip="整数 1,000～99,999,999 次；有效值即时保存"/>
                     </Border>
                   </Grid>
                 </StackPanel>
@@ -321,12 +321,18 @@
                   <Label x:Name="SpeedLabel" Content="补充速度" Target="{Binding ElementName=ClickerRate}" Padding="0,0,0,8" Foreground="#716557" FontSize="12"/>
                   <Grid Width="180" Height="36">
                     <ComboBox x:Name="ClickerRate" Style="{StaticResource ParameterSelect}" VerticalContentAlignment="Center" IsEditable="False" AutomationProperties.Name="补充速度"/>
+                    <Border x:Name="BruteRateBox" Style="{StaticResource ReadOnlyParameter}" Visibility="Collapsed">
+                      <TextBox x:Name="BruteRate" BorderThickness="0" Background="Transparent" VerticalContentAlignment="Center" AutomationProperties.Name="自定义补充速度（次/秒）" ToolTip="整数 1～2,000 次/秒；有效值即时保存"/>
+                    </Border>
                     <Border x:Name="FixedSpeedBox" Style="{StaticResource ReadOnlyParameter}" Visibility="{Binding Visibility, ElementName=FixedSpeed}">
                       <TextBlock x:Name="FixedSpeed" Foreground="#4D443B" VerticalAlignment="Center" Visibility="Collapsed"/>
                     </Border>
                   </Grid>
                 </StackPanel>
               </StackPanel>
+              <TextBlock x:Name="BruteError" Foreground="#A33E32" FontSize="11" TextWrapping="Wrap">
+                <TextBlock.Style><Style TargetType="TextBlock"><Style.Triggers><Trigger Property="Text" Value=""><Setter Property="Visibility" Value="Collapsed"/></Trigger></Style.Triggers></Style></TextBlock.Style>
+              </TextBlock>
             </StackPanel>
           </Border>
         </StackPanel>

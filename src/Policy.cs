@@ -9,19 +9,19 @@ namespace Tappo {
         // Near-boundary requests can still receive 70006 despite the published timestamp.
         internal const int ClaimSafetyMarginMs=3000;
         public static Plan Choose(Snapshot s,string mode,bool boostDue,Func<double> random,int reserveTarget=2000,int clickerRate=100) {
-            new Preference {mode=mode,reserveTarget=reserveTarget,clickerRate=clickerRate}.Validate();
-            var target=mode=="brute"?2000:reserveTarget;
+            if(mode=="brute") {
+                if(!Preference.ValidBruteTarget(reserveTarget)||!Preference.ValidBruteRate(clickerRate))throw new InvalidOperationException("暴力模式参数超出范围");
+            } else new Preference {mode=mode,reserveTarget=reserveTarget,clickerRate=clickerRate}.Validate();
+            var target=reserveTarget;
             if(!s.loggedIn||s.locked) return Wait("等待登录或更新完成");
             if(!new[]{s.available,s.cumulative,s.consumed}.All(v=>v.HasValue&&v>=0&&v<=9007199254740991L)) throw new InvalidOperationException("计数格式异常");
             if(!new[]{s.left,s.right}.All(v=>v.HasValue&&v>=0&&v<=9007199254740991L)) throw new InvalidOperationException("宝箱时间尚未就绪");
             if(s.claimBusy) return Wait("等待当前宝箱领取完成");
-            var ready=new[]{"left","right"}.FirstOrDefault(side=>s.Slot(side)<=s.time);
             var claimReady=new[]{"left","right"}.FirstOrDefault(side=>s.Slot(side)<=s.time-ClaimSafetyMarginMs);
             if(claimReady!=null&&s.available>=1000) return new Plan {kind="claim",side=claimReady};
-            if(s.available<target&&(mode!="brute"||ready!=null)) {
+            if(s.available<target) {
                 if(!boostDue) return Wait("按所选速率补充次数");
-                if(mode=="brute") return new Plan {kind="boost",delta=(int)(target-s.available.Value)};
-                if(mode=="clicker") return new Plan {kind="boost",delta=clickerRate,delayMs=1000};
+                if(mode=="clicker"||mode=="brute") return new Plan {kind="boost",delta=clickerRate,delayMs=1000};
                 if(random()<0.15) return new Plan {kind="wait",reason="波动模式短暂间歇",delayMs=2000+(int)(random()*2000)};
                 return new Plan {kind="boost",delta=2+(int)(random()*6),delayMs=1000+(int)(random()*500)};
             }

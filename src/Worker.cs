@@ -243,7 +243,7 @@ namespace Tappo {
                             if(preference!=null) {
                                 preference.Validate();
                                 if(Status.mode!=preference.mode) { Status.mode=preference.mode; nextBoost=0;store.Log("mode-changed",new {mode=Status.mode}); }
-                                Status.reserveTarget=preference.reserveTarget;Status.clickerRate=preference.clickerRate;
+                                Status.reserveTarget=preference.mode=="brute"?preference.bruteReserveTarget:preference.reserveTarget;Status.clickerRate=preference.mode=="brute"?preference.bruteRate:preference.clickerRate;
                             }
                             if(retryCommand!=null)await ReadVersion().ConfigureAwait(false);
                             Status.state=await ReadSnapshot().ConfigureAwait(false);

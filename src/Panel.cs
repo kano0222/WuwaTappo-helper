@@ -24,7 +24,7 @@ namespace Tappo {
         public bool Busy {get;private set;} public bool AllowExit;
         internal bool TrayExitEnabled {get {return trayExit!=null&&trayExit.Enabled;}}
         string notice,savedMode=Preference.DefaultMode; bool selecting,choosingClose,noticeIsSuccess;
-        int savedTarget=2000,savedRate=100;
+        int savedTarget=2000,savedRate=100,savedBruteTarget=2000,savedBruteRate=100;
         string runAction="start";
         bool startupEnabled;
         bool autoRun,autoRunAttempted;
@@ -64,9 +64,20 @@ namespace Tappo {
             if(preference!=null&&Policy.Modes.Contains(preference.mode)) savedMode=preference.mode;
             if(preference!=null&&Preference.ReserveTargets.Contains(preference.reserveTarget)) savedTarget=preference.reserveTarget;
             if(preference!=null&&Preference.ClickerRates.Contains(preference.clickerRate)) savedRate=preference.clickerRate;
+            if(preference!=null&&Preference.ValidBruteTarget(preference.bruteReserveTarget))savedBruteTarget=preference.bruteReserveTarget;
+            if(preference!=null&&Preference.ValidBruteRate(preference.bruteRate))savedBruteRate=preference.bruteRate;
             E<ComboBox>("ReserveTarget").ItemsSource=Preference.ReserveTargets.Select(v=>new ComboBoxItem {Content=v.ToString("N0")+" 次",Tag=v}).ToArray();
             E<ComboBox>("ClickerRate").ItemsSource=Preference.ClickerRates.Select(v=>new ComboBoxItem {Content=v.ToString("N0")+" 次/秒",Tag=v}).ToArray();
             RestoreSelection();
+            foreach(var name in new[]{"BruteTarget","BruteRate"}) {
+                E<TextBox>(name).TextChanged+=(s,e)=>SaveBrute();
+                E<TextBox>(name).LostKeyboardFocus+=(s,e)=>RestoreBruteInput();
+                E<TextBox>(name).PreviewKeyDown+=(s,e)=>{if(e.Key==Key.Enter) {FinishBruteEditing();e.Handled=true;}};
+            }
+            Window.PreviewMouseDown+=(s,e)=>{
+                var input=Keyboard.FocusedElement as TextBox;
+                if((input==E<TextBox>("BruteTarget")||input==E<TextBox>("BruteRate"))&&input!=null&&!input.IsMouseOver)FinishBruteEditing();
+            };
             E<ListBox>("ModeSelector").SelectionChanged+=(s,e)=>SaveMode();
             E<ComboBox>("ReserveTarget").SelectionChanged+=(s,e)=>SaveMode();
             E<ComboBox>("ClickerRate").SelectionChanged+=(s,e)=>SaveMode();
@@ -156,7 +167,7 @@ namespace Tappo {
         }
         internal void SetAutoRun(bool enabled) {
             try {
-                store.Write("preferences.json",new Preference {mode=savedMode,reserveTarget=savedTarget,clickerRate=savedRate,autoRun=enabled});
+                store.Write("preferences.json",new Preference {mode=savedMode,reserveTarget=savedTarget,clickerRate=savedRate,bruteReserveTarget=savedBruteTarget,bruteRate=savedBruteRate,autoRun=enabled});
                 autoRun=enabled;
             } catch {SetNotice("未能保存自动运行设置，请重试。");}
             E<CheckBox>("AutoRunCheckBox").IsChecked=autoRun;if(TrayAutoRun!=null)TrayAutoRun.Checked=autoRun;Refresh();
@@ -320,18 +331,57 @@ namespace Tappo {
                 foreach(ListBoxItem item in E<ListBox>("ModeSelector").Items) if((string)item.Tag==savedMode) E<ListBox>("ModeSelector").SelectedItem=item;
                 foreach(ComboBoxItem item in E<ComboBox>("ReserveTarget").Items) if((int)item.Tag==savedTarget) E<ComboBox>("ReserveTarget").SelectedItem=item;
                 foreach(ComboBoxItem item in E<ComboBox>("ClickerRate").Items) if((int)item.Tag==savedRate) E<ComboBox>("ClickerRate").SelectedItem=item;
+                E<TextBox>("BruteTarget").Text=savedBruteTarget.ToString();
+                E<TextBox>("BruteRate").Text=savedBruteRate.ToString();
+                Text("BruteError","");
             } finally {selecting=false;}
+        }
+        void FinishBruteEditing() {
+            Keyboard.ClearFocus();
+            FocusManager.SetFocusedElement(Window,null);
+        }
+        void RestoreBruteInput() {
+            int target,rate;
+            if(!ReadBrute(out target,out rate))RestoreSelection();
+        }
+        bool ReadBrute(out int target,out int rate) {
+            var targetParsed=ParseWhole(E<TextBox>("BruteTarget").Text,out target);
+            var rateParsed=ParseWhole(E<TextBox>("BruteRate").Text,out rate);
+            return targetParsed&&rateParsed&&Preference.ValidBruteTarget(target)&&Preference.ValidBruteRate(rate);
+        }
+        static bool ParseWhole(string text,out int value) {
+            value=0;return text.Length>0&&text.All(c=>c>='0'&&c<='9')&&int.TryParse(text,out value);
+        }
+        void SaveBrute() {
+            if(selecting||savedMode!="brute")return;
+            int target,rate;
+            if(!ReadBrute(out target,out rate)) {
+                Text("BruteError","请输入整数：目标 1,000～99,999,999；速度 1～2,000。当前仍使用上次有效值。");return;
+            }
+            Text("BruteError","");
+            if(target==savedBruteTarget&&rate==savedBruteRate)return;
+            bool saved=false;
+            try {
+                var preference=new Preference {mode=savedMode,reserveTarget=savedTarget,clickerRate=savedRate,bruteReserveTarget=target,bruteRate=rate,autoRun=autoRun};
+                preference.Validate();store.Write("preferences.json",preference);
+                var targetChanged=target!=savedBruteTarget;var rateChanged=rate!=savedBruteRate;
+                savedBruteTarget=target;savedBruteRate=rate;saved=true;
+                if(targetChanged)store.Log("reserve-target-selected",new {target=target});
+                if(rateChanged)store.Log("clicker-rate-selected",new {rate=rate});
+                SetNotice("自定义参数已保存，后台下一轮操作生效。",true);
+            } catch(Exception error) {SetNotice(saved?"设置已保存，但活动记录写入失败。":"自定义参数保存失败："+error.Message);RestoreSelection();}
+            Refresh();
         }
         void SaveMode() {
             if(selecting) return;
             bool saved=false;
             try {
                 var item=E<ListBox>("ModeSelector").SelectedItem as ListBoxItem;var mode=item==null?null:item.Tag as string;
-                var preference=new Preference {mode=mode,reserveTarget=(int)((ComboBoxItem)E<ComboBox>("ReserveTarget").SelectedItem).Tag,clickerRate=(int)((ComboBoxItem)E<ComboBox>("ClickerRate").SelectedItem).Tag,autoRun=autoRun};
+                var preference=new Preference {mode=mode,reserveTarget=(int)((ComboBoxItem)E<ComboBox>("ReserveTarget").SelectedItem).Tag,clickerRate=(int)((ComboBoxItem)E<ComboBox>("ClickerRate").SelectedItem).Tag,bruteReserveTarget=savedBruteTarget,bruteRate=savedBruteRate,autoRun=autoRun};
                 preference.Validate();
                 var modeChanged=savedMode!=mode;var targetChanged=savedTarget!=preference.reserveTarget;var rateChanged=savedRate!=preference.clickerRate;
                 store.Write("preferences.json",preference);savedMode=mode;savedTarget=preference.reserveTarget;savedRate=preference.clickerRate;saved=true;
-                if(modeChanged)store.Log("mode-selected",new {mode=mode});
+                if(modeChanged) {RestoreSelection();store.Log("mode-selected",new {mode=mode});}
                 if(targetChanged)store.Log("reserve-target-selected",new {target=savedTarget});
                 if(rateChanged)store.Log("clicker-rate-selected",new {rate=savedRate});
                 SetNotice("模式与参数已保存。",true);
@@ -481,12 +531,16 @@ namespace Tappo {
                 Text("ClaimsCaption",s==null?"运行领取":alive?"本次运行领取":"上次运行领取");
                 Text("ClaimsHint","后台重启后重计");
                 E<FrameworkElement>("ReserveTarget").Visibility=savedMode=="brute"?Visibility.Collapsed:Visibility.Visible;
-                E<FrameworkElement>("FixedReserve").Visibility=savedMode=="brute"?Visibility.Visible:Visibility.Collapsed;
+                E<FrameworkElement>("BruteTargetBox").Visibility=savedMode=="brute"?Visibility.Visible:Visibility.Collapsed;
+                E<FrameworkElement>("BruteRateBox").Visibility=savedMode=="brute"?Visibility.Visible:Visibility.Collapsed;
                 E<FrameworkElement>("ClickerRate").Visibility=savedMode=="clicker"?Visibility.Visible:Visibility.Collapsed;
-                E<FrameworkElement>("FixedSpeed").Visibility=savedMode=="clicker"?Visibility.Collapsed:Visibility.Visible;
-                Text("FixedSpeed",savedMode=="brute"?"到期补足":"波动慢速");
-                E<Label>("SpeedLabel").Content=savedMode=="clicker"?"补充速度":"补充方式";
-                Text("ReserveCaption","每箱消耗 1,000 · 储备目标 "+(savedMode=="brute"?2000:savedTarget).ToString("N0"));
+                E<FrameworkElement>("FixedSpeed").Visibility=savedMode=="human"?Visibility.Visible:Visibility.Collapsed;
+                Text("FixedSpeed","波动慢速");
+                E<Label>("SpeedLabel").Content=savedMode=="human"?"补充方式":savedMode=="brute"?"补充速度（次/秒）":"补充速度";
+                E<Label>("ReserveLabel").Content=savedMode=="brute"?"储备目标（次）":"储备目标";
+                E<Label>("ReserveLabel").Target=savedMode=="brute"?(UIElement)E<TextBox>("BruteTarget"):E<ComboBox>("ReserveTarget");
+                E<Label>("SpeedLabel").Target=savedMode=="brute"?(UIElement)E<TextBox>("BruteRate"):E<ComboBox>("ClickerRate");
+                Text("ReserveCaption","每箱消耗 1,000 · 储备目标 "+(savedMode=="brute"?savedBruteTarget:savedTarget).ToString("N0"));
                 var clock=s==null?null:s.chestTimes;
                 bool valid=clock!=null&&clock.updatedAt.HasValue&&clock.left.HasValue&&clock.right.HasValue&&clock.error==null&&ReadClock()-clock.updatedAt>=0&&ReadClock()-clock.updatedAt<=90000;
                 Text("SnapshotLabel",!alive?state==null?"启动后同步":"上次运行已结束":stale?"状态未更新":s.connected==false?"连接已断开":clock!=null&&clock.error!=null?"宝箱时间查询失败":valid?"上次同步 "+DateTimeOffset.FromUnixTimeMilliseconds(clock.updatedAt.Value).ToOffset(TimeSpan.FromHours(8)).ToString("HH:mm:ss"):"等待接口同步");
