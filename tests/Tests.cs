@@ -17,6 +17,7 @@ namespace Tappo {
         public bool Connected {get{return connected;}set{connected=value;}}
         public Snapshot State=Tests.State(); public int Reads,Boosts,Claims,Quits,Closed,Recoveries; public bool ThrowClaim,OmitReward;
         public Func<Snapshot> ClaimResult,SnapshotResult;
+        public Func<Task<Snapshot>> SnapshotTask;
         public Func<ServerState> ServerResult;
         public Func<string> VersionResult;
         public Func<Journal,Snapshot> RecoveryResult;
@@ -25,7 +26,7 @@ namespace Tappo {
         public Task<Snapshot> Recover(Journal journal) {Recoveries++;return Task.FromResult(RecoveryResult==null?new Snapshot {accountKey=State.accountKey,operationId=journal.id,outcome="unknown",failureStage="receipt-missing"}:RecoveryResult(journal));}
         public Task<string> CheckVersion() {return Task.FromResult(VersionResult==null?State.appVersion:VersionResult());}
         public Func<int,Snapshot,Snapshot> BoostResult;
-        public Task<Snapshot> Snapshot() {return Task.FromResult(SnapshotResult==null?State:SnapshotResult());}
+        public Task<Snapshot> Snapshot() {return SnapshotTask==null?Task.FromResult(SnapshotResult==null?State:SnapshotResult()):SnapshotTask();}
         public Task<ServerState> Server() {Reads++;return Task.FromResult(ServerResult==null?new ServerState {accountKey=State.accountKey,total=State.cumulative,consumed=State.consumed,left=State.left,right=State.right}:ServerResult());}
         public Task<Snapshot> Boost(int delta,Snapshot before) {Boosts++;if(BoostResult!=null)return Task.FromResult(BoostResult(delta,before));var result=Tests.Copy(before);result.cumulative+=delta;result.available+=delta;State=result;return Task.FromResult(result);}
         public Task<Snapshot> Claim(string side,Snapshot before) {Claims++;if(ThrowClaim) throw new TimeoutException("调用超时，禁止自动重发操作");var result=ClaimResult==null?Tests.Copy(before):ClaimResult();result.operationId=before.operationId;result.rewardVerified=!OmitReward;result.reward=OmitReward?null:new RewardReceipt {assetId=123,assetName="test",assetType="accessory",quantityBefore=0,quantityAfter=1};State=result;return Task.FromResult(result);}
@@ -41,6 +42,7 @@ namespace Tappo {
         static void Reject(Action action,string message) {bool rejected=false;try{action();}catch{rejected=true;}Check(rejected,message);}
         static RuntimeStore Store() {return new RuntimeStore(Path.Combine(root,Guid.NewGuid().ToString("N")));}
         [STAThread] public static int Main(string[] args) {
+            if(args.Length==2&&args[0]=="--diagnostic-process")return DiagnosticEvidenceChecks.Fixture(args[1]);
             if(args.Length>=2&&args[0]=="--hosted-webview-fixture")return HostedWebViewChecks.Fixture(args);
             if(args.Length>=2&&args[0]=="--pet-fixture")return PetLifecycleChecks.Fixture(args[1]);
             if(args.Length==2&&args[0]=="--apply-update")return UpdateInstaller.Apply(args[1]);
@@ -98,7 +100,7 @@ namespace Tappo {
             root=Path.Combine(Path.GetTempPath(),"tappo-native-tests-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(root);
             try {
                 if(suite=="All"||suite=="Worker") {
-                    Policies();Files();checks+=ClaimHistoryChecks.Run();Clocks().GetAwaiter().GetResult();Workers().GetAwaiter().GetResult();WakeReplenishment().GetAwaiter().GetResult();BoostObservations().GetAwaiter().GetResult();Resets().GetAwaiter().GetResult();QueryRetries().GetAwaiter().GetResult();Connections().GetAwaiter().GetResult();
+                    Policies();Files();checks+=ClaimHistoryChecks.Run();checks+=DiagnosticEvidenceChecks.Run();Clocks().GetAwaiter().GetResult();Workers().GetAwaiter().GetResult();WakeReplenishment().GetAwaiter().GetResult();BoostObservations().GetAwaiter().GetResult();Resets().GetAwaiter().GetResult();QueryRetries().GetAwaiter().GetResult();Connections().GetAwaiter().GetResult();
                     ServerChestConfirmation().GetAwaiter().GetResult();VersionPreflight().GetAwaiter().GetResult();
                     checks+=ConnectionChecks.Run().GetAwaiter().GetResult();checks+=RetryChecks.Run().GetAwaiter().GetResult();checks+=ResumeChecks.Run().GetAwaiter().GetResult();checks+=RecoveryChecks.Run().GetAwaiter().GetResult();checks+=CapabilityChecks.Run().GetAwaiter().GetResult();
                 }
@@ -572,11 +574,14 @@ namespace Tappo {
             }
             store=Store();File.WriteAllText(store.FilePath("pending.json"),"{}");
             using(var panel=new Panel(store)) {
+                var identity=RuntimeIdentity.Create(store,"worker");
                 panel.ReadStatus=()=>new Status {running=true,pid=Process.GetCurrentProcess().Id,at=DateTimeOffset.UtcNow.ToString("o")};
+                panel.Refresh();Check(panel.E<TextBlock>("StatusLabel").Text=="状态未更新","legacy PID-only status presented as current");
+                panel.ReadStatus=()=>new Status {identity=identity,running=true,pid=Process.GetCurrentProcess().Id,at=DateTimeOffset.UtcNow.ToString("o")};
                 panel.Refresh();Check(!panel.E<Button>("ResetPendingButton").IsEnabled,"in-flight reset enabled");
                 bool asked=false;panel.ConfirmReset=()=>{asked=true;return true;};panel.ResetPending().GetAwaiter().GetResult();
                 Check(!asked&&store.Exists("pending.json"),"in-flight reset accepted");
-                panel.ReadStatus=()=>new Status {running=true,paused=true,fault="unknown",pid=Process.GetCurrentProcess().Id,at=DateTimeOffset.UtcNow.ToString("o")};
+                panel.ReadStatus=()=>new Status {identity=identity,running=true,paused=true,fault="unknown",pid=Process.GetCurrentProcess().Id,at=DateTimeOffset.UtcNow.ToString("o")};
                 panel.Refresh();Check(panel.E<Button>("ResetPendingButton").IsEnabled,"blocked reset disabled");
                 string dispatched=null;panel.DispatchOverride=action=>dispatched=action;panel.ResetPending().GetAwaiter().GetResult();Check(dispatched=="reset","reset button did not dispatch");
             }
@@ -585,7 +590,7 @@ namespace Tappo {
             var store=Store();using(var panel=new Panel(store)) {
                 panel.InitializeTray();
                 var state=State();state.left=RuntimeStore.Now+650000;state.right=RuntimeStore.Now-1000;
-                var status=new Status {at=DateTimeOffset.UtcNow.ToString("o"),pid=Process.GetCurrentProcess().Id,running=true,mode="brute",state=state,
+                var status=new Status {identity=RuntimeIdentity.Create(store,"worker"),at=DateTimeOffset.UtcNow.ToString("o"),pid=Process.GetCurrentProcess().Id,running=true,mode="brute",state=state,
                     chestTimes=new ChestTimes {updatedAt=RuntimeStore.Now,left=state.left,right=state.right}};
                 panel.ReadStatus=()=>status;
                 var images=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"previews");Directory.CreateDirectory(images);

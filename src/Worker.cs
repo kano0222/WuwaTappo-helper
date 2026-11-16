@@ -15,6 +15,7 @@ namespace Tappo {
         readonly Func<IAppClient,Task> closePet; readonly Func<int,Task> delay; readonly Func<long> now;
         readonly Func<Task> prepareResume;
         readonly Random random=new Random(); readonly ChestClock clock;
+        DiagnosticSession diagnostics;
         public Status Status=new Status {running=true,mode=Preference.DefaultMode};
         bool stop,closeRequested,paused; string lastCommand,lastAppVersion;
         IAppClient client; long nextBoost,serverCacheUntil; int claimRejections; ServerState serverCache; string lastOperationState;
@@ -29,7 +30,8 @@ namespace Tappo {
             Status.at=DateTimeOffset.UtcNow.ToString("o"); Status.pid=Process.GetCurrentProcess().Id;
             Status.manuallyPaused=paused;
             Status.paused=paused||Status.fault!=null||store.Exists("pending.json"); Status.message=Status.fault??message; Status.chestTimes=clock.Value;
-            store.Write("status.json",Status);
+            try {store.Write("status.json",Status);if(diagnostics!=null)diagnostics.Published(Status);}
+            catch(Exception error) {if(diagnostics!=null)diagnostics.WriteFailed(error);throw;}
         }
         async Task<Snapshot> ReadSnapshot() {
             try {return await client.Snapshot().ConfigureAwait(false);}
@@ -171,11 +173,14 @@ namespace Tappo {
                 var old=store.Read<Status>("lock.json");
                 if(old!=null&&RuntimeStore.Alive(old.pid)) throw new InvalidOperationException("自动化已运行，请先暂停或停止现有后台。");
                 if(store.Exists("lock.json")) File.Delete(store.FilePath("lock.json"));
+                using(diagnostics=new DiagnosticSession(store,"worker")) {
+                diagnostics.Sample=diagnostics.ObserveSelf;
+                Status.identity=diagnostics.Identity;
                 using(var reservation=new FileStream(store.FilePath("lock.json"),FileMode.CreateNew,FileAccess.Write,FileShare.Read)) {
-                    var bytes=System.Text.Encoding.UTF8.GetBytes(Json.Encode(new {pid=Process.GetCurrentProcess().Id}));reservation.Write(bytes,0,bytes.Length);reservation.Flush(true);
+                    var bytes=System.Text.Encoding.UTF8.GetBytes(Json.Encode(new Status {pid=Process.GetCurrentProcess().Id,identity=Status.identity}));reservation.Write(bytes,0,bytes.Length);reservation.Flush(true);
                 }
                 try {
-                    try {client=await connect().ConfigureAwait(false);store.Log("started",new {mode="background"});}
+                    try {client=new DiagnosticClient(await diagnostics.Call("connect",connect).ConfigureAwait(false),diagnostics);store.Log("started",new {mode="background"});}
                     catch(StartupConfigurationException) {throw;}
                     catch(Exception error) {ConnectionFailed(error);Retry("重新连接桌宠","connect",error.GetType().Name,failure:error);}
                     if(store.Exists("pending.json")) Status.fault=PendingMessage();
@@ -188,6 +193,7 @@ namespace Tappo {
                         bool resumeRequested=false;
                         var command=store.Read<Command>("control.json");
                         if(command!=null&&command.id!=lastCommand) {
+                            diagnostics.Command("command-received",command);
                             lastCommand=command.id;
                             if(command.action=="stop"||command.action=="stop-background"||command.action=="disconnect") { stop=true;closeRequested=command.action=="stop"&&client!=null&&client.Connected; }
                             else if(command.action=="pause") {
@@ -215,6 +221,8 @@ namespace Tappo {
                                     }
                                 } catch(Exception error) {Status.resetError=error.Message;}
                             }
+                            Status.commandId=command.id;
+                            diagnostics.Command("command-applied",command);
                         }
                         if(stop) break;
                         if(!resumeRequested&&retryCommand==null&&Status.readRetryAt.HasValue&&now()<Status.readRetryAt.Value) {
@@ -222,7 +230,7 @@ namespace Tappo {
                         }
                         try {
                             if(resumeRequested) {
-                                try {await prepareResume().ConfigureAwait(false);}
+                                try {await diagnostics.Call("prepare-resume",prepareResume).ConfigureAwait(false);}
                                 catch(StartupConfigurationException) {throw;}
                                 catch(Exception error) {ConnectionFailed(error);throw new ReadQueryException("准备桌宠连接",error);}
                             }
@@ -233,7 +241,7 @@ namespace Tappo {
                             if(client==null||!client.Connected) {
                                 if(!Status.disconnectedSince.HasValue) Status.disconnectedSince=now();
                                 if(client!=null) {client.Dispose();client=null;}
-                                try {client=await reconnect().ConfigureAwait(false);Status.connectionFailure=null;serverCache=null;store.Log("connection-restored");}
+                                try {client=new DiagnosticClient(await diagnostics.Call("reconnect",reconnect).ConfigureAwait(false),diagnostics);Status.connectionFailure=null;serverCache=null;store.Log("connection-restored");}
                                 catch(Exception error) {ConnectionFailed(error);throw new ReadQueryException("重新连接桌宠",error);}
                             }
                             if(retryCommand==null&&Status.readRetryAt.HasValue&&now()<Status.readRetryAt.Value) {
@@ -337,12 +345,13 @@ namespace Tappo {
                 try {
                     Status.stoppedWithoutClose=stop&&(!closeRequested||client==null||!client.Connected);
                     if(closeRequested&&!Status.stoppedWithoutClose) {
-                        try { await closePet(client).ConfigureAwait(false);Status.petClosed=true; }
+                        try { await diagnostics.Call("close-pet",()=>closePet(client)).ConfigureAwait(false);Status.petClosed=true; }
                         catch(Exception error) { Status.fault=error.Message;store.Log("cleanup-needs-attention",new {message=error.Message,errorType=error.GetType().Name,detail=error.ToString()}); }
                     }
                 } finally {
                     if(client!=null) client.Dispose();
                     Status.running=false;Status.recovering=false;Status.automationDisconnected=true;Publish("已停止");File.Delete(store.FilePath("lock.json"));
+                }
                 }
             }
             return Status.fault==null?0:1;

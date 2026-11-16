@@ -113,6 +113,14 @@ namespace Tappo {
             public int state,localPort,remotePort,pid;
             public IPAddress localAddress,remoteAddress;
         }
+        internal static DiagnosticPeer[] DiagnosticPeers(int port) {
+            try {
+                return ReadTcpRows().Where(row=>row.localPort==port&&row.localAddress.Equals(IPAddress.Loopback)&&(row.state==2||row.state==5))
+                    .Select(row=>row.pid).Distinct().Take(8).Select(pid=>{
+                        using(var process=ProcessIdentity.Open(pid))return new DiagnosticPeer {pid=pid,processCreated=process==null?0:process.Created,executable=process==null?null:Key(process.Path)};
+                    }).ToArray();
+            } catch {return null;}
+        }
         static TcpRow[] ReadTcpRows() {
             // Include established connections: some systems omit the CDP listener.
             int size=0;

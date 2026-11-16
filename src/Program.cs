@@ -44,7 +44,11 @@ namespace Tappo {
                     if(Array.IndexOf(new[]{"pause","resume","stop","disconnect"},args[1])<0) throw new InvalidOperationException("未知控制操作。");
                     if(!Panel.Alive(store.Read<Status>("status.json"))) throw new InvalidOperationException("后台未运行。");
                     if(args[1]=="resume"&&store.Exists("pending.json")) throw new InvalidOperationException("存在未确认记录，禁止恢复。");
-                    store.Write("control.json",new Command {id=Guid.NewGuid().ToString(),action=args[1]});return 0;
+                    using(var diagnostics=new DiagnosticSession(store,"control")) {
+                        var command=new Command {id=Guid.NewGuid().ToString(),action=args[1]};
+                        diagnostics.Command("command-requested",command);store.Write("control.json",command);diagnostics.Command("command-sent",command);
+                    }
+                    return 0;
                 }
                 var render=args.Length==2&&args[0]=="--render";
                 if(args.Length>0&&!render) throw new InvalidOperationException("不支持的启动参数。");
@@ -60,6 +64,10 @@ namespace Tappo {
                 }
                 return 0;
             } catch(Exception error) {
+                try {using(var diagnostics=new DiagnosticSession(store,"launcher")) {
+                    diagnostics.Record("launcher-failed",stage:headless?"background-launch":"panel-launch",errorType:error.GetType().Name,result:Connection.Classify(error));
+                    diagnostics.Capture("launcher-failed");
+                }}catch { }
                 store.Write("launcher-status.json",new LauncherStatus {failedAt=DateTimeOffset.UtcNow.ToString("o"),error=error.Message});
                 RuntimeStore.Append(store.FilePath("panel-launcher-error.log"),DateTimeOffset.Now.ToString("o")+" "+error+"\n");
                 if(!headless) MessageBox.Show(error.Message,"Wuwa Tappo · 后台助手",MessageBoxButton.OK,MessageBoxImage.Error);

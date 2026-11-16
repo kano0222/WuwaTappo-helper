@@ -53,6 +53,8 @@ namespace Tappo {
     }
     internal sealed class ChestTimes { public long? updatedAt, left, right; public string error; }
     internal sealed class Status {
+        public RuntimeIdentity identity;
+        public string commandId;
         public int reserveTarget=2000,clickerRate=100;
         public string at, fault, mode, message, resetCommandId, resetError; public int pid, claimsThisRun;
         public bool running, paused, petClosed, automationDisconnected;
@@ -83,6 +85,7 @@ namespace Tappo {
     internal sealed class LauncherStatus { public string failedAt, error, requestedAt; public int runnerId; }
     internal sealed class Journal { public string id, at; public Plan action; public Snapshot before; public ServerState server; }
     internal sealed class RuntimeStore {
+        internal event Action<string,object> DiagnosticEvent;
         public readonly string Root, Runtime, InstanceId, BaseRoot;
         static readonly UTF8Encoding Utf8 = new UTF8Encoding(false);
         public RuntimeStore(string root,string instanceId=null,string baseRoot=null) { InstanceId=instanceId; Root = Path.GetFullPath(root).TrimEnd(Path.DirectorySeparatorChar); BaseRoot=baseRoot==null?Root:Path.GetFullPath(baseRoot); Runtime = Path.Combine(Root,"runtime"); Directory.CreateDirectory(Runtime); }
@@ -131,6 +134,7 @@ namespace Tappo {
             return name;
         }
         public void Log(string name, object data = null) {
+            try {if(DiagnosticEvent!=null)DiagnosticEvent(name,data);}catch { }
             var entry=new Dictionary<string,object> { {"at",DateTimeOffset.UtcNow.ToString("o")},{"event",name} };
             if(data!=null) foreach(var pair in Json.Decode<Dictionary<string,object>>(Json.Encode(data))) entry[pair.Key]=pair.Value;
             Append(FilePath("events.jsonl"),Json.Encode(entry)+"\n");

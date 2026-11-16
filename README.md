@@ -106,4 +106,4 @@ Windows 上的 Wuwa Tappo 后台助手，支持国服与国际服，提供次数
 
 “最近活动”显示最新三条记录，异常记录直接说明具体原因。详细技术信息保存在本地日志文件中；旧记录没有保存的原因会标为未记录。
 
-通过底栏“反馈”或 [GitHub Issues](https://github.com/kano0222/WuwaTappo-helper/issues) 提交问题，请附助手和桌宠版本、所用服务器、操作步骤、实际结果及脱敏截图；不要提供账号令牌或完整运行目录。
+遇到卡顿、状态不更新或操作超时，可点击底栏“导出日志”保存 ZIP 文件，再通过“反馈”或 [GitHub Issues](https://github.com/kano0222/WuwaTappo-helper/issues) 提交问题，并附桌宠版本、所用服务器、操作步骤、实际结果及截图。

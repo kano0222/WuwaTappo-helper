@@ -26,6 +26,8 @@ namespace Tappo {
         public AppQueryException(QueryReply reply):base("服务器状态查询失败") {ErrorType=reply.errorType;HttpStatus=reply.httpStatus;Code=reply.code;RetryAfterMs=reply.retryAfterMs;RequiredRetryAfterMs=reply.requiredRetryAfterMs;}
     }
     internal sealed class AppClient : IAppClient {
+        internal int DiagnosticPort;
+        internal string DiagnosticConnectionAt; internal DiagnosticPeer[] DiagnosticPeers;
         readonly ClientWebSocket socket;
         readonly CancellationTokenSource lifetime=new CancellationTokenSource();
         readonly Dictionary<int,TaskCompletionSource<object>> pending=new Dictionary<int,TaskCompletionSource<object>>();
@@ -58,6 +60,8 @@ namespace Tappo {
                 if(appPath!=null&&!Platform.CheckRunningApp(appPath))throw new ConnectionFailureException("debug-unavailable","所选桌宠已退出。");
                 if(appPath!=null&&Instances.PortFor(appPath)!=port)throw new InvalidOperationException("桌宠调试端口已变化。");
                 await selected.capabilities.Ensure().ConfigureAwait(false);
+                selected.DiagnosticConnectionAt=DateTimeOffset.UtcNow.ToString("o");
+                selected.DiagnosticPeers=Instances.DiagnosticPeers(port);
                 return selected;
             } catch {selected.Dispose();throw;}
         }
@@ -78,7 +82,7 @@ namespace Tappo {
                         try { await ws.ConnectAsync(address,timeout.Token).ConfigureAwait(false); }
                         catch { ws.Dispose(); throw new InvalidOperationException("连接超时或失败"); }
                     }
-                    var client=new AppClient(ws);
+                    var client=new AppClient(ws) {DiagnosticPort=port};
                     client.StartReceive();
                     try {
                         var label=await client.Evaluate("window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label").ConfigureAwait(false) as string;
