@@ -119,7 +119,7 @@ namespace Tappo {
                         status.fault="桌宠尚未退出";store.Write("status.json",status);reopened.Refresh();
                         Check(reopened.E<TextBlock>("DetailMessage").Text==status.fault,"stop failure hidden by ready state");
                         store.ClearPending();status.fault=null;status.stoppedWithoutClose=false;status.running=true;status.pid=int.MaxValue;store.Write("status.json",status);reopened.Refresh();
-                        Check(reopened.E<TextBlock>("MainMessage").Text=="后台意外停止","unexpected worker exit presented as a normal stop");
+                        Check(reopened.E<TextBlock>("MainMessage").Text=="后台已退出","unexpected worker exit presented as a normal stop");
                     }
                     status.running=true;status.pid=Process.GetCurrentProcess().Id;status.connected=true;status.paused=false;status.manuallyPaused=false;
                     status.at=DateTimeOffset.FromUnixTimeMilliseconds(now-60000).ToString("o");panel.Refresh();

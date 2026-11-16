@@ -104,7 +104,7 @@ namespace Tappo {
                     ServerChestConfirmation().GetAwaiter().GetResult();VersionPreflight().GetAwaiter().GetResult();
                     checks+=ConnectionChecks.Run().GetAwaiter().GetResult();checks+=RetryChecks.Run().GetAwaiter().GetResult();checks+=ResumeChecks.Run().GetAwaiter().GetResult();checks+=RecoveryChecks.Run().GetAwaiter().GetResult();checks+=CapabilityChecks.Run().GetAwaiter().GetResult();
                 }
-                if(suite=="All"||suite=="Panel") {ResetPanels();Layouts();CloseChoices();Lifecycle();checks+=ConnectionChecks.Panels();UpdatePanels();StartupPanels();TrayRunControls();checks+=ConsoleUiChecks.Run();checks+=DiagnosticChecks.Run();checks+=AutoRunChecks.Run();checks+=ReleaseNotesChecks.Run();}
+                if(suite=="All"||suite=="Panel") {ResetPanels();Layouts();CloseChoices();Lifecycle();checks+=ConnectionChecks.Panels();UpdatePanels();StartupPanels();TrayRunControls();checks+=ConsoleUiChecks.Run();checks+=PanelMessagingChecks.Run();checks+=DiagnosticChecks.Run();checks+=AutoRunChecks.Run();checks+=ReleaseNotesChecks.Run();}
                 if(suite=="All"||suite=="Platform") {checks+=StartupChecks.Run();checks+=PetLifecycleChecks.Run();checks+=TransportChecks.Run().GetAwaiter().GetResult();checks+=UpdateChecks.Run().GetAwaiter().GetResult();checks+=InstallerChecks.Run().GetAwaiter().GetResult();}
                 Console.WriteLine("PASS: "+checks+" native checks ("+suite+"); no account mutations, app restarts, or system policy changes.");return 0;
             } catch(Exception error) {Console.Error.WriteLine(error);return 1;}
@@ -576,7 +576,7 @@ namespace Tappo {
             using(var panel=new Panel(store)) {
                 var identity=RuntimeIdentity.Create(store,"worker");
                 panel.ReadStatus=()=>new Status {running=true,pid=Process.GetCurrentProcess().Id,at=DateTimeOffset.UtcNow.ToString("o")};
-                panel.Refresh();Check(panel.E<TextBlock>("StatusLabel").Text=="状态未更新","legacy PID-only status presented as current");
+                panel.Refresh();Check(panel.E<TextBlock>("StatusLabel").Text=="状态未知","legacy PID-only status presented as current");
                 panel.ReadStatus=()=>new Status {identity=identity,running=true,pid=Process.GetCurrentProcess().Id,at=DateTimeOffset.UtcNow.ToString("o")};
                 panel.Refresh();Check(!panel.E<Button>("ResetPendingButton").IsEnabled,"in-flight reset enabled");
                 bool asked=false;panel.ConfirmReset=()=>{asked=true;return true;};panel.ResetPending().GetAwaiter().GetResult();
