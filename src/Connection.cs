@@ -3,7 +3,8 @@ using System;
 namespace Tappo {
     internal sealed class ConnectionFailureException : InvalidOperationException {
         public readonly string Kind;
-        public ConnectionFailureException(string kind,string message) : base(message) {Kind=kind;}
+        public readonly string Reason;
+        public ConnectionFailureException(string kind,string message,string reason=null) : base(message) {Kind=kind;Reason=reason;}
     }
     internal sealed class MainWindowNotReadyException : TimeoutException {
         public MainWindowNotReadyException() : base("桌宠还未启动完成，请稍候。") {}

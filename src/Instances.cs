@@ -105,7 +105,8 @@ namespace Tappo {
                     Func<HashSet<int>> tree=()=>ProcessTree(host,hosted);
                     return ResolvePort(()=>DebugPortFor(pid,tree(),CommandLine,
                         child=>hosted.Any(browser=>browser.Id==child&&browser.Alive)),
-                        port=>ProbePort(port,tree,true));
+                        port=>ProbePort(port,tree,true),
+                        ()=>ListenerPorts(ReadTcpRows(),tree()),AppClient.IsPetEndpoint);
                 } finally {foreach(var browser in hosted)browser.Dispose();}
             }
         }
@@ -169,7 +170,8 @@ namespace Tappo {
                 if(port.HasValue)ports.Add(port.Value);
             }
             if(ports.Count!=1)throw new ConnectionFailureException("debug-unavailable",
-                ports.Count==0?"无法从所选桌宠及其 WebView2 启动参数确认调试端口。":"所选桌宠的 WebView2 调试端口不唯一。");
+                ports.Count==0?"无法从所选桌宠及其 WebView2 启动参数确认调试端口。":"所选桌宠的 WebView2 调试端口不唯一。",
+                ports.Count==0?"port-arguments-unavailable":"port-arguments-ambiguous");
             return ports.Single();
         }
         static int? CandidatePort(int pid,Func<int,string> commandLine) {
@@ -219,14 +221,34 @@ namespace Tappo {
             }
             return false;
         }
-        internal static int ResolvePort(Func<int> candidate,Func<int,bool> probe) {
+        internal static int[] ListenerPorts(IEnumerable<TcpRow> rows,HashSet<int> tree) {
+            return rows.Where(row=>row.state==2&&row.localAddress.Equals(IPAddress.Loopback)&&tree.Contains(row.pid))
+                .Select(row=>row.localPort).Distinct().ToArray();
+        }
+        internal static int ResolvePort(Func<int> candidate,Func<int,bool> probe,Func<int[]> listeners=null,Func<int,bool> endpoint=null) {
             int fallback;
             try {
-                fallback=candidate();
+                try {fallback=candidate();}
+                catch(ConnectionFailureException error) {
+                    if(error.Reason!="port-arguments-unavailable"||listeners==null||endpoint==null)throw;
+                    var accepted=new List<int>();
+                    foreach(var port in listeners().Distinct()) {
+                        try {
+                            Platform.CheckListeners(port,true);
+                            if(probe(port)&&endpoint(port)&&probe(port))accepted.Add(port);
+                        } catch { } // A closed or non-CDP listener is not a usable candidate.
+                    }
+                    if(accepted.Count!=1)throw new ConnectionFailureException("debug-unavailable",
+                        accepted.Count==0?"未找到通过桌宠连接验证的调试端口。":"存在多个通过桌宠连接验证的调试端口。",
+                        accepted.Count==0?"port-listeners-unverified":"port-listeners-ambiguous");
+                    return accepted[0];
+                }
                 Platform.CheckListeners(fallback,true);
                 if(!probe(fallback))throw new InvalidOperationException("未能核实调试端口的服务端进程归属。");
             } catch(Exception error) {
-                throw new ConnectionFailureException("debug-unavailable","所选桌宠调试入口验证失败："+error.Message);
+                var failure=error as ConnectionFailureException;
+                throw new ConnectionFailureException("debug-unavailable","所选桌宠调试入口验证失败："+error.Message,
+                    failure==null?"port-ownership-failed":failure.Reason);
             }
             return fallback;
         }

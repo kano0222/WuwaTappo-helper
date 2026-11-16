@@ -58,6 +58,23 @@ namespace Tappo {
             Check(Instances.ResolvePort(()=>port,p=>{probed=p==port;return true;})==port&&probed,"candidate did not require ownership proof");
             Reject(()=>Instances.ResolvePort(()=>port,p=>false),"unowned candidate accepted");
             Reject(()=>Instances.ResolvePort(()=>{throw new InvalidOperationException("ambiguous candidate");},p=>true),"ambiguous candidate accepted");
+            Func<int> missing=()=>{throw new ConnectionFailureException("debug-unavailable","fixture","port-arguments-unavailable");};
+            int ownershipChecks=0,endpointChecks=0;
+            Check(Instances.ResolvePort(missing,p=>{ownershipChecks++;return true;},()=>new[]{port,port},p=>{endpointChecks++;return true;})==port&&ownershipChecks==2&&endpointChecks==1,
+                "unreadable arguments did not use a uniquely verified listener");
+            Reject(()=>Instances.ResolvePort(missing,p=>true,()=>new[]{port},p=>false),"non-CDP listener accepted");
+            Reject(()=>Instances.ResolvePort(missing,p=>false,()=>new[]{port},p=>true),"foreign listener accepted by fallback");
+            Reject(()=>Instances.ResolvePort(missing,p=>true,()=>new int[0],p=>true),"missing listener accepted");
+            Reject(()=>Instances.ResolvePort(missing,p=>true,()=>new[]{port,port+1},p=>true),"multiple verified listeners accepted");
+            ownershipChecks=0;
+            Reject(()=>Instances.ResolvePort(missing,p=>++ownershipChecks==1,()=>new[]{port},p=>true),"process exit during protocol check accepted");
+            Check(Instances.ResolvePort(missing,p=>true,()=>new[]{port,port+1},p=>p==port)==port,"unrelated listener masked valid CDP endpoint");
+            Reject(()=>Instances.ResolvePort(()=>{throw new ConnectionFailureException("debug-unavailable","fixture","port-arguments-ambiguous");},p=>true,()=>new[]{port},p=>true),
+                "ambiguous arguments silently bypassed by listeners");
+            Check(Instances.ListenerPorts(new[]{Row(11,port,state:2),Row(20,port+1,state:2),Row(11,port+2,state:5)},tree).Length==1,
+                "listener discovery included foreign or established rows");
+            var wildcard=Row(11,port,state:2);wildcard.localAddress=IPAddress.Any;
+            Check(Instances.ListenerPorts(new[]{wildcard},tree).Length==0,"wildcard candidate accepted");
             var pid=Process.GetCurrentProcess().Id;
             Check(!string.IsNullOrEmpty(Instances.CommandLine(pid)),"WMI could not read selected process command line");
             var listener=new TcpListener(IPAddress.Loopback,0);

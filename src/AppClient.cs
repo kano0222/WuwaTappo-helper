@@ -39,7 +39,7 @@ namespace Tappo {
         static readonly string[] KnownErrors={"未确认领取结果，不自动重试","领取期间出现其他计数或槽位变化，已暂停且不会自动重发","补数期间账号变化，结果未确认，不自动重发"};
         AppClient(ClientWebSocket socket) { this.socket=socket;capabilities=new Capabilities(Evaluate,()=>RuntimeStore.Now); }
         public static async Task<string> LocalGet(string suffix,int timeout,int port=19222) {
-            using(var handler=new HttpClientHandler {UseProxy=false})
+            using(var handler=new HttpClientHandler {UseProxy=false,AllowAutoRedirect=false})
             using(var http=new HttpClient(handler) {Timeout=TimeSpan.FromMilliseconds(timeout)})
                 return await http.GetStringAsync("http://127.0.0.1:"+port+suffix).ConfigureAwait(false);
         }
@@ -64,6 +64,13 @@ namespace Tappo {
                 selected.DiagnosticPeers=Instances.DiagnosticPeers(port);
                 return selected;
             } catch {selected.Dispose();throw;}
+        }
+        internal static bool IsPetEndpoint(int port) {
+            // Called only after native TCP ownership verification. Inspect the
+            // actual main window through CDP; no account or game operations.
+            var version=Json.Decode<Dictionary<string,object>>(LocalGet("/json/version",1000,port).GetAwaiter().GetResult());
+            if(version==null||!version.ContainsKey("Browser")||!version.ContainsKey("Protocol-Version"))return false;
+            using(var main=FindMain(port,null).GetAwaiter().GetResult())return main!=null;
         }
         static async Task<AppClient> FindMain(int port,string appPath) {
             if(appPath!=null&&Instances.PortFor(appPath)!=port)throw new InvalidOperationException("桌宠调试端口已变化，请重新连接。");

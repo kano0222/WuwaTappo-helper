@@ -59,6 +59,11 @@ namespace Tappo {
             using(var session=new DiagnosticSession(store,"worker",false,()=>now)) {
                 var status=new Status {identity=session.Identity,pid=session.Identity.pid,running=true,at=DateTimeOffset.UtcNow.ToString("o")};
                 store.Write("status.json",status);session.Published(status);
+                try {
+                    await session.Call<int>("connect",()=>{throw new ConnectionFailureException("debug-unavailable","PRIVATE-COMMAND-LINE","port-listeners-unverified");});
+                } catch(ConnectionFailureException) { }
+                var evidence=Json.Encode(session.Copy());
+                Check(evidence.Contains("port-listeners-unverified")&&!evidence.Contains("PRIVATE-COMMAND-LINE"),"port failure classification missing or raw exception leaked into diagnostics");
                 Check(RuntimeIdentity.Inspect(session.Identity)=="matched","own PID/creation identity does not match");
                 var replacement=Json.Decode<RuntimeIdentity>(Json.Encode(session.Identity));replacement.processCreated--;
                 Check(RuntimeIdentity.Inspect(replacement)=="pid-reused","PID reuse is presented as a matching worker");

@@ -37,7 +37,7 @@ namespace Tappo {
         }
     }
     internal sealed class DiagnosticEvent {
-        public string at,kind,stage,id,result,errorType; public long elapsedMs; public int code,httpStatus;
+        public string at,kind,stage,id,result,errorType,failureReason; public long elapsedMs; public int code,httpStatus;
     }
     internal sealed class DiagnosticPeer {
         public int pid; public long processCreated; public string executable;
@@ -78,9 +78,9 @@ namespace Tappo {
             Record("power",result:mode);Signal();
         }
         void Signal() {try {wake.Set();}catch(ObjectDisposedException) { }}
-        internal void Record(string kind,string stage=null,string id=null,string result=null,string errorType=null,long elapsed=0,int code=0,int httpStatus=0) {
+        internal void Record(string kind,string stage=null,string id=null,string result=null,string errorType=null,long elapsed=0,int code=0,int httpStatus=0,string failureReason=null) {
             lock(gate) {
-                events.Enqueue(new DiagnosticEvent {at=DateTimeOffset.UtcNow.ToString("o"),kind=Label(kind),stage=Label(stage),id=Label(id),result=Label(result),errorType=Label(errorType),elapsedMs=elapsed,code=code,httpStatus=httpStatus});
+                events.Enqueue(new DiagnosticEvent {at=DateTimeOffset.UtcNow.ToString("o"),kind=Label(kind),stage=Label(stage),id=Label(id),result=Label(result),errorType=Label(errorType),elapsedMs=elapsed,code=code,httpStatus=httpStatus,failureReason=Label(failureReason)});
                 while(events.Count>192)events.Dequeue();
             }
         }
@@ -106,7 +106,10 @@ namespace Tappo {
                 state.phase=phase;state.phaseId=id;state.phaseAt=DateTimeOffset.UtcNow.ToString("o");phaseTick=started;}
             Record("stage-start",phase,id);Signal();
             try {var value=await operation().ConfigureAwait(false);Record("stage-end",phase,id,"completed",elapsed:Math.Max(0,now()-started));return value;}
-            catch(Exception error) {Record("stage-end",phase,id,"failed",error.GetType().Name,Math.Max(0,now()-started));throw;}
+            catch(Exception error) {
+                var failure=error as ConnectionFailureException;
+                Record("stage-end",phase,id,"failed",error.GetType().Name,Math.Max(0,now()-started),failureReason:failure==null?null:failure.Reason);throw;
+            }
             finally {lock(gate) {state.phase=parentId==null?"between-operations":parentPhase;state.phaseId=parentId;state.phaseAt=parentAt;
                 state.progressAt=DateTimeOffset.UtcNow.ToString("o");phaseTick=parentId==null?now():parentTick;}Signal();}
         }
