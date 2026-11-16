@@ -313,7 +313,7 @@
                   <Grid Width="160" Height="36">
                     <ComboBox x:Name="ReserveTarget" Style="{StaticResource ParameterSelect}" VerticalContentAlignment="Center" IsEditable="False" AutomationProperties.Name="储备目标"/>
                     <Border x:Name="BruteTargetBox" Style="{StaticResource ReadOnlyParameter}" Visibility="Collapsed">
-                      <TextBox x:Name="BruteTarget" BorderThickness="0" Background="Transparent" VerticalContentAlignment="Center" AutomationProperties.Name="自定义储备目标（次）" ToolTip="整数 1,000～99,999,999 次；有效值即时保存"/>
+                      <TextBox x:Name="BruteTarget" BorderThickness="0" Background="Transparent" VerticalContentAlignment="Center" AutomationProperties.Name="自定义储备目标（次）"/>
                     </Border>
                   </Grid>
                 </StackPanel>
@@ -322,7 +322,7 @@
                   <Grid Width="180" Height="36">
                     <ComboBox x:Name="ClickerRate" Style="{StaticResource ParameterSelect}" VerticalContentAlignment="Center" IsEditable="False" AutomationProperties.Name="补充速度"/>
                     <Border x:Name="BruteRateBox" Style="{StaticResource ReadOnlyParameter}" Visibility="Collapsed">
-                      <TextBox x:Name="BruteRate" BorderThickness="0" Background="Transparent" VerticalContentAlignment="Center" AutomationProperties.Name="自定义补充速度（次/秒）" ToolTip="整数 1～2,000 次/秒；有效值即时保存"/>
+                      <TextBox x:Name="BruteRate" BorderThickness="0" Background="Transparent" VerticalContentAlignment="Center" AutomationProperties.Name="自定义补充速度（次/秒）"/>
                     </Border>
                     <Border x:Name="FixedSpeedBox" Style="{StaticResource ReadOnlyParameter}" Visibility="{Binding Visibility, ElementName=FixedSpeed}">
                       <TextBlock x:Name="FixedSpeed" Foreground="#4D443B" VerticalAlignment="Center" Visibility="Collapsed"/>
@@ -357,7 +357,7 @@
             <CheckBox x:Name="StartupCheckBox" Template="{StaticResource FooterToggleTemplate}" Content="开机自启" FocusVisualStyle="{x:Null}" Width="112" Height="28" FontSize="11" Foreground="#665D52" Margin="0,0,6,0" Cursor="Hand">
 
             </CheckBox>
-            <CheckBox x:Name="AutoRunCheckBox" Template="{StaticResource FooterToggleTemplate}" Content="自动运行" ToolTip="打开助手后自动启动后台，正常运行后收进托盘。" FocusVisualStyle="{x:Null}" Width="112" Height="28" FontSize="11" Foreground="#665D52" Margin="0,0,6,0" Cursor="Hand"/>
+            <CheckBox x:Name="AutoRunCheckBox" Template="{StaticResource FooterToggleTemplate}" Content="自动运行" FocusVisualStyle="{x:Null}" Width="112" Height="28" FontSize="11" Foreground="#665D52" Margin="0,0,6,0" Cursor="Hand"/>
           </StackPanel>
           <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
             <Button x:Name="ExportDiagnosticsButton" Content="导出日志" Height="28" Padding="9,0" FontSize="11" Margin="0,0,6,0"/>
