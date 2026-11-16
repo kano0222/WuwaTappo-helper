@@ -696,6 +696,12 @@ namespace Tappo {
         public void Dispose() {
             if(disposed)return;
             disposed=true;updateCancellation.Cancel();updateCancellation.Dispose();
+            if(timer!=null)timer.Stop();
+            AllowExit=true;
+            try {Window.Close();}
+            finally {DisposeResources();}
+        }
+        void DisposeResources() {
             diagnostics.Dispose();
             if(releaseNotesDialog!=null)releaseNotesDialog.Window.Close();
             if(releaseNotes!=null){releaseNotes.Dispose();releaseNotes=null;}
