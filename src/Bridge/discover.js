@@ -79,7 +79,11 @@ function inspectCountMode(sources) {
   }
   if (!/case"pet-clap":if\(\w+\(\)\)break;\w+\.incrementLocalClickCount\(\)/.test(source) ||
       sources.filter(([, s]) => s.includes('function userInfo()') && s.includes('function isForceUpdateLocked()') &&
-        s.includes('incrementLocalClickCount(){this.localClickCount>=Number.MAX_SAFE_INTEGER||(this.localClickCount+=1)}')).length !== 1)
+        // 1.0.5 adds a native input pause guard; keep invoking the original action
+        // so a paused counter still fails the per-increment receipt check.
+        ['incrementLocalClickCount(){this.localClickCount>=Number.MAX_SAFE_INTEGER||(this.localClickCount+=1)}',
+         'incrementLocalClickCount(){clickInputPaused||this.localClickCount>=Number.MAX_SAFE_INTEGER||(this.localClickCount+=1)}']
+          .some(contract => s.includes(contract))).length !== 1)
     throw new ContractError('兼容性检查失败：原生计数契约已变化');
   return 'increment';
 }

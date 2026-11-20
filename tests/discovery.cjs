@@ -41,6 +41,13 @@ async function fixture(resources, overrides = {}) {
   f=await fixture(()=>paths,nativeAssets);
   check(f.api.inspectSources(await f.api.waitForSources())==='/assets/quitApp-A.js');
   check(f.api.inspectCountMode(Object.entries(nativeAssets))==='increment');
+  const pausedCommon=nativeCommon.replace('(){this.localClickCount>=','(){clickInputPaused||this.localClickCount>=');
+  const pausedAssets={...nativeAssets,'/assets/common-A.js':pausedCommon};
+  check(f.api.inspectSources(Object.entries(pausedAssets))==='/assets/quitApp-A.js');
+  check(f.api.inspectCountMode(Object.entries(pausedAssets))==='increment');
+  for(const invalid of [pausedCommon.replace('+=1','+=2'),pausedCommon.replace('clickInputPaused||','clickInputPaused&&'),pausedCommon.replace('Number.MAX_SAFE_INTEGER','100')]) {
+    assert.throws(()=>f.api.inspectSources(Object.entries({...pausedAssets,'/assets/common-A.js':invalid})),/原生计数契约/);checks++;
+  }
   assert.throws(()=>f.api.inspectSources(Object.entries({...nativeAssets,'/assets/common-A.js':common})),/原生计数契约/);checks++;
   assert.throws(()=>f.api.inspectSources(Object.entries({...nativeAssets,'/assets/common-A.js':nativeCommon.replace('+=1','+=2')})),/原生计数契约/);checks++;
   assert.throws(()=>f.api.inspectSources(Object.entries({...nativeAssets,'/assets/main-A.js':nativeMain.replace('incrementLocalClickCount()','setLocalClickCount(1)')})),/原生计数契约/);checks++;

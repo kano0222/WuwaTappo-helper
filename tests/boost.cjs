@@ -73,14 +73,21 @@ async function run() {
 }
 async function nativeChecks() {
   let checks=0;
-  for(const scenario of ['normal','hundred','two-thousand','noop','partial','throw','logout','slot-change','overflow','busy','save-warning','save-throw','save-timeout','save-pending','report-during-save','new-report-during-save','input-during-save','missing-method','missing-save']) {
+  for(const scenario of ['normal','guarded','paused','pause-mid-batch','hundred','two-thousand','noop','partial','throw','logout','slot-change','overflow','busy','save-warning','save-throw','save-timeout','save-pending','report-during-save','new-report-during-save','input-during-save','missing-method','missing-save']) {
     let local=40,total=75175,right=2000,calls=0,saves=0,release,time=10000;
+    let clickInputPaused=scenario==='paused';
+    const guarded=['guarded','paused','pause-mid-batch'].includes(scenario);
+    const nativeCounter={get localClickCount(){return local;},set localClickCount(value){local=value;},
+      incrementLocalClickCount(){clickInputPaused||this.localClickCount>=Number.MAX_SAFE_INTEGER||(this.localClickCount+=1)}};
     const subscriptions=new Set();
     const store={userInfo:{cuid:'test-account'},$onAction(f){subscriptions.add(f);return ()=>subscriptions.delete(f);},
       incrementLocalClickCount(){
         calls++;
         if(scenario==='throw'&&calls===3)throw Error('count failed');
-        if(scenario!=='noop'&&!(scenario==='partial'&&calls===3))local++;
+        if(guarded) {
+          if(scenario==='pause-mid-batch'&&calls===3)clickInputPaused=true;
+          nativeCounter.incrementLocalClickCount();
+        } else if(scenario!=='noop'&&!(scenario==='partial'&&calls===3))local++;
         if(scenario==='logout')store.userInfo.cuid='other-account';
         if(scenario==='slot-change')right++;
       },applyClickReportSuccess(value){
@@ -126,7 +133,7 @@ async function nativeChecks() {
       release();await vm.runInContext('globalThis.__TAPPO_HELPER_BOOST__.task',context);
       result=await vm.runInContext(expression.replace('__RECOVER__','true'),context);
     }
-    const success=['normal','hundred','two-thousand','save-pending','report-during-save','new-report-during-save','input-during-save'].includes(scenario);
+    const success=['normal','guarded','hundred','two-thousand','save-pending','report-during-save','new-report-during-save','input-during-save'].includes(scenario);
     assert.equal(result.outcome,scenario==='busy'?'skipped':success?'confirmed':'unknown',scenario);checks++;
     if(success){
       const reported=scenario==='report-during-save'||scenario==='new-report-during-save';
@@ -134,6 +141,11 @@ async function nativeChecks() {
       assert.equal(!!result.boostOverwritten,scenario==='report-during-save');checks++;
     }
     if(['overflow','busy','missing-method','missing-save'].includes(scenario)){assert.equal(calls,0);assert.equal(saves,0);checks+=2;}
+    if(scenario==='paused'||scenario==='pause-mid-batch') {
+      assert.equal(calls,scenario==='paused'?1:3);assert.equal(local,scenario==='paused'?40:42);assert.equal(saves,0);checks+=3;
+      // Resuming native input cannot authorize replay of an unconfirmed batch.
+      clickInputPaused=false;
+    }
     const applied=calls;
     const replay=await vm.runInContext(expression.replace('__RECOVER__','false'),context);
     const recovered=await vm.runInContext(expression.replace('__RECOVER__','true'),context);
