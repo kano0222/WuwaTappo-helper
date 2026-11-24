@@ -83,10 +83,12 @@ namespace Tappo {
                 Check(session.Copy().phase=="close-pet","nested quit hides the remaining close-pet wait");outerGate.SetResult(0);await outer;
                 try {await session.Call<int>("read-snapshot",()=>{throw new IOException("Cookie: PRIVATE-SECRET C:\\Users\\private\\token");});}catch(IOException) { }
                 store.Log("operation-state",new {operationId="test-op",stage="verify",code=70006,httpStatus=503,errorType="AppQueryException",detail="PRIVATE-SECRET",before=new {accountKey="PRIVATE-ACCOUNT"}});
+                store.Log("operation-state",new {operationId="test-op",stage="verify",outcome="pending",waitReason="consumption.cooldown.cumulative"});
                 session.Tick();
                 var bundle=Path.Combine(store.Root,"stages.zip");session.Export(bundle);
                 var text=Bundle(bundle);
                 Check(text.Contains("operation-waiting")&&text.Contains("read-server")&&text.Contains("70006")&&text.Contains("503"),"ZIP cannot identify stage/business error category");
+                Check(text.Contains("consumption.cooldown.cumulative"),"ZIP omitted the claim wait conditions");
                 Check(!text.Contains("PRIVATE-SECRET")&&!text.Contains("PRIVATE-ACCOUNT")&&!text.Contains(store.Root)&&!text.Contains("C:\\\\Users"),"export leaked a credential, account or personal path");
                 var stale=Json.Decode<DiagnosticState>(Json.Encode(blocked));stale.at=DateTimeOffset.FromUnixTimeMilliseconds(now-20000).ToString("o");
                 Check(DiagnosticSession.Category(status,stale,now,"matched")=="heartbeat-stale","dead heartbeat presented as live business stall");

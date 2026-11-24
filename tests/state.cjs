@@ -15,7 +15,7 @@ const drain=async()=>{for(let i=0;i<20;i++)await Promise.resolve()};
    setTimeout(fn,ms){const id=++nextId;timers.set(id,{fn,at:now+ms});return id},clearTimeout:id=>timers.delete(id)});
  const script=source.replace('await import(__COMMON__)','module').replaceAll('__ENVIRONMENT__','"env"').replaceAll('__STORE__','"store"')
   .replaceAll('__LOCKED__','"locked"').replaceAll('__USERINFO__','"user"').replaceAll('__DECODE__','"decode"').replaceAll('__COOKIE__','"cookie"');
- const api=await vm.runInContext('(async()=>{'+script+'return {snapshot,readServer,failure,retryQuery}})()',context);
+ const api=await vm.runInContext('(async()=>{'+script+'return {snapshot,readServer,failure,retryQuery,claimCountCurrent}})()',context);
  const state=api.snapshot();assert.equal(state.accountKey,createHash('sha256').update('tappo:cn-cn-prod:private-test-id').digest('hex'));
  module.env='global-global-prod';
  assert.equal(api.snapshot().accountKey,null,'environment change retained old account');
@@ -77,5 +77,7 @@ const drain=async()=>{for(let i=0;i<20;i++)await Promise.resolve()};
  now=268000;for(const [id,t]of [...timers])if(t.at<=now){timers.delete(id);t.fn()};await assert.rejects(changedWhileWaiting);
  assert.equal(api.snapshot().accountKey,null);await assert.rejects(api.readServer());
  assert.equal(calls,beforeChange,'query sent after account change');
- console.log('PASS: state/query checks; account hashing, shared reads, manual retry, hung-read recovery and mandatory Retry-After.');
+ assert.equal(api.claimCountCurrent(3000,{serverTotal:3000,local:15}),true);
+ assert.equal(api.claimCountCurrent(3000,{serverTotal:3006,local:0}),false);
+ console.log('PASS: state/query checks; account hashing, shared reads, and retry.');
 })().catch(e=>{console.error(e);process.exitCode=1});

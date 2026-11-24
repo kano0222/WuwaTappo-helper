@@ -40,7 +40,7 @@ const retryQuery=()=>{
   q.nextAt=Math.max(Date.now(),q.requiredAt??0);
   return Math.max(0,q.nextAt-Date.now());
 };
-const readServer=async()=>{
+const readServer=async(timing)=>{
   if(!sameAccount()||locked())throw new Error('账号或更新状态已变化');
   let q=globalThis.__TAPPO_HELPER_QUERY__;
   if(!q||q.accountKey!==accountKey)q=globalThis.__TAPPO_HELPER_QUERY__={accountKey,nextAt:0,failures:0,promise:null};
@@ -55,6 +55,7 @@ const readServer=async()=>{
       try{
         if(!sameAccount()||locked())throw new Error('账号或更新状态已变化');
         // Bound the shared read itself, not just each observer. A late reply is discarded.
+        if(timing)timing.requestStartedAt=Date.now();
         const data=m[__DECODE__](await bounded(Promise.resolve().then(queryUser),8000));
         if(!sameAccount()||data?.cuid==null||String(data.cuid)!==String(account))throw new Error('账号已变化');
         q.failures=0;return data;
@@ -68,7 +69,7 @@ const readServer=async()=>{
       }
     })();
     const current=q.promise;current.then(()=>{if(q.promise===current)q.promise=null},()=>{if(q.promise===current)q.promise=null});
-  }
+  } else if(timing)timing.sharedQuery=true;
   const data=await bounded(q.promise,8000);
   if(!sameAccount())throw new Error('账号已变化');return data;
 };
@@ -76,3 +77,4 @@ const snapshot=()=>({time:Date.now(),accountKey:sameAccount()?accountKey:null,lo
   available:s.totalClickCount,cumulative:s.cumulativeClickCount,local:s.localClickCount,consumed:s.serverClickConsume,serverTotal:s.serverClickTotal,
   left:Number(s.userInfo?.left_treasure_chest),right:Number(s.userInfo?.right_treasure_chest),
   claimBusy:!!(globalThis.__TAPPO_HELPER_TX__?.busy&&globalThis.__TAPPO_HELPER_TX__.accountKey===accountKey)});
+const claimCountCurrent=(total,local)=>Number.isSafeInteger(local.serverTotal)&&local.serverTotal<=total;

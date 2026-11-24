@@ -21,6 +21,9 @@ namespace Tappo {
         public Func<ServerState> ServerResult;
         public Func<string> VersionResult;
         public Func<Journal,Snapshot> RecoveryResult;
+        public Func<Journal,string,PairResult> PairResult;
+        public bool SupportsClaimPair {get{return PairResult!=null;}}
+        public Task<PairResult> ClaimPair(Journal journal,string command) {return Task.FromResult(PairResult(journal,command));}
         public int QueryRetries; public Func<int> RetryQueryResult;
         public Task<int> RetryQuery() {QueryRetries++;return Task.FromResult(RetryQueryResult==null?0:RetryQueryResult());}
         public Task<Snapshot> Recover(Journal journal) {Recoveries++;return Task.FromResult(RecoveryResult==null?new Snapshot {accountKey=State.accountKey,operationId=journal.id,outcome="unknown",failureStage="receipt-missing"}:RecoveryResult(journal));}
@@ -101,7 +104,9 @@ namespace Tappo {
             try {
                 if(suite=="All"||suite=="Worker") {
                     Policies();Files();checks+=ClaimHistoryChecks.Run();checks+=DiagnosticEvidenceChecks.Run();Clocks().GetAwaiter().GetResult();Workers().GetAwaiter().GetResult();WakeReplenishment().GetAwaiter().GetResult();BoostObservations().GetAwaiter().GetResult();Resets().GetAwaiter().GetResult();QueryRetries().GetAwaiter().GetResult();Connections().GetAwaiter().GetResult();
-                    ServerChestConfirmation().GetAwaiter().GetResult();VersionPreflight().GetAwaiter().GetResult();
+                    ServerChestConfirmation().GetAwaiter().GetResult();WaitForServerClaimBalance().GetAwaiter().GetResult();VersionPreflight().GetAwaiter().GetResult();
+                    StartupChestClock().GetAwaiter().GetResult();PendingChestClock().GetAwaiter().GetResult();
+                    FixedPairWorker().GetAwaiter().GetResult();
                     checks+=ConnectionChecks.Run().GetAwaiter().GetResult();checks+=RetryChecks.Run().GetAwaiter().GetResult();checks+=ResumeChecks.Run().GetAwaiter().GetResult();checks+=RecoveryChecks.Run().GetAwaiter().GetResult();checks+=CapabilityChecks.Run().GetAwaiter().GetResult();
                 }
                 if(suite=="All"||suite=="Panel") {ResetPanels();Layouts();CloseChoices();Lifecycle();checks+=ConnectionChecks.Panels();UpdatePanels();StartupPanels();TrayRunControls();checks+=ConsoleUiChecks.Run();checks+=PanelMessagingChecks.Run();checks+=PanelLifetimeChecks.Run();checks+=DiagnosticChecks.Run();checks+=AutoRunChecks.Run();checks+=ReleaseNotesChecks.Run();}
@@ -283,8 +288,10 @@ namespace Tappo {
                 var script=(string)typeof(AppClient).GetMethod("Script",flags).Invoke(client,new object[]{"claim",State()});
                 var tokens=System.Text.RegularExpressions.Regex.Matches(script,"__[A-Z_]+__");
                 Check(tokens.Cast<System.Text.RegularExpressions.Match>().All(t=>new[]{"__SIDE__","__RECOVER__","__TAURI_INTERNALS__","__TAPPO_HELPER_TX__","__TAPPO_HELPER_QUERY__"}.Contains(t.Value)),"unresolved claim bridge placeholders");
-                Check(script.Contains("m[\"openAlias\"]")&&script.Contains("m[\"decodeAlias\"]")&&script.Contains("clicks[\"persistAlias\"]"),"discovered claim aliases not rendered");
-                Check(script.Contains("import(\"/assets/clicks.js\")"),"click persistence module path not rendered");
+                Check(script.Contains("m[\"openAlias\"]")&&script.Contains("m[\"decodeAlias\"]"),"discovered claim aliases not rendered");
+                Check(!script.Contains("persistAlias")&&!script.Contains("/assets/clicks.js"),"claim still depends on click persistence");
+                var boost=(string)typeof(AppClient).GetMethod("Script",flags).Invoke(client,new object[]{"boost",State()});
+                Check(boost.Contains("clicks[\"persistAlias\"]")&&boost.Contains("import(\"/assets/clicks.js\")"),"boost click persistence not rendered");
             }
         }
         static async Task Clocks() {
@@ -378,6 +385,154 @@ namespace Tappo {
             Check(client.Claims==1&&worker.Status.claimsThisRun==1,"server confirmation with stale local other-slot time");
             Check(worker.Status.fault==null&&!store.Exists("pending.json"),"server-confirmed claim retained as uncertain");
             Check(raw.left==4000&&raw.right==3000,"helper mutated pet local times");
+        }
+        static async Task StartupChestClock() {
+            foreach(var scenario in new[]{"normal","missing","observed","wrong-account","wrong-operation","rate-limited"}) {
+                var store=Store();var client=new FakeClient();const long now=100000;
+                client.State.time=now;client.State.left=client.State.right=1000;
+                var server=new ServerState {accountKey=client.State.accountKey,total=4000,consumed=2000,left=900000,right=1000};
+                client.ServerResult=()=>server;
+                bool publishedBeforeClaim=false;
+                client.VersionResult=()=>{
+                    publishedBeforeClaim=store.Read<Status>("status.json").chestTimes.left==server.left;
+                    return "changed";
+                };
+                if(scenario!="normal")store.Begin(new Plan {kind="claim",side="left"},Copy(client.State),server);
+                client.RecoveryResult=journal=>{
+                    var after=Copy(client.State);
+                    after.operationId=scenario=="wrong-operation"?"different":journal.id;
+                    after.outcome=scenario=="missing"?"unknown":"pending";
+                    if(scenario=="rate-limited"){after.httpStatus=429;after.retryAfterMs=60000;after.errorType="HttpError";}
+                    if(scenario=="observed"||scenario=="wrong-account"||scenario=="wrong-operation") {
+                        after.serverObservedAt=now-1;
+                        after.observedServer=new ServerState {accountKey=scenario=="wrong-account"?"other":server.accountKey,
+                            total=server.total,consumed=server.consumed,left=800000,right=server.right};
+                    }
+                    return after;
+                };
+                Worker worker=null;
+                worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>Task.FromResult(0),ms=> {
+                    worker.RequestDisconnect();return Task.FromResult(0);
+                },()=>now);
+                await worker.Run();
+                var clock=worker.Status.chestTimes;
+                Check(client.Claims==0&&store.Exists("pending.json")==(scenario!="normal"),scenario+" startup mutated a pending claim");
+                if(scenario=="observed")Check(client.Reads==0&&clock.left==800000&&clock.updatedAt==now-1,"startup did not reuse the verified query");
+                else if(scenario=="rate-limited")Check(client.Reads==0&&!clock.updatedAt.HasValue,"startup bypassed query backoff");
+                else Check(client.Reads==1&&clock.left==server.left,scenario+" startup did not read the current account clock");
+                if(scenario=="normal")Check(publishedBeforeClaim,"first cooldown was not published before version preflight");
+            }
+        }
+        static async Task FixedPairWorker() {
+            foreach(var scenario in new[]{"success","right-timeout","pause-after-left","reward-stalled"}) {
+                var store=Store();var client=new FakeClient();var calls=new List<string>();
+                const long now=100000;
+                var state=client.State;state.time=now;state.left=1000;state.right=2000;
+                state.cumulative=4015;state.local=15;state.serverTotal=4000;state.available=2015;
+                var baseline=new ServerState {accountKey=state.accountKey,total=4000,consumed=2000,left=1000,right=2000};
+                client.ServerResult=()=>baseline;
+                client.PairResult=(journal,command)=>{
+                    calls.Add(command);
+                    var disk=store.Read<Journal>("pending.json");
+                    var result=new PairResult {operationId=journal.id,accountKey=state.accountKey};
+                    if(command!="observe") {
+                        var intent=command=="left"?disk.left:disk.right;
+                        Check(intent.outcome=="armed","pair intent missing before call");
+                        if(command=="right") {
+                            Check(disk.left.outcome=="success"&&disk.left.receivedAt.HasValue&&disk.bagBefore!=null&&
+                                disk.left.id!=disk.right.id,"right started before durable first receipt");
+                            if(scenario=="right-timeout")throw new IOException("fixture lost response");
+                        }else if(scenario=="pause-after-left")store.Write("control.json",new Command {id="pause",action="pause"});
+                        result.outcome="success";
+                        var sentAt=scenario=="reward-stalled"?now-61000:now;
+                        result.slot=new PairSlot {id=intent.id,outcome="success",assetId=42,cost=1000,clickNum=4000,sentAt=sentAt,receivedAt=sentAt+1,applied=true};
+                        result.bagBefore=new Dictionary<string,long>{{"42",3}};
+                        return result;
+                    }
+                    var both=disk.right!=null&&disk.right.outcome=="success";
+                    result.server=new ServerState {accountKey=baseline.accountKey,total=4000,consumed=both?4000:3000,left=900000,right=both?901000:2000};
+                    result.state=Copy(state);result.state.consumed=result.server.consumed;
+                    result.state.left=result.server.left;result.state.right=result.server.right;
+                    result.outcome=scenario=="reward-stalled"?"pending":disk.right!=null&&!both?"unknown":"confirmed";
+                    return result;
+                };
+                Worker worker=null;
+                Func<Worker> make=()=>new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>Task.FromResult(0),
+                    ms=>{worker.RequestDisconnect();return Task.FromResult(0);},()=>now);
+                worker=make();await worker.Run();
+                if(scenario=="right-timeout") {
+                    Check(store.Read<Journal>("pending.json").right.outcome=="armed","lost response discarded second intent");
+                    worker=make();await worker.Run();
+                    Check(store.Exists("pending.json")&&string.Join(",",calls)=="left,right,observe","restart replayed a pair request");
+                }else if(scenario=="reward-stalled") {
+                    Check(store.Exists("pending.json")&&worker.Status.fault!=null&&worker.Status.claimsThisRun==0,
+                        "pair verification timeout did not preserve the journal and expose the fault");
+                }else if(scenario=="pause-after-left") {
+                    Check(string.Join(",",calls)=="left,observe"&&!store.Exists("pending.json")&&worker.Status.claimsThisRun==1,
+                        "pause did not prevent right handoff");
+                }else {
+                    Check(string.Join(",",calls)=="left,right,observe"&&!store.Exists("pending.json")&&worker.Status.claimsThisRun==2,
+                        "pair did not send both before verifying");
+                }
+                Check(client.Claims==0&&client.Boosts==0,"pair fell through to another mutation");
+            }
+        }
+        static async Task PendingChestClock() {
+            var store=Store();var client=new FakeClient();long now=5000;var sides=new List<string>();
+            var state=client.State;state.time=now;state.left=state.right=1000;state.cumulative=5000;state.available=3000;
+            var initial=new ServerState {accountKey=state.accountKey,total=5000,consumed=2000,left=1000,right=1000};
+            var advanced=new ServerState {accountKey=state.accountKey,total=5000,consumed=3000,left=900000,right=1000};
+            client.ServerResult=()=>initial;
+            client.ClaimResult=()=>{
+                sides.Add(store.Read<Journal>("pending.json").action.side);
+                var after=Copy(client.State);after.outcome="pending";
+                return after;
+            };
+            client.RecoveryResult=journal=>{
+                var after=Copy(client.State);after.operationId=journal.id;
+                after.left=advanced.left;after.consumed=advanced.consumed;after.available=2000;
+                after.observedServer=advanced;after.serverObservedAt=6000;after.outcome="pending";
+                if(now==8000){
+                    after.outcome="confirmed";after.confirmedServer=advanced;
+                    after.rewardVerified=true;after.reward=new RewardReceipt {assetId=1,quantityBefore=1,quantityAfter=2};
+                    client.State=after;
+                }
+                return after;
+            };
+            Worker worker=null;
+            worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>Task.FromResult(0),ms=>{
+                var status=store.Read<Status>("status.json");
+                if(now==6000||now==7000)Check(status.chestTimes.left==advanced.left&&status.chestTimes.updatedAt==6000&&
+                    store.Exists("pending.json")&&status.claimsThisRun==0&&client.Claims==1,"early clock retired or replayed the pending claim");
+                if(now==8000)Check(!store.Exists("pending.json")&&status.claimsThisRun==1&&client.Claims==1,"final confirmation did not retire just the first claim");
+                if(now>=9000)worker.RequestDisconnect();
+                now+=ms;client.State.time=now;
+                return Task.FromResult(0);
+            },()=>now);
+            await worker.Run();
+            Check(string.Join(",",sides)=="left,right"&&client.Reads==1,"second slot scheduling or query reuse changed");
+        }
+        static async Task WaitForServerClaimBalance() {
+            var store=Store();var client=new FakeClient();long now=7000;int loops=0;
+            client.State.time=now;client.State.left=4000;client.State.right=900000;
+            client.State.cumulative=3015;client.State.available=1015;
+            var server=new ServerState {accountKey="test-key",total=2990,consumed=2000,left=4000,right=900000};
+            client.ServerResult=()=>new ServerState {accountKey=server.accountKey,total=server.total,consumed=server.consumed,left=server.left,right=server.right};
+            client.ClaimResult=()=> {
+                var after=Copy(client.State);after.available-=1000;after.consumed+=1000;after.left=900001;
+                server.consumed=after.consumed;server.left=after.left;return after;
+            };
+            Worker worker=null;
+            worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>Task.FromResult(0),ms=> {
+                if(++loops<=2) {
+                    Check(client.Claims==0&&client.Boosts==0&&!store.Exists("pending.json"),"unconfirmed local balance started an operation");
+                    Check(worker.Status.message=="等待桌宠同步服务器余额","balance sync wait not shown");
+                    if(loops==2){server.total=3000;now+=5000;client.State.time=now;}
+                } else worker.RequestDisconnect();
+                return Task.FromResult(0);
+            },()=>now);
+            await worker.Run();
+            Check(client.Claims==1&&worker.Status.claimsThisRun==1&&!store.Exists("pending.json"),"server-confirmed balance did not permit a single claim");
         }
         static async Task WakeReplenishment() {
             var store=Store();var client=new FakeClient();long now=5000;int loops=0;

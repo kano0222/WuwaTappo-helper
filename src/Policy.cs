@@ -61,9 +61,10 @@ namespace Tappo {
         public ChestTimes Value=new ChestTimes(); public long NextPoll;
         public ChestClock(Func<long> now) { this.now=now; }
         public void Reset() { Value=new ChestTimes(); NextPoll=0; }
-        public void Accept(ServerState s) {
+        public void Accept(ServerState s,long? observedAt=null) {
             if(!new[]{s.left,s.right}.All(v=>v.HasValue&&v>=0&&v<=9007199254740991L)) throw new InvalidOperationException("宝箱时间格式异常");
-            Value=new ChestTimes {updatedAt=now(),left=s.left,right=s.right}; NextPoll=now()+30000;
+            var time=observedAt??now();
+            Value=new ChestTimes {updatedAt=time,left=s.left,right=s.right}; NextPoll=time+30000;
         }
         public async Task Poll(Func<Task<ServerState>> read) {
             if(now()<NextPoll) return;

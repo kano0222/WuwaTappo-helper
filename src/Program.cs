@@ -19,6 +19,7 @@ namespace Tappo {
             if(args.Length==1&&args[0]=="--check") {
                 try {
                     Resources.Text("Panel.xaml");Resources.Text("bridge.discover.js");Resources.Text("bridge.state.js");Resources.Text("bridge.boost.js");Resources.Text("bridge.claim.js");
+                    Resources.Text("bridge.pair.js");
                     using(var icon=System.Reflection.Assembly.GetExecutingAssembly().GetManifestResourceStream("helper.ico")) if(icon==null) return 1;
                     return 0;
                 } catch {return 1;}

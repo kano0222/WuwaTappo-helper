@@ -40,7 +40,11 @@ namespace Tappo {
         async Task<ServerState> ReadServer(bool fresh=false) {
             if(!fresh&&serverCache!=null&&now()<serverCacheUntil&&Status.state!=null&&serverCache.accountKey==Status.state.accountKey)return serverCache;
             ServerState result;
-            try {result=await client.Server().ConfigureAwait(false);}
+            try {
+                result=await client.Server().ConfigureAwait(false);
+                if(Status.state==null||string.IsNullOrEmpty(Status.state.accountKey)||result.accountKey!=Status.state.accountKey)
+                    throw new InvalidOperationException("查询期间账号已变化");
+            }
             catch(Exception error) {throw new ReadQueryException("读取服务器状态",error);}
             result.Validate();serverCache=result;serverCacheUntil=now()+5000;clock.Accept(result);return result;
         }
@@ -72,9 +76,9 @@ namespace Tappo {
                 after.outcome="unknown";after.failureStage="reward-receipt";
             }
             if(after.operationId!=journal.id) {after=new Snapshot {outcome="unknown",failureStage="receipt-missing"};}
-            var key=journal.id+":"+after.outcome+":"+after.failureStage+":"+after.code+":"+after.httpStatus;
+            var key=journal.id+":"+after.outcome+":"+after.failureStage+":"+after.code+":"+after.httpStatus+":"+after.waitReason;
             if(lastOperationState!=key&&after.outcome!=null) {
-                store.Log("operation-state",new {operationId=journal.id,side=action.side,outcome=after.outcome,stage=after.failureStage,errorType=after.errorType,code=after.code,httpStatus=after.httpStatus});lastOperationState=key;
+                store.Log("operation-state",new {operationId=journal.id,side=action.side,outcome=after.outcome,stage=after.failureStage,errorType=after.errorType,code=after.code,httpStatus=after.httpStatus,waitReason=after.waitReason});lastOperationState=key;
             }
             if(after.skipped||after.outcome=="skipped") {
                 if(string.IsNullOrEmpty(before.accountKey)||after.accountKey!=before.accountKey)throw new InvalidOperationException("账号已变化，保留操作记录。");
@@ -101,6 +105,15 @@ namespace Tappo {
                 store.ClearPending();Status.state=after;Status.claimsThisRun++;Status.fault=null;Status.recovering=false;claimRejections=0;ResetRetry();
                 serverCache=serverAfter;serverCacheUntil=now()+5000;clock.Accept(serverAfter);Publish("领取已确认");return;
             }
+            // A read can refresh the panel without proving the pending claim succeeded.
+            var observed=after.observedServer;
+            var observedAt=after.serverObservedAt;
+            if(observed!=null&&observedAt.HasValue&&observedAt.Value>0&&observedAt.Value<=now()&&
+               (!clock.Value.updatedAt.HasValue||observedAt.Value>clock.Value.updatedAt.Value)&&
+               !string.IsNullOrEmpty(before.accountKey)&&journal.server!=null&&journal.server.accountKey==before.accountKey&&
+               after.accountKey==before.accountKey&&observed.accountKey==before.accountKey&&Status.state.accountKey==before.accountKey) {
+                observed.Validate();clock.Accept(observed,observedAt);
+            }
             Status.recovering=true;Status.recoveryStage=after.failureStage;
             if(after.outcome=="unknown"||after.outcome=="confirmed")Status.fault="奖励到账尚未确认，已保留记录并自动核对；可核对桌宠后点击“确认并继续”。";
             else Status.fault=null;
@@ -110,22 +123,153 @@ namespace Tappo {
         async Task RecoverPending() {
             var journal=store.Read<Journal>("pending.json");
             Status.recovering=true;
+            if(journal!=null&&journal.action!=null&&journal.action.kind=="claim-pair") {
+                await RecoverClaimPair(journal).ConfigureAwait(false);return;
+            }
             if(journal!=null&&journal.action!=null&&journal.action.kind=="boost"&&journal.before!=null&&!string.IsNullOrEmpty(journal.id)&&!string.IsNullOrEmpty(journal.before.accountKey)) {
                 Snapshot observed;
                 try {observed=await client.Recover(journal).ConfigureAwait(false);}
                 catch(Exception error) {throw new ReadQueryException("核对补数结果",error);}
-                await AcceptBoost(journal,observed,true).ConfigureAwait(false);return;
+                await AcceptBoost(journal,observed,true).ConfigureAwait(false);
+                await RefreshPendingClock(observed).ConfigureAwait(false);return;
             }
             if(journal==null||journal.action==null||journal.action.kind!="claim"||journal.before==null||string.IsNullOrEmpty(journal.before.accountKey)||string.IsNullOrEmpty(journal.id)) {
                 await ReadServer().ConfigureAwait(false);Status.fault=PendingMessage();Retry("核对历史操作","legacy-journal","Unverifiable",0,0,30000);return;
             }
             if(journal.before.accountKey!=Status.state.accountKey) {
-                Status.fault="当前账号与待确认操作不一致，已保留记录。";Retry("等待原账号恢复","account","AccountChanged",0,0,30000);return;
+                Status.fault="当前账号与待确认操作不一致，已保留记录。";Retry("等待原账号恢复","account","AccountChanged",0,0,30000);
+                await RefreshPendingClock().ConfigureAwait(false);return;
             }
             Snapshot after;
             try {after=await client.Recover(journal).ConfigureAwait(false);}
             catch(Exception error) {throw new ReadQueryException("核对领取结果",error);}
             await AcceptClaim(journal,after,true).ConfigureAwait(false);
+            await RefreshPendingClock(after).ConfigureAwait(false);
+        }
+        static bool PairReceipt(PairSlot slot,ServerState baseline) {
+            return slot!=null&&!string.IsNullOrEmpty(slot.id)&&slot.outcome=="success"&&slot.cost==1000&&slot.assetId>0&&
+                slot.clickNum>=baseline.total&&slot.sentAt>0&&slot.receivedAt>=slot.sentAt;
+        }
+        bool PairAccount(Journal journal,PairResult result) {
+            return result!=null&&result.operationId==journal.id&&journal.before!=null&&journal.server!=null&&
+                !string.IsNullOrEmpty(journal.before.accountKey)&&journal.before.accountKey==journal.server.accountKey&&
+                journal.before.accountKey==Status.state.accountKey&&result.accountKey==journal.before.accountKey;
+        }
+        async Task<bool> SendPairSlot(Journal journal,string side,PairSlot slot) {
+            var result=await client.ClaimPair(journal,side).ConfigureAwait(false);
+            var accounted=PairAccount(journal,result);
+            if(accounted&&result.outcome=="skipped")slot.outcome="skipped";
+            else if(accounted&&result.slot!=null&&result.slot.id==slot.id&&
+                    (result.outcome=="success"&&PairReceipt(result.slot,journal.server)||
+                     result.outcome=="rejected"&&result.slot.outcome=="rejected"&&new[]{70004,70005,70006}.Contains(result.slot.code)||
+                     result.outcome=="unknown"&&result.slot.outcome=="unknown"))
+                slot=result.slot;
+            else slot.outcome="unknown";
+            if(side=="left") {
+                journal.left=slot;
+                if(accounted&&PairReceipt(slot,journal.server))journal.bagBefore=result.bagBefore;
+            } else journal.right=slot;
+            store.Write("pending.json",journal);
+            var preflight=accounted&&result.server!=null&&result.server.accountKey==journal.server.accountKey?result.server:null;
+            store.Log("claim-pair-slot",new {side,operationId=slot.id,pairId=journal.id,slot.outcome,slot.clickNum,slot.sentAt,slot.receivedAt,slot.code,
+                timing=accounted?result.timing:null,left=preflight==null?null:preflight.left,right=preflight==null?null:preflight.right});
+            if(accounted&&result.outcome=="unknown"&&(result.httpStatus>=400||result.retryAfterMs>0)) {
+                Status.recovering=true;Status.fault="双箱领取结果尚未确认，已保留记录。";
+                Retry("核对双箱领取结果",result.stage,"Unknown",0,result.httpStatus,result.retryAfterMs);
+            }
+            return PairReceipt(slot,journal.server);
+        }
+        async Task StartClaimPair(Snapshot before,ServerState server) {
+            var journal=store.Begin(new Plan{kind="claim-pair",side="left"},before,server);
+            Publish("正在领取宝箱一");
+            var firstSucceeded=await SendPairSlot(journal,"left",journal.left).ConfigureAwait(false);
+            if(journal.left.outcome=="skipped") {
+                store.ClearPending();Publish("领取条件已变化，已重新同步");return;
+            }
+            var command=store.Read<Command>("control.json");
+            if(firstSucceeded&&journal.left.applied&&journal.bagBefore!=null&&client.Connected&&!stop&&
+               (command==null||command.id==lastCommand)&&!UpdateInstaller.Requested(AppDomain.CurrentDomain.BaseDirectory)) {
+                journal.right=new PairSlot{id=Guid.NewGuid().ToString("N"),outcome="armed"};
+                store.Write("pending.json",journal);
+                Publish("宝箱一已收到回执，正在领取宝箱二");
+                await SendPairSlot(journal,"right",journal.right).ConfigureAwait(false);
+            }
+            if(!Status.readRetryAt.HasValue)await RecoverClaimPair(journal).ConfigureAwait(false);
+        }
+        async Task RecoverClaimPair(Journal journal) {
+            if(journal.before==null||journal.server==null||journal.before.accountKey!=Status.state.accountKey||
+               string.IsNullOrEmpty(journal.before.accountKey)||journal.server.accountKey!=journal.before.accountKey||
+               journal.left==null||journal.left.id!=journal.id||journal.right!=null&&
+               (string.IsNullOrEmpty(journal.right.id)||journal.right.id==journal.id)) {
+                Status.fault="双箱记录与当前账号或操作不匹配，已保留记录。";
+                Retry("核对双箱领取结果","account","Unverifiable",0,0,30000);
+                await RefreshPendingClock().ConfigureAwait(false);return;
+            }
+            var observeStartedAt=now();
+            PairResult result;
+            try {result=await client.ClaimPair(journal,"observe").ConfigureAwait(false);}
+            catch {
+                LogPairVerification(journal.id,null,null,observeStartedAt,now(),null);
+                throw;
+            }
+            var observeFinishedAt=now();
+            var accounted=PairAccount(journal,result);
+            var server=accounted&&result.server!=null&&result.server.accountKey==journal.server.accountKey?result.server:null;
+            if(server!=null) {server.Validate();clock.Accept(server);}
+            LogPairVerification(journal.id,accounted?result:null,server,observeStartedAt,observeFinishedAt,server==null?null:clock.Value.updatedAt);
+            if(server!=null) {
+                if(result.outcome=="rejected"&&journal.left.outcome=="rejected"&&journal.right==null&&
+                   server.consumed==journal.server.consumed&&server.left==journal.server.left&&server.right==journal.server.right) {
+                    store.ClearPending();Status.fault=null;Status.recovering=false;ResetRetry();
+                    Retry("服务器暂未允许领取","rejected","BusinessError",journal.left.code,0,5000);return;
+                }
+                var both=PairReceipt(journal.right,journal.server);
+                var count=both?2:1;
+                if(result.outcome=="confirmed"&&PairReceipt(journal.left,journal.server)&&
+                   (both||journal.right==null||journal.right.outcome=="skipped"||journal.right.outcome=="rejected")&&
+                   server.consumed==journal.server.consumed+1000*count&&server.left>journal.server.left&&
+                   server.total>=journal.left.clickNum&&(!both||server.total>=journal.right.clickNum)&&
+                   (both?server.right>journal.server.right:server.right==journal.server.right)&&
+                   result.state!=null&&result.state.accountKey==server.accountKey&&result.state.consumed==server.consumed&&
+                   result.state.left==server.left&&result.state.right==server.right) {
+                    var history=new ClaimHistory(store,Instances.SavedPath(store.Root));
+                    history.Record(journal.left.id);
+                    if(both)history.Record(journal.right.id);
+                    store.Log("claim-confirmed",new {side="left",operationId=journal.left.id,pairId=journal.id,serverAfter=server});
+                    if(both)store.Log("claim-confirmed",new {side="right",operationId=journal.right.id,pairId=journal.id,serverAfter=server});
+                    store.ClearPending();Status.state=result.state;Status.claimsThisRun+=count;Status.fault=null;Status.recovering=false;claimRejections=0;ResetRetry();
+                    serverCache=server;serverCacheUntil=now()+5000;
+                    if(journal.right!=null&&journal.right.outcome=="rejected")
+                        Retry("第二箱暂未允许领取","rejected","BusinessError",journal.right.code,0,5000);
+                    else Publish("领取已确认");
+                    return;
+                }
+            }
+            Status.recovering=true;Status.recoveryStage=result==null?"observer":result.stage;
+            var lastReceiptAt=Math.Max(journal.left.receivedAt??0,journal.right==null?0:journal.right.receivedAt??0);
+            if(accounted&&result.outcome=="pending"&&now()-lastReceiptAt<=60000) {
+                Status.fault=null;Status.readRetryAt=now()+1000;Publish("正在核对双箱领取结果");
+            } else {
+                Status.fault="双箱领取结果尚未确认，已保留记录并自动核对。";
+                Retry("核对双箱领取结果",Status.recoveryStage,"Unverifiable",0,result==null?0:result.httpStatus,
+                    Math.Max(30000,result==null?0:result.retryAfterMs));
+                await RefreshPendingClock(result==null?null:new Snapshot {retryAfterMs=result.retryAfterMs,httpStatus=result.httpStatus}).ConfigureAwait(false);
+            }
+        }
+        void LogPairVerification(string pairId,PairResult result,ServerState server,long observeStartedAt,long observeFinishedAt,long? panelClockAt) {
+            try {
+                result=result??new PairResult();
+                server=server??new ServerState();
+                store.Log("claim-pair-observe",new {operationId=pairId,result.outcome,result.stage,
+                    result.httpStatus,result.retryAfterMs,observeStartedAt,observeFinishedAt,panelClockAt,
+                    server.left,server.right,result.timing});
+            } catch(IOException) { }
+              catch(UnauthorizedAccessException) { }
+        }
+        async Task RefreshPendingClock(Snapshot observation=null) {
+            if(now()<clock.NextPoll||observation!=null&&(observation.retryAfterMs>0||observation.httpStatus==403||observation.httpStatus==429))return;
+            await ReadServer(true).ConfigureAwait(false);
+            Publish(Status.message);
         }
         Task AcceptBoost(Journal journal,Snapshot after,bool recovery=false) {
             if(after.operationId==journal.id&&after.accountKey==journal.before.accountKey&&after.outcome=="skipped") {
@@ -164,7 +308,7 @@ namespace Tappo {
             var journal=store.Read<Journal>("pending.json");DateTimeOffset at;
             var when=journal!=null&&DateTimeOffset.TryParse(journal.at,out at)?at.ToLocalTime().ToString("MM-dd HH:mm:ss"):"此前";
             var action=journal==null?null:journal.action;
-            var description=action==null?"操作":action.kind=="boost"?"补充 "+action.delta+" 次":action.kind=="claim"?"领取"+(action.side=="left"?"宝箱一":"宝箱二"):"操作";
+            var description=action==null?"操作":action.kind=="boost"?"补充 "+action.delta+" 次":action.kind=="claim"?"领取"+(action.side=="left"?"宝箱一":"宝箱二"):action.kind=="claim-pair"?"双箱领取":"操作";
             return when+" 的"+description+"结果未确认，已暂停；核对桌宠后点击“确认并继续”。";
         }
         public async Task<int> Run() {
@@ -242,7 +386,7 @@ namespace Tappo {
                             if(client==null||!client.Connected) {
                                 if(!Status.disconnectedSince.HasValue) Status.disconnectedSince=now();
                                 if(client!=null) {client.Dispose();client=null;}
-                                try {client=new DiagnosticClient(await diagnostics.Call("reconnect",reconnect).ConfigureAwait(false),diagnostics);Status.connectionFailure=null;serverCache=null;store.Log("connection-restored");}
+                                try {client=new DiagnosticClient(await diagnostics.Call("reconnect",reconnect).ConfigureAwait(false),diagnostics);Status.connectionFailure=null;serverCache=null;clock.Reset();store.Log("connection-restored");}
                                 catch(Exception error) {ConnectionFailed(error);throw new ReadQueryException("重新连接桌宠",error);}
                             }
                             if(retryCommand==null&&Status.readRetryAt.HasValue&&now()<Status.readRetryAt.Value) {
@@ -255,7 +399,10 @@ namespace Tappo {
                                 Status.reserveTarget=preference.mode=="brute"?preference.bruteReserveTarget:preference.reserveTarget;Status.clickerRate=preference.mode=="brute"?preference.bruteRate:preference.clickerRate;
                             }
                             if(retryCommand!=null)await ReadVersion().ConfigureAwait(false);
+                            var previousAccount=Status.state==null?null:Status.state.accountKey;
                             Status.state=await ReadSnapshot().ConfigureAwait(false);
+                            var canQuery=Status.state.loggedIn&&!Status.state.locked;
+                            if(!canQuery||previousAccount!=Status.state.accountKey) {clock.Reset();serverCache=null;}
                             Status.disconnectedSince=null;Status.connectionFailure=null;
                             if(Status.state.appVersion!=null&&lastAppVersion!=Status.state.appVersion) {
                                 store.Log("app-version-validated",new {previous=lastAppVersion,version=Status.state.appVersion});
@@ -268,17 +415,19 @@ namespace Tappo {
                                 if(wait>0) {Status.readRetryNotBefore=now()+wait;Status.readRetryAt=now()+wait;Publish("等待服务器查询间隔结束");continue;}
                             }
                             if(store.Exists("pending.json")) {
-                                if(Status.state.loggedIn&&!Status.state.locked)await RecoverPending().ConfigureAwait(false);
+                                if(canQuery)await RecoverPending().ConfigureAwait(false);
                                 else Publish("等待登录或更新完成后核对领取结果");
                                 await delay(loopDelay).ConfigureAwait(false);continue;
                             }
+                            var firstClock=!clock.Value.updatedAt.HasValue;
                             ServerState retryServer=null;
                             if(Status.readRetryCount>0||Status.readRetryAt.HasValue||retryCommand!=null) {
                                 retryServer=await ReadServer(true).ConfigureAwait(false);
                                 if(Status.readRetryCount>0)store.Log("read-query-recovered",new {attempts=Status.readRetryCount});
                                 ResetRetry();
                             }
-                            if(Status.state.loggedIn&&!Status.state.locked) {if(now()>=clock.NextPoll)await ReadServer(true).ConfigureAwait(false);} else {clock.Reset();serverCache=null;}
+                            if(canQuery&&now()>=clock.NextPoll)await ReadServer(true).ConfigureAwait(false);
+                            if(firstClock&&clock.Value.updatedAt.HasValue)Publish("已同步宝箱冷却");
                             if(!paused&&Status.fault==null&&!store.Exists("pending.json")) {
                                 var decision=Status.state;
                                 if(clock.Value.updatedAt.HasValue) {
@@ -294,6 +443,8 @@ namespace Tappo {
                                     var server=retryServer??await ReadServer().ConfigureAwait(false);server.Validate();
                                     if(string.IsNullOrEmpty(Status.state.accountKey)||server.accountKey!=Status.state.accountKey) {serverCache=null;Publish("账号状态已变化，等待重新同步");}
                                     else if(server.consumed!=Status.state.consumed) Publish("等待桌宠同步服务器余额");
+                                    else if(action.kind=="claim"&&(server.total-server.consumed<1000||server.total<Status.state.serverTotal))
+                                        Publish("等待桌宠同步服务器余额");
                                     else if(action.kind=="claim"&&server.Slot(action.side)>now()) Publish("等待服务器确认槽位到期");
                                     else {
                                         if(UpdateInstaller.Requested(AppDomain.CurrentDomain.BaseDirectory)) {stop=true;closeRequested=false;break;}
@@ -302,6 +453,12 @@ namespace Tappo {
                                         if(action.kind=="claim") {
                                             before=Json.Decode<Snapshot>(Json.Encode(before));
                                             before.left=server.left;before.right=server.right;
+                                        }
+                                        if(action.kind=="claim"&&client.SupportsClaimPair&&server.total-server.consumed>=2000&&
+                                           server.left<=now()-Policy.ClaimSafetyMarginMs&&server.right<=now()-Policy.ClaimSafetyMarginMs&&
+                                           Status.state.left==server.left&&Status.state.right==server.right) {
+                                            await StartClaimPair(before,server).ConfigureAwait(false);
+                                            await delay(loopDelay).ConfigureAwait(false);continue;
                                         }
                                         var journal=store.Begin(action,before,server);
                                         var after=action.kind=="boost"?await client.Boost(action.delta,before).ConfigureAwait(false):await client.Claim(action.side,before).ConfigureAwait(false);
@@ -328,7 +485,7 @@ namespace Tappo {
                                     api==null?0:api.Code,api==null?0:api.HttpStatus,api==null?0:api.RetryAfterMs,api==null?0:api.RequiredRetryAfterMs,error);
                             } else {
                                 var pending=store.Exists("pending.json")?store.Read<Journal>("pending.json"):null;
-                                if(pending!=null&&pending.action!=null&&(pending.action.kind=="claim"||pending.action.kind=="boost")&&!string.IsNullOrEmpty(pending.id)) {
+                                if(pending!=null&&pending.action!=null&&(pending.action.kind=="claim"||pending.action.kind=="claim-pair"||pending.action.kind=="boost")&&!string.IsNullOrEmpty(pending.id)) {
                                     Status.recovering=true;Status.fault="操作结果尚未确认，已保留记录并自动核对。";
                                     Retry("核对操作结果","observer",error.GetType().Name,failure:error);
                                 } else {

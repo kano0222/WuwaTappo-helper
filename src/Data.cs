@@ -31,9 +31,11 @@ namespace Tappo {
     }
     internal sealed class Snapshot {
         public string appVersion;
-        public string accountKey, operationId, outcome, failureStage, errorType;
+        public string accountKey, operationId, outcome, failureStage, errorType, waitReason;
         public int httpStatus, retryAfterMs;
         public ServerState confirmedServer;
+        public ServerState observedServer;
+        public long? serverObservedAt;
         public RewardReceipt reward; public bool rewardVerified,uiRefreshRequested;
         public long time; public bool loggedIn, locked, claimBusy, skipped, rejected;
         public long? available, cumulative, local, consumed, serverTotal, left, right;
@@ -83,7 +85,36 @@ namespace Tappo {
     internal sealed class Settings { public string appPath; }
     internal sealed class Command { public string id, action, pendingHash; }
     internal sealed class LauncherStatus { public string failedAt, error, requestedAt; public int runnerId; }
-    internal sealed class Journal { public string id, at; public Plan action; public Snapshot before; public ServerState server; }
+    internal sealed class PairSlot {
+        public string id, outcome;
+        public long? clickNum, sentAt, receivedAt;
+        public int code, cost;
+        public long assetId;
+        public bool applied;
+    }
+    internal sealed class PairResult {
+        public string operationId, accountKey, outcome, stage;
+        public PairSlot slot;
+        public ServerState server;
+        public Snapshot state;
+        public Dictionary<string,long> bagBefore;
+        public int retryAfterMs, httpStatus;
+        public PairVerificationTiming timing;
+    }
+    internal sealed class PairVerificationTiming {
+        public long? queryStartedAt, requestStartedAt, queryFinishedAt, leftWrittenAt, rightWrittenAt, bagStartedAt, bagFinishedAt;
+        public bool sharedQuery;
+        public bool? awaitingDebit, leftEligible, rightEligible;
+        public string errorType;
+    }
+    internal sealed class Journal {
+        public string id, at;
+        public Plan action;
+        public Snapshot before;
+        public ServerState server;
+        public PairSlot left, right;
+        public Dictionary<string,long> bagBefore;
+    }
     internal sealed class RuntimeStore {
         internal event Action<string,object> DiagnosticEvent;
         public readonly string Root, Runtime, InstanceId, BaseRoot;
@@ -112,6 +143,7 @@ namespace Tappo {
         public Journal Begin(Plan action, Snapshot before, ServerState server) {
             before.operationId=Guid.NewGuid().ToString("N");
             var journal=new Journal {id=before.operationId,at=DateTimeOffset.UtcNow.ToString("o"),action=action,before=before,server=server};
+            if(action.kind=="claim-pair")journal.left=new PairSlot {id=journal.id,outcome="armed"};
             // CreateNew protects an existing journal, including records from the previous implementation.
             using(var stream=new FileStream(FilePath("pending.json"),FileMode.CreateNew,FileAccess.Write,FileShare.Read)) {
                 var bytes=Utf8.GetBytes(Json.Encode(journal)+"\n");

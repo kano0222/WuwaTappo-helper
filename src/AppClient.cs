@@ -15,6 +15,8 @@ namespace Tappo {
         Task<Snapshot> Snapshot(); Task<ServerState> Server(); Task<Snapshot> Boost(int delta,Snapshot before);
         Task<Snapshot> Claim(string side,Snapshot before); Task Quit();
         Task<Snapshot> Recover(Journal journal);
+        bool SupportsClaimPair {get;}
+        Task<PairResult> ClaimPair(Journal journal,string command);
         Task<int> RetryQuery();
     }
     internal sealed class AppProfile { public string version, commonPath, quitPath, clickPath; public Dictionary<string,string> exports; }
@@ -195,6 +197,20 @@ namespace Tappo {
         public async Task<Snapshot> Claim(string side,Snapshot before) {
             if(side!="left"&&side!="right") throw new InvalidOperationException("槽位不匹配");
             return Json.Convert<Snapshot>(await Evaluate(Script("claim",before).Replace("__SIDE__",Json.Encode(side)).Replace("__RECOVER__","false"),12000).ConfigureAwait(false));
+        }
+        public bool SupportsClaimPair {get{
+            return Profile!=null&&Profile.exports.ContainsKey("chestHost")&&!string.IsNullOrEmpty(Profile.exports["chestHost"]);
+        }}
+        public async Task<PairResult> ClaimPair(Journal journal,string command) {
+            if(journal.action.kind!="claim-pair"||Array.IndexOf(new[]{"left","right","observe"},command)<0)
+                throw new InvalidOperationException("双箱操作不匹配");
+            var claim=Script("claim",null);
+            var start=claim.IndexOf("  const requestChest=",StringComparison.Ordinal);
+            var end=claim.IndexOf("  const id=",StringComparison.Ordinal);
+            if(start<0||end<=start)throw new InvalidOperationException("领取传输资源不匹配");
+            var script=Script("pair",null).Replace("__CLAIM_TRANSPORT__",claim.Substring(start,end-start))
+                .Replace("__PAIR_COMMAND__",Json.Encode(command)).Replace("__PAIR_JOURNAL__",Json.Encode(journal));
+            return Json.Convert<PairResult>(await Evaluate(script,command=="observe"?22000:30000).ConfigureAwait(false));
         }
         public async Task<Snapshot> Recover(Journal journal) {
             if(journal==null||journal.action==null||(journal.action.kind!="claim"&&journal.action.kind!="boost")||journal.before==null||string.IsNullOrEmpty(journal.id)||journal.before.operationId!=journal.id||string.IsNullOrEmpty(journal.before.accountKey)||
