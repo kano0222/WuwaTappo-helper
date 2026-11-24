@@ -3,7 +3,7 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const source=fs.readFileSync(path.join(__dirname,'../src/Bridge/claim.js'),'utf8');
 const drain=async()=>{for(let i=0;i<25;i++)await Promise.resolve()};
-function fixture(kind='success',side='left',quiet=false){
+function fixture(kind='success',side='left',quiet=false,receiptFields={}){
   let time=5000,calls=0,reads=0,applies=0,folds=0,saves=0,local=0,release,bagReads=0,emits=0;
   const startingLocal=['cumulative-lag','server-poor','report-before','old-report','report-after'].includes(kind)?15:0;
   let persistedLocal=local=startingLocal;
@@ -17,6 +17,7 @@ function fixture(kind='success',side='left',quiet=false){
       if(debit){applies++;if(kind==='bad-action')this.userInfo.total_click_consume--;}
       else if(kind==='bad-refresh')this.userInfo.total_click_count++;
     }};
+  if(Object.keys(receiptFields).length)store.userInfo.left_treasure_chest=initial.left_treasure_chest;
   if(kind==='server-poor')store.userInfo.total_click_consume=server.total_click_consume=2010;
   if(kind==='spend-before')store.serverClickSpend=10;
   if(kind==='future')server[side+'_treasure_chest']=9000;
@@ -55,7 +56,7 @@ function fixture(kind='success',side='left',quiet=false){
       if(kind==='excess')server.total_click_consume=3000;
       if(kind==='server-regressed')server.total_click_count=2999;
       if(kind==='missing-time')server[side+'_treasure_chest']=null;
-      return {code:0,data:{click_consume:kind==='bad-cost'?500:1000,asset_id:123,asset_name:kind==='missing-reward'?'':'test-item',asset_type:'accessory'}};
+      return {code:0,data:{click_consume:kind==='bad-cost'?500:1000,asset_id:123,asset_name:kind==='missing-reward'?'':'test-item',asset_type:'accessory',...receiptFields}};
     }};
   context=vm.createContext({store,api,console:consoleStub,takeSnapshot,AbortSignal,
     localStorage:{getItem:()=>''},crypto:{randomUUID:()=> '11111111-1111-4111-8111-111111111111'},
@@ -83,6 +84,7 @@ function fixture(kind='success',side='left',quiet=false){
     restartTotal:()=>server.total_click_count+persistedLocal,
     advance:ms=>{time+=ms},
     reflectDebit:()=>{server.total_click_consume=2000;},
+    reflectCooldown:value=>{server[side+'_treasure_chest']=value;},
     async settle(){let result;for(let i=0;i<12;i++){time+=10000;await drain();result=await evaluate(true);if(['confirmed','rejected','skipped','unknown'].includes(result.outcome))return result;}return result;}};
 }
 (async()=>{
@@ -221,6 +223,29 @@ function fixture(kind='success',side='left',quiet=false){
   {
     const f=fixture('long');await f.evaluate();await drain();f.store.userInfo.cuid='other';
     assert.equal((await f.evaluate(true)).failureStage,'account');f.release();await drain();assert.equal(f.stats().applies,0);assert.equal(f.stats().calls,1);checks++;
+  }
+  for(const side of ['left','right']){
+    const other=side==='left'?'right':'left';
+    const f=fixture('unchanged',side,false,{[side+'_next_time']:10000,[other+'_next_time']:11000});
+    await f.evaluate();await drain();
+    let result=await f.evaluate(true);
+    assert.equal(result.outcome,'pending');assert.equal(result.receiptCooldown,10000);
+    assert.equal(result[side],10000);assert.equal(result[other],side==='left'?2000:3000);
+    f.reflectCooldown(9000);
+    await drain();
+    result=await f.evaluate(true);assert.equal(result[side],10000);
+    f.reflectDebit();
+    const final=await f.settle();
+    assert.equal(final.outcome,'confirmed');assert.equal(final[side],9000);
+    assert.equal(f.stats().calls,1);assert.equal(f.stats().folds,0);assert.equal(f.stats().saves,0);checks++;
+  }
+  {
+    const f=fixture('unchanged','left',false,{left_next_time:0,right_next_time:10000});
+    await f.evaluate();await drain();
+    const pending=await f.evaluate(true);
+    assert.equal(pending.receiptCooldown,null);assert.equal(pending.left,3000);assert.equal(pending.right,2000);
+    f.reflectCooldown(9000);f.reflectDebit();
+    assert.equal((await f.settle()).left,9000);checks++;
   }
   console.log('PASS: '+checks+' transaction/recovery scenarios; no duplicate submissions, DOM dependency or account access.');
 })().catch(e=>{console.error(e);process.exitCode=1});

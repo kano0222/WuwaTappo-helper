@@ -13,7 +13,7 @@ const injected=`
   const bounded=p=>p;
   const failure=(e,stage)=>({code:e.code??0,httpStatus:0,retryAfterMs:0});
 `;
-function fixture(kind){
+function fixture(kind,receiptFields={}){
   const baseline={accountKey:'fixture',total:3000,consumed:1000,left:1000,right:2000};
   const journal={id:'first',server:baseline,before:{left:1000,right:2000},left:{id:'first',outcome:'armed'}};
   const projection={total_click_count:3000,total_click_consume:1000,left_treasure_chest:1000,right_treasure_chest:2000};
@@ -35,7 +35,7 @@ function fixture(kind){
       requests.push({body,trace:options.headers['X-BLM-FRID']});
       if(kind==='unknown-right'&&body.place==='right')throw Error('reply lost');
       return {ok:true,json:async()=>({code:0,data:{click_consume:1000,
-        asset_id:body.place==='left'||kind==='same-asset'?42:43}})};
+        asset_id:body.place==='left'||kind==='same-asset'?42:43,...receiptFields[body.place]}})};
     },AbortSignal,localStorage:{getItem:()=>''},
     window:{__TAURI_INTERNALS__:{invoke:async()=>{refreshes++;}}}
   });
@@ -113,5 +113,34 @@ function fixture(kind){
   early.journal.left.outcome='armed';
   assert.equal((await early.execute('left')).outcome,'unknown');
   assert.equal(early.requests.length,2);
-  console.log('PASS: 10 fixed-slot bridge scenarios.');
+  const fields={left:{left_next_time:1801000,right_next_time:0},right:{left_next_time:0,right_next_time:1802000}};
+  const receipted=fixture('success',fields);
+  assert.equal((await receipted.submit('left')).slot.receiptCooldown,1801000);
+  assert.equal(receipted.store.userInfo.left_treasure_chest,1000);
+  receipted.armRight();
+  assert.equal((await receipted.submit('right')).slot.receiptCooldown,1802000);
+  let observed=await receipted.execute('observe');
+  assert.equal(observed.outcome,'pending');assert.equal(observed.state.left,1801000);assert.equal(observed.state.right,1802000);
+  receipted.projection.left_treasure_chest=1800500;
+  receipted.projection.right_treasure_chest=1802000;
+  observed=await receipted.execute('observe');
+  assert.equal(observed.outcome,'pending');assert.equal(observed.state.left,1801000);
+  receipted.projection.total_click_consume=3000;
+  receipted.bag[42]=receipted.bag[43]=2;
+  observed=await receipted.execute('observe');
+  assert.equal(observed.outcome,'confirmed');assert.equal(observed.state.left,1800500);assert.equal(observed.state.right,1802000);
+  assert.equal(receipted.requests.length,2);
+  const conflict=fixture('success',fields);
+  await conflict.submit('left');conflict.armRight();await conflict.submit('right');
+  conflict.store.userInfo.left_treasure_chest=1801500;
+  conflict.projection.left_treasure_chest=1800500;
+  assert.equal((await conflict.execute('observe')).stage,'local-slot-conflict');
+  const unknown=fixture('unknown-right',fields);
+  await unknown.submit('left');unknown.armRight();
+  assert.equal((await unknown.submit('right')).outcome,'unknown');
+  assert.equal(unknown.store.userInfo.left_treasure_chest,1801000);
+  assert.equal(unknown.store.userInfo.right_treasure_chest,2000);
+  assert.equal((await unknown.execute('observe')).outcome,'unknown');
+  assert.equal(unknown.requests.length,2);
+  console.log('PASS: fixed-slot handoff, receipt cooldown projection, and conflict checks.');
 })().catch(error=>{console.error(error);process.exitCode=1;});

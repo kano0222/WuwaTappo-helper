@@ -35,7 +35,7 @@ namespace Tappo {
         public int httpStatus, retryAfterMs;
         public ServerState confirmedServer;
         public ServerState observedServer;
-        public long? serverObservedAt;
+        public long? serverObservedAt, receiptCooldown;
         public RewardReceipt reward; public bool rewardVerified,uiRefreshRequested;
         public long time; public bool loggedIn, locked, claimBusy, skipped, rejected;
         public long? available, cumulative, local, consumed, serverTotal, left, right;
@@ -87,7 +87,7 @@ namespace Tappo {
     internal sealed class LauncherStatus { public string failedAt, error, requestedAt; public int runnerId; }
     internal sealed class PairSlot {
         public string id, outcome;
-        public long? clickNum, sentAt, receivedAt;
+        public long? clickNum, sentAt, receivedAt, receiptCooldown;
         public int code, cost;
         public long assetId;
         public bool applied;
@@ -114,6 +114,7 @@ namespace Tappo {
         public ServerState server;
         public PairSlot left, right;
         public Dictionary<string,long> bagBefore;
+        public long? receiptCooldown;
     }
     internal sealed class RuntimeStore {
         internal event Action<string,object> DiagnosticEvent;

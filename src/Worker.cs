@@ -19,6 +19,7 @@ namespace Tappo {
         public Status Status=new Status {running=true,mode=Preference.DefaultMode};
         bool stop,closeRequested,paused; string lastCommand,lastAppVersion;
         IAppClient client; long nextBoost,serverCacheUntil; int claimRejections; ServerState serverCache; string lastOperationState;
+        Journal pendingClaim;
         public Worker(RuntimeStore store,Func<Task<IAppClient>> connect,Func<IAppClient,Task> closePet,Func<int,Task> delay,Func<long> now,Func<Task<IAppClient>> reconnect=null,Func<Task> prepareResume=null) {
             this.store=store;this.connect=connect;this.reconnect=reconnect??connect;this.closePet=closePet;this.delay=delay;this.now=now;clock=new ChestClock(now);
             this.prepareResume=prepareResume??(()=>Task.FromResult(0));
@@ -29,9 +30,32 @@ namespace Tappo {
             if(Status.connected==false&&!Status.disconnectedSince.HasValue) Status.disconnectedSince=now();
             Status.at=DateTimeOffset.UtcNow.ToString("o"); Status.pid=Process.GetCurrentProcess().Id;
             Status.manuallyPaused=paused;
-            Status.paused=paused||Status.fault!=null||store.Exists("pending.json"); Status.message=Status.fault??message; Status.chestTimes=clock.Value;
+            var hasPending=store.Exists("pending.json");
+            if(!hasPending)pendingClaim=null;
+            Status.paused=paused||Status.fault!=null||hasPending; Status.message=Status.fault??message; Status.chestTimes=DisplayChestTimes();
             try {store.Write("status.json",Status);if(diagnostics!=null)diagnostics.Published(Status);}
             catch(Exception error) {if(diagnostics!=null)diagnostics.WriteFailed(error);throw;}
+        }
+        ChestTimes DisplayChestTimes() {
+            var current=clock.Value;var claim=pendingClaim;
+            if(claim==null||claim.before==null||claim.server==null||Status.state==null||!Status.state.loggedIn||
+               string.IsNullOrEmpty(claim.before.accountKey)||claim.before.accountKey!=Status.state.accountKey||
+               claim.server.accountKey!=claim.before.accountKey||!current.updatedAt.HasValue)return current;
+            var left=claim.action.kind=="claim-pair"?PairCooldown(claim.left,claim.server,"left"):
+                claim.action.side=="left"?claim.receiptCooldown:null;
+            var right=claim.action.kind=="claim-pair"?PairCooldown(claim.right,claim.server,"right"):
+                claim.action.side=="right"?claim.receiptCooldown:null;
+            var displayLeft=ReceiptDisplayTime(left,current.left,claim.server.left);
+            var displayRight=ReceiptDisplayTime(right,current.right,claim.server.right);
+            if(displayLeft==current.left&&displayRight==current.right)return current;
+            return new ChestTimes {updatedAt=current.updatedAt,left=displayLeft,right=displayRight,error=current.error};
+        }
+        long? ReceiptDisplayTime(long? receipt,long? current,long? baseline) {
+            return receipt.HasValue&&current.HasValue&&baseline.HasValue&&receipt>baseline&&
+                receipt>now()&&receipt<=253402300799999L&&receipt>current?receipt:current;
+        }
+        static long? PairCooldown(PairSlot slot,ServerState baseline,string side) {
+            return PairReceipt(slot,baseline)&&slot.applied&&slot.receiptCooldown>baseline.Slot(side)?slot.receiptCooldown:null;
         }
         async Task<Snapshot> ReadSnapshot() {
             try {return await client.Snapshot().ConfigureAwait(false);}
@@ -76,6 +100,17 @@ namespace Tappo {
                 after.outcome="unknown";after.failureStage="reward-receipt";
             }
             if(after.operationId!=journal.id) {after=new Snapshot {outcome="unknown",failureStage="receipt-missing"};}
+            if((after.outcome=="pending"||after.outcome=="unknown")&&!string.IsNullOrEmpty(before.accountKey)&&
+               after.accountKey==before.accountKey&&journal.server!=null&&journal.server.accountKey==before.accountKey&&
+               !journal.receiptCooldown.HasValue&&after.receiptCooldown>journal.server.Slot(action.side)&&
+               after.receiptCooldown>now()&&after.receiptCooldown<=253402300799999L&&after.Slot(action.side)==after.receiptCooldown) {
+                journal.receiptCooldown=after.receiptCooldown;
+                // Optional receipt metadata must not turn a successful request into a new failure.
+                try {store.Write("pending.json",journal);}
+                catch(IOException) { }
+                catch(UnauthorizedAccessException) { }
+            }
+            pendingClaim=journal;
             var key=journal.id+":"+after.outcome+":"+after.failureStage+":"+after.code+":"+after.httpStatus+":"+after.waitReason;
             if(lastOperationState!=key&&after.outcome!=null) {
                 store.Log("operation-state",new {operationId=journal.id,side=action.side,outcome=after.outcome,stage=after.failureStage,errorType=after.errorType,code=after.code,httpStatus=after.httpStatus,waitReason=after.waitReason});lastOperationState=key;
@@ -122,6 +157,7 @@ namespace Tappo {
         }
         async Task RecoverPending() {
             var journal=store.Read<Journal>("pending.json");
+            pendingClaim=journal!=null&&journal.action!=null&&(journal.action.kind=="claim"||journal.action.kind=="claim-pair")?journal:null;
             Status.recovering=true;
             if(journal!=null&&journal.action!=null&&journal.action.kind=="claim-pair") {
                 await RecoverClaimPair(journal).ConfigureAwait(false);return;
@@ -170,6 +206,7 @@ namespace Tappo {
                 if(accounted&&PairReceipt(slot,journal.server))journal.bagBefore=result.bagBefore;
             } else journal.right=slot;
             store.Write("pending.json",journal);
+            pendingClaim=journal;
             var preflight=accounted&&result.server!=null&&result.server.accountKey==journal.server.accountKey?result.server:null;
             store.Log("claim-pair-slot",new {side,operationId=slot.id,pairId=journal.id,slot.outcome,slot.clickNum,slot.sentAt,slot.receivedAt,slot.code,
                 timing=accounted?result.timing:null,left=preflight==null?null:preflight.left,right=preflight==null?null:preflight.right});

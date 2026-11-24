@@ -42,10 +42,31 @@
   };
   const validReceipt=slot=>slot?.outcome==='success'&&slot.cost===1000&&
     Number.isSafeInteger(slot.assetId)&&slot.assetId>0;
+  let live=globalThis.__TAPPO_HELPER_PAIR__;
+  const ownedWrites=()=>live?.id===journal.id&&live.store===s?live.writtenCooldowns:null;
+  const wroteCooldown=(side,local)=>ownedWrites()?.[side]?.value===local[side];
+  const syncReceiptSlots=right=>{
+    const written=ownedWrites();
+    if(!written||!context()||!spendClear())return;
+    const local=snapshot(), fields={};
+    for(const [side,slot] of [['left',journal.left],['right',right]]){
+      if(validReceipt(slot)&&slot.id===live[side+'Id']&&slot.applied&&local[side]===journal.before[side]&&
+         receiptDeadline(slot.receiptCooldown,base[side])!==null)
+        fields[side+'_treasure_chest']=slot.receiptCooldown;
+    }
+    if(!Object.keys(fields).length)return;
+    const synced=mutateLocal(fields,local.consumed);
+    for(const side of slots){
+      if(fields[side+'_treasure_chest']!==undefined&&fields[side+'_treasure_chest']===synced[side])
+        written[side]={value:synced[side],refreshed:false};
+    }
+  };
   let stage='account', sent=false, request, observed;
   try{
     if(!context()||!spendClear())return answer('unknown',stage);
     if(command==='observe'){
+      stage='local-sync';
+      syncReceiptSlots(journal.right);
       stage='verify';
       const server=observed=await readAccount();
       if(journal.left.outcome==='rejected'&&!journal.right){
@@ -67,7 +88,10 @@
       const fields={};
       for(const side of slots)
         if(server[side]>base[side]&&local[side]!==server[side]){
-          if(local[side]>server[side])return answer('unknown','local-slot-conflict',{server});
+          if(local[side]>server[side]){
+            if(wroteCooldown(side,local))continue;
+            return answer('unknown','local-slot-conflict',{server});
+          }
           fields[side+'_treasure_chest']=server[side];
         }
       if(complete&&localDebit<expectedDebit)fields.total_click_consume=server.consumed;
@@ -80,7 +104,11 @@
         const written=fields[side+'_treasure_chest'];
         if(written!==undefined&&written===synced[side])timing[side+'WrittenAt']=Date.now();
       }
-      if(Object.keys(fields).some(field=>field.endsWith('_treasure_chest'))&&__REFRESHPANEL__==='ready'){
+      const written=ownedWrites();
+      const newlyObserved=slots.filter(side=>written?.[side]&&!written[side].refreshed&&
+        server[side]>base[side]&&wroteCooldown(side,synced));
+      if((Object.keys(fields).some(field=>field.endsWith('_treasure_chest'))||newlyObserved.length)&&__REFRESHPANEL__==='ready'){
+        for(const side of newlyObserved)written[side].refreshed=true;
         try{await bounded(window.__TAURI_INTERNALS__.invoke('plugin:event|emit',{event:'cat-panel-action',payload:{type:'ready'}}),3000);}
         catch{}
       }
@@ -94,24 +122,34 @@
       for(const slot of selected)needed[slot.assetId]=(needed[slot.assetId]??0)+1;
       if(Object.entries(needed).some(([id,n])=>(bag[id]??0)-(journal.bagBefore[id]??0)<n))
         return answer('pending',stage,{server,state:synced});
-      const final=snapshot();
-      if(!context()||!spendClear()||final.consumed!==server.consumed||
-         final.left!==server.left||final.right!==server.right)return answer('unknown','local-sync',{server});
-      return answer('confirmed',stage,{server,state:final});
+      let final=snapshot();
+      const reconcile={};
+      if(!context()||!spendClear()||final.consumed!==server.consumed)return answer('unknown','local-sync',{server});
+      for(const side of slots){
+        if(final[side]===server[side])continue;
+        if(!wroteCooldown(side,final)||final[side]<=server[side])return answer('unknown','local-sync',{server});
+        reconcile[side+'_treasure_chest']=server[side];
+      }
+      if(Object.keys(reconcile).length){
+        stage='local-sync';
+        final=mutateLocal(reconcile,final.consumed);
+        if(final.left!==server.left||final.right!==server.right)return answer('unknown',stage,{server});
+      }
+      return answer('confirmed','reward-verify',{server,state:final});
     }
     const side=command, slot=journal[side], first=side==='left';
     if(!slots.includes(side)||slot?.outcome!=='armed')return answer('unknown','intent-missing');
-    let live=globalThis.__TAPPO_HELPER_PAIR__;
     if(first){
       if(live?.id===journal.id)return answer('unknown','pair-context');
       if(snapshot().claimBusy||live?.busy)return answer('skipped','active');
-      live=globalThis.__TAPPO_HELPER_PAIR__={id:journal.id,store:s,busy:false,sent:{}};
+      live=globalThis.__TAPPO_HELPER_PAIR__={id:journal.id,store:s,busy:false,sent:{},writtenCooldowns:{}};
     }
     if(live?.id!==journal.id||live.store!==s||live.busy||live.sent[side]||
        (!first&&(!validReceipt(journal.left)||!journal.left.applied||live.leftId!==journal.left.id)))
       return answer('unknown','pair-context');
     const owned=()=>context()&&globalThis.__TAPPO_HELPER_PAIR__===live&&spendClear();
     live.busy=true;
+    let received;
     try{
       stage='preflight';
       const bagBefore=first?await readBag():null;
@@ -147,17 +185,23 @@
       if(!owned()||Number(data?.click_consume)!==1000||!Number.isSafeInteger(assetId)||assetId<1)
         return answer('unknown','receipt',{slot:request});
       const receipt={...request,outcome:'success',receivedAt:Date.now(),cost:1000,assetId,applied:false};
-      if(first)live.leftId=slot.id;
+      live[side+'Id']=slot.id;
       stage='local-apply';
       if(snapshot().consumed===expected){
         try{
           mutateLocal({total_click_consume:expected+1000},expected+1000);
           receipt.applied=true;
+          receipt.receiptCooldown=receiptDeadline(data[side+'_next_time'],base[side]);
         }
         catch{}
       }
+      received=receipt;
       return answer('success',stage,{slot:receipt,bagBefore,server});
-    }finally{live.busy=false;}
+    }finally{
+      // Right-side preflight and dispatch still see the original shared slots.
+      if(!first){try{syncReceiptSlots(received);}catch{}}
+      live.busy=false;
+    }
   }catch(error){
     const info=failure(error,stage);
     timing.errorType=info.errorType;

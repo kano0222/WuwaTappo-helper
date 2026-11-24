@@ -28,6 +28,8 @@
       throw error;
     }
   };
+  const receiptDeadline=(value,baseline)=>Number.isSafeInteger(value)&&value<=253402300799999&&
+    value>Math.max(baseline,Date.now())?value:null;
   const id=__BEFORE_OPERATIONID__,side=__SIDE__,other=side==='left'?'right':'left',expectedAccount=__BEFORE_ACCOUNTKEY__;
   const uncertain=()=>new Error('结果无法确认');
   const serverState=data=>{
@@ -49,7 +51,8 @@
     failureStage:tx.error?.failureStage??tx.stage,errorType:tx.error?.errorType??(tx.busy&&Date.now()-tx.attemptAt>45000?'TimeoutError':null),httpStatus:tx.error?.httpStatus??0,
     retryAfterMs:Math.max(0,(tx.nextRetryAt??0)-Date.now()),code:tx.rejection??tx.error?.code??0,
     waitReason:tx.error?null:tx.waitReason??null,reward:tx.reward??null,uiRefreshRequested:!!tx.uiRefreshRequested,
-    observedServer:tx.observedServer??null,serverObservedAt:tx.serverObservedAt??null,...(tx.result??{})});
+    observedServer:tx.observedServer??null,serverObservedAt:tx.serverObservedAt??null,
+    receiptCooldown:tx.receiptCooldown??null,...(tx.result??{})});
   let tx=globalThis.__TAPPO_HELPER_TX__;
   if(!contextMatches())return {...snapshot(),operationId:id,outcome:'unknown',failureStage:'account'};
   if(__RECOVER__){
@@ -65,7 +68,7 @@
   tx={id,accountKey,store:s,side,busy:false,sent:false,applied:false,receipt:false,rejection:null,result:null,error:null,stage:'preflight',startedAt:Date.now()};
   globalThis.__TAPPO_HELPER_TX__=tx;
   const check=()=>{if(!contextMatches()||globalThis.__TAPPO_HELPER_TX__!==tx)throw uncertain();};
-  const syncSlots=async(server,final)=>{
+  const syncSlots=async(server,final,refresh=true)=>{
     tx.stage='local-sync';
     const current=snapshot();
     if(current.consumed!==tx.before.consumed+1000||hasUnsettledSpend())return null;
@@ -79,7 +82,7 @@
        synced.serverTotal!==current.serverTotal||synced.local!==current.local||
        synced[side]!==server[side]||synced[other]!==(final?server[other]:current[other]))throw uncertain();
     check();
-    if(__REFRESHPANEL__==='ready'&&(tx.refreshCooldown!==server[side]||final&&!tx.uiRefreshRequested)){
+    if(refresh&&__REFRESHPANEL__==='ready'&&(tx.refreshCooldown!==server[side]||final&&!tx.uiRefreshRequested)){
       tx.refreshCooldown=server[side];
       try{await bounded(window.__TAURI_INTERNALS__.invoke('plugin:event|emit',{event:'cat-panel-action',payload:{type:'ready'}}),3000);tx.uiRefreshRequested=true;}
       catch{tx.uiRefreshRequested=false;}
@@ -98,7 +101,8 @@
     if(server[side]<=tx.initial[side])waits.push('cooldown');
     if(server.total<tx.initial.total)waits.push('cumulative');
     // The account query can supply a fresh slot before the debit or reward is visible.
-    if(tx.reward&&!waits.includes('cooldown')&&!waits.includes('cumulative')){
+    const olderThanReceipt=local[side]===tx.receiptCooldown&&server[side]<tx.receiptCooldown;
+    if(tx.reward&&!waits.includes('cooldown')&&!waits.includes('cumulative')&&!olderThanReceipt){
       if(!await syncSlots(server,false)){tx.result={outcome:'unknown'};return;}
       tx.stage='verify';
     }
@@ -152,6 +156,10 @@
         if(applied.consumed!==before.consumed+1000||applied.local!==posted.local||applied.serverTotal!==posted.serverTotal||
            applied.cumulative!==posted.cumulative||applied.available!==posted.available-1000)throw uncertain();
         tx.applied=true;
+        const cooldown=receiptDeadline(data[side+'_next_time'],before[side]);
+        if(tx.reward&&cooldown!==null&&applied[side]===before[side]){
+          if(await syncSlots({[side]:cooldown},false,false))tx.receiptCooldown=cooldown;
+        }
       }
     }
     await verify();

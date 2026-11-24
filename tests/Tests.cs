@@ -424,7 +424,7 @@ namespace Tappo {
             }
         }
         static async Task FixedPairWorker() {
-            foreach(var scenario in new[]{"success","right-timeout","pause-after-left","reward-stalled"}) {
+            foreach(var scenario in new[]{"success","right-timeout","pause-after-left","reward-stalled","receipt-clock"}) {
                 var store=Store();var client=new FakeClient();var calls=new List<string>();
                 const long now=100000;
                 var state=client.State;state.time=now;state.left=1000;state.right=2000;
@@ -441,11 +441,16 @@ namespace Tappo {
                         if(command=="right") {
                             Check(disk.left.outcome=="success"&&disk.left.receivedAt.HasValue&&disk.bagBefore!=null&&
                                 disk.left.id!=disk.right.id,"right started before durable first receipt");
+                            if(scenario=="receipt-clock") {
+                                var times=store.Read<Status>("status.json").chestTimes;
+                                Check(times.left==900000&&times.right==baseline.right,"first receipt was not published before right submission");
+                            }
                             if(scenario=="right-timeout")throw new IOException("fixture lost response");
                         }else if(scenario=="pause-after-left")store.Write("control.json",new Command {id="pause",action="pause"});
                         result.outcome="success";
                         var sentAt=scenario=="reward-stalled"?now-61000:now;
                         result.slot=new PairSlot {id=intent.id,outcome="success",assetId=42,cost=1000,clickNum=4000,sentAt=sentAt,receivedAt=sentAt+1,applied=true};
+                        if(scenario=="receipt-clock")result.slot.receiptCooldown=command=="left"?900000:901000;
                         result.bagBefore=new Dictionary<string,long>{{"42",3}};
                         return result;
                     }
@@ -454,6 +459,7 @@ namespace Tappo {
                     result.state=Copy(state);result.state.consumed=result.server.consumed;
                     result.state.left=result.server.left;result.state.right=result.server.right;
                     result.outcome=scenario=="reward-stalled"?"pending":disk.right!=null&&!both?"unknown":"confirmed";
+                    if(scenario=="receipt-clock"){result.server=baseline;result.outcome="pending";}
                     return result;
                 };
                 Worker worker=null;
@@ -467,6 +473,10 @@ namespace Tappo {
                 }else if(scenario=="reward-stalled") {
                     Check(store.Exists("pending.json")&&worker.Status.fault!=null&&worker.Status.claimsThisRun==0,
                         "pair verification timeout did not preserve the journal and expose the fault");
+                }else if(scenario=="receipt-clock") {
+                    Check(store.Exists("pending.json")&&worker.Status.claimsThisRun==0&&
+                          worker.Status.chestTimes.left==900000&&worker.Status.chestTimes.right==901000,
+                          "stale verification rolled back receipt cooldowns or retired the journal");
                 }else if(scenario=="pause-after-left") {
                     Check(string.Join(",",calls)=="left,observe"&&!store.Exists("pending.json")&&worker.Status.claimsThisRun==1,
                         "pause did not prevent right handoff");
@@ -486,6 +496,7 @@ namespace Tappo {
             client.ClaimResult=()=>{
                 sides.Add(store.Read<Journal>("pending.json").action.side);
                 var after=Copy(client.State);after.outcome="pending";
+                if(sides.Count==1){after.receiptCooldown=900000;after.left=after.receiptCooldown;}
                 return after;
             };
             client.RecoveryResult=journal=>{
@@ -502,6 +513,9 @@ namespace Tappo {
             Worker worker=null;
             worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>Task.FromResult(0),ms=>{
                 var status=store.Read<Status>("status.json");
+                if(now==5000)Check(status.chestTimes.left==advanced.left&&status.chestTimes.right==initial.right&&
+                    store.Read<Journal>("pending.json").receiptCooldown==advanced.left&&status.claimsThisRun==0,
+                    "single receipt did not publish its cooldown while verification was pending");
                 if(now==6000||now==7000)Check(status.chestTimes.left==advanced.left&&status.chestTimes.updatedAt==6000&&
                     store.Exists("pending.json")&&status.claimsThisRun==0&&client.Claims==1,"early clock retired or replayed the pending claim");
                 if(now==8000)Check(!store.Exists("pending.json")&&status.claimsThisRun==1&&client.Claims==1,"final confirmation did not retire just the first claim");
