@@ -26,7 +26,7 @@ namespace Tappo {
         public bool Busy {get;private set;} public bool AllowExit;
         internal bool TrayExitEnabled {get {return trayExit!=null&&trayExit.Enabled;}}
         string notice,savedMode=Preference.DefaultMode; bool selecting,choosingClose,noticeIsSuccess;
-        string busyAction,unconfirmedCommand,unconfirmedAction,unconfirmedSession; bool startupElevation;
+        string busyAction,busyCommandId,unconfirmedCommand,unconfirmedAction,unconfirmedSession; bool startupElevation;
         Status lastDisplayedStatus; long noticeUntil;
         bool noticeActionFailure; string noticeStatusAt;
         internal Func<RuntimeIdentity,string> InspectIdentity=RuntimeIdentity.Inspect;
@@ -465,9 +465,9 @@ namespace Tappo {
             if(Busy) return;
             if(DispatchOverride!=null) {DispatchOverride(action);return;}
             if(action=="start"&&!await ChoosePath(false)) return;
-            busyAction=action;startupElevation=false;
-            Busy=true;SetNotice(null);Refresh();var requested=DateTimeOffset.UtcNow;
             string commandId=Guid.NewGuid().ToString();
+            busyAction=action;busyCommandId=commandId;startupElevation=false;
+            Busy=true;SetNotice(null);Refresh();var requested=DateTimeOffset.UtcNow;
             var commandStarted=RuntimeStore.Now;string commandResult="completed";
             string targetSession=null;
             var diagnosticCommand=new Command {id=commandId,action=action};
@@ -495,6 +495,7 @@ namespace Tappo {
                     diagnostics.Command("command-sent",diagnosticCommand);
                 }
                 var until=RuntimeStore.Now+(action=="start"?75000:ControlTimeoutMs);
+                string displayedResumeStage=null;
                 while(RuntimeStore.Now<until) {
                     await Task.Delay(300);var status=ReadStatus();
                     var launcher=store.Read<LauncherStatus>("launcher-status.json");DateTimeOffset failed;
@@ -502,6 +503,10 @@ namespace Tappo {
                     DateTimeOffset at;
                     if(status==null||!DateTimeOffset.TryParse(status.at,out at)||at<requested) continue;
                     if(targetSession!=null&&(status.identity==null||status.identity.session!=targetSession||status.commandId!=commandId))continue;
+                    if(action=="resume"&&status.commandId==commandId&&status.retrying&&status.message!=displayedResumeStage) {
+                        displayedResumeStage=status.message;
+                        Refresh();
+                    }
                     if(action=="reset"&&status.resetCommandId==commandId) {
                         if(status.resetError!=null) throw new InvalidOperationException(status.resetError);
                         SetNotice("已继续运行，上次操作不会重发。",true);return;
@@ -526,7 +531,7 @@ namespace Tappo {
                 }
                 SetNotice(error.Message,operationFailure:true);throw;
             }
-            finally {diagnostics.Record("command-wait-ended",action,commandId,commandResult,elapsed:Math.Max(0,RuntimeStore.Now-commandStarted));Busy=false;Refresh();}
+            finally {diagnostics.Record("command-wait-ended",action,commandId,commandResult,elapsed:Math.Max(0,RuntimeStore.Now-commandStarted));Busy=false;busyCommandId=null;Refresh();}
         }
         async Task<bool> UserAction(string action,bool automatic=false) {
             if(!automatic)autoTrayCancelled=true;
@@ -606,7 +611,15 @@ namespace Tappo {
                 }
                 if(alive&&s.connected==false&&detail==message) detail="连接后自动继续。";
                 if(unconfirmedCommand!=null&&!Busy) {label="结果未确认";color="#FFF0D1";message="操作结果尚未确认";detail=TimeoutMessage(unconfirmedAction,startupElevation);}
-                if(Busy) {label="处理中";message="正在处理，请稍候";detail=busyAction=="start"&&startupElevation?"如出现管理员确认窗口，请处理后等待后台确认。":"正在等待后台确认操作结果。";}
+                if(Busy) {
+                    label="处理中";message="正在处理，请稍候";
+                    detail=busyAction=="start"&&startupElevation?"如出现管理员确认窗口，请处理后等待后台确认。":"正在等待后台确认操作结果。";
+                    if(busyAction=="resume") {
+                        message="正在恢复运行…";
+                        detail=s!=null&&s.commandId==busyCommandId&&s.retrying&&!string.IsNullOrWhiteSpace(s.message)
+                            ?s.message:"正在等待后台接收恢复指令。";
+                    }
+                }
                 Text("StatusLabel",label);E<Border>("StatusPill").Background=(Brush)new BrushConverter().ConvertFromString(color);
                 var statusNeedsAttention=pending||stale||s!=null&&s.fault!=null||
                     alive&&(s.paused||s.manuallyPaused||s.recovering||s.readRetryAt.HasValue||Connection.Hint(s,ReadClock())!=null);

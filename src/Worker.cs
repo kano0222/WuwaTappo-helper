@@ -230,12 +230,13 @@ namespace Tappo {
                         }
                         try {
                             if(resumeRequested) {
+                                Status.retrying=true;Publish("正在准备桌宠连接…");
                                 try {await diagnostics.Call("prepare-resume",prepareResume).ConfigureAwait(false);}
                                 catch(StartupConfigurationException) {throw;}
                                 catch(Exception error) {ConnectionFailed(error);throw new ReadQueryException("准备桌宠连接",error);}
                             }
                             if(retryCommand!=null) {
-                                Status.retrying=true;Publish("正在重试连接与状态查询…");
+                                Status.retrying=true;Publish(resumeRequested?"正在同步桌宠与账号状态…":"正在重试连接与状态查询…");
                                 Status.readRetryAt=now();serverCache=null;
                             }
                             if(client==null||!client.Connected) {
@@ -317,7 +318,7 @@ namespace Tappo {
                                 }
                             } else Publish(Status.fault??"已暂停");
                         } catch(Exception error) {
-                            if(error is StartupConfigurationException)throw;
+                            if(error is StartupConfigurationException) {Status.fault=error.Message;throw;}
                             if(error is ReadQueryException) {
                                 var kind=Connection.Classify(error);
                                 if(client==null||!client.Connected||kind!="connection-failed") ConnectionFailed(error);
@@ -337,7 +338,11 @@ namespace Tappo {
                             }
                         }
                         finally {
-                            if(retryCommand!=null) {Status.retrying=false;Status.retryCommandId=retryCommand;Publish(Status.message);}
+                            if(resumeRequested||retryCommand!=null) {
+                                Status.retrying=false;
+                                if(retryCommand!=null)Status.retryCommandId=retryCommand;
+                                Publish(Status.message);
+                            }
                         }
                         await delay(loopDelay).ConfigureAwait(false);
                     }

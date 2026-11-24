@@ -35,6 +35,9 @@ namespace Tappo {
                         return Task.FromResult<IAppClient>(fresh);
                     },()=> {
                         prepared++;preparedAt=now;
+                        var preparing=store.Read<Status>("status.json");
+                        if(preparing==null||preparing.commandId!="resume"||!preparing.retrying||preparing.message!="正在准备桌宠连接…")
+                            throw new Exception("manual resume preparation was not published before awaiting the pet");
                         if(scenario=="prepare-fails")throw new InvalidOperationException("桌宠启动失败。");
                         if(scenario=="startup-write-fails")throw new StartupConfigurationException(new IOException("test write failure"));
                         if(!petExists) {launched++;petExists=true;}

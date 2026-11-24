@@ -46,6 +46,8 @@ namespace Tappo {
                         Pump(async()=>{
                             var operation=panel.Act(action);
                             Check(!Text(panel,"DetailMessage").Contains("管理员"),"non-start busy prompt mentions administrator");
+                            if(action=="resume")Check(Text(panel,"MainMessage")=="正在恢复运行…"&&
+                                Text(panel,"DetailMessage").Contains("接收恢复指令"),"resume is missing immediate acknowledgement");
                             try {await operation;throw new Exception("missing acknowledgement succeeded");}
                             catch(TimeoutException error) {
                                 Check(error.Message==Panel.TimeoutMessage(action,false)&&!error.Message.Contains("管理员")&&error.Message.Contains("导出日志"),"action-specific timeout lost uncertainty or suggests elevation");
@@ -53,6 +55,20 @@ namespace Tappo {
                         });
                         Check(Text(panel,"StatusLabel")=="结果未确认"&&!Text(panel,"DetailMessage").Contains("已成功"),"timeout looks successful");
                     }
+                    panel.ControlTimeoutMs=3000;
+                    Pump(async()=>{
+                        status.paused=true;status.manuallyPaused=true;
+                        var operation=panel.Act("resume");
+                        status.commandId=store.Read<Command>("control.json").id;
+                        status.message="正在准备桌宠连接…";status.retrying=true;
+                        status.paused=false;status.manuallyPaused=false;status.at=DateTimeOffset.UtcNow.ToString("o");
+                        await Task.Delay(400);
+                        Check(!operation.IsCompleted&&Text(panel,"DetailMessage")==status.message,
+                            "resume acknowledged completion before preparation finished or hid its progress");
+                        status.retrying=false;
+                        await operation;
+                    });
+                    panel.ControlTimeoutMs=1;
                     Pump(async()=>{try {await panel.Act("pause");}catch(TimeoutException) { }});
                     var output=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"console-previews");Directory.CreateDirectory(output);
                     panel.Render(Path.Combine(output,"messages-pause-unconfirmed-minimum.png"),820,660);
