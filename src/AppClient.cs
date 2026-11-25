@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Net.WebSockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -13,7 +14,7 @@ namespace Tappo {
         bool Connected { get; }
         Task<string> CheckVersion();
         Task<Snapshot> Snapshot(); Task<ServerState> Server(); Task<Snapshot> Boost(int delta,Snapshot before);
-        Task<Snapshot> Claim(string side,Snapshot before); Task Quit();
+        Task<Snapshot> Claim(Journal journal); Task Quit();
         Task<Snapshot> Recover(Journal journal);
         bool SupportsClaimPair {get;}
         Task<PairResult> ClaimPair(Journal journal,string command);
@@ -32,8 +33,13 @@ namespace Tappo {
         internal string DiagnosticConnectionAt; internal DiagnosticPeer[] DiagnosticPeers;
         readonly ClientWebSocket socket;
         readonly CancellationTokenSource lifetime=new CancellationTokenSource();
-        readonly Dictionary<int,TaskCompletionSource<object>> pending=new Dictionary<int,TaskCompletionSource<object>>();
+        readonly Dictionary<int,TaskCompletionSource<Dictionary<string,object>>> pending=new Dictionary<int,TaskCompletionSource<Dictionary<string,object>>>();
         readonly SemaphoreSlim sends=new SemaphoreSlim(1,1);
+        readonly string cooldownOwner=Guid.NewGuid().ToString("N");
+        Uri debugAddress;
+        volatile TaskCompletionSource<string> cooldownScript;
+        const string CooldownScriptPath="/assets/index-BGIVWra7.js";
+        const string CooldownScriptHash="CD6CB8311DBA684923C3DDD3D0DD5365F97CE1293670C6F94E4F370A0E3351DE";
         int sequence; bool disposed; volatile bool disconnected;
         public bool Connected { get {return !disposed&&!disconnected&&socket.State==WebSocketState.Open;} }
         readonly Capabilities capabilities;
@@ -91,7 +97,7 @@ namespace Tappo {
                         try { await ws.ConnectAsync(address,timeout.Token).ConfigureAwait(false); }
                         catch { ws.Dispose(); throw new InvalidOperationException("连接超时或失败"); }
                     }
-                    var client=new AppClient(ws) {DiagnosticPort=port};
+                    var client=new AppClient(ws) {DiagnosticPort=port,debugAddress=address};
                     client.StartReceive();
                     try {
                         var label=await client.Evaluate("window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label").ConfigureAwait(false) as string;
@@ -116,18 +122,16 @@ namespace Tappo {
                             if(message.Length>8000000) throw new IOException("调试响应过大");
                         } while(!frame.EndOfMessage);
                         var response=Json.Decode<Dictionary<string,object>>(Encoding.UTF8.GetString(message.ToArray()));
-                        if(!response.ContainsKey("id")) continue;
-                        var id=Convert.ToInt32(response["id"]); TaskCompletionSource<object> waiter;
+                        if(!response.ContainsKey("id")) {
+                            var script=cooldownScript;
+                            if(script!=null)ObserveCooldownScript(script,response);
+                            continue;
+                        }
+                        var id=Convert.ToInt32(response["id"]); TaskCompletionSource<Dictionary<string,object>> waiter;
                         lock(pending) { if(!pending.TryGetValue(id,out waiter)) continue; pending.Remove(id); }
                         try {
                             if(response.ContainsKey("error")) throw new InvalidOperationException("应用调用失败，结果可能不确定");
-                            var result=(Dictionary<string,object>)response["result"];
-                            if(result.ContainsKey("exceptionDetails")) {
-                                var raw=Json.Encode(result["exceptionDetails"]);
-                                throw new InvalidOperationException(KnownErrors.FirstOrDefault(raw.Contains)??"应用调用失败，结果可能不确定");
-                            }
-                            var value=(Dictionary<string,object>)result["result"];
-                            waiter.TrySetResult(value.ContainsKey("value")?value["value"]:null);
+                            waiter.TrySetResult((Dictionary<string,object>)response["result"]);
                         } catch(Exception error) { waiter.TrySetException(error); }
                     }
                 }
@@ -144,11 +148,21 @@ namespace Tappo {
             }
         }
         public async Task<object> Evaluate(string expression,int timeout=8000) {
+            var result=await SendCommand("Runtime.evaluate",new {expression=expression,awaitPromise=true,returnByValue=true,timeout=timeout},timeout).ConfigureAwait(false);
+            if(result.ContainsKey("exceptionDetails")) {
+                var raw=Json.Encode(result["exceptionDetails"]);
+                throw new InvalidOperationException(KnownErrors.FirstOrDefault(raw.Contains)??"应用调用失败，结果可能不确定");
+            }
+            var value=(Dictionary<string,object>)result["result"];
+            return value.ContainsKey("value")?value["value"]:null;
+        }
+        async Task<Dictionary<string,object>> SendCommand(string method,object parameters,int timeout) {
             if(!Connected) throw new IOException("桌宠连接已断开，等待重新连接；不会自动重发操作。");
-            var id=Interlocked.Increment(ref sequence); var waiter=new TaskCompletionSource<object>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var id=Interlocked.Increment(ref sequence);
+            var waiter=new TaskCompletionSource<Dictionary<string,object>>(TaskCreationOptions.RunContinuationsAsynchronously);
             lock(pending) pending.Add(id,waiter);
             try {
-                var message=Json.Encode(new Dictionary<string,object>{{"id",id},{"method","Runtime.evaluate"},{"params",new {expression=expression,awaitPromise=true,returnByValue=true,timeout=timeout}}});
+                var message=Json.Encode(new Dictionary<string,object>{{"id",id},{"method",method},{"params",parameters}});
                 var bytes=Encoding.UTF8.GetBytes(message);
                 using(var deadline=new CancellationTokenSource(timeout+2000)) {
                     await sends.WaitAsync(deadline.Token).ConfigureAwait(false);
@@ -160,14 +174,86 @@ namespace Tappo {
                 }
             } finally { lock(pending) pending.Remove(id); }
         }
+        static void ObserveCooldownScript(TaskCompletionSource<string> script,Dictionary<string,object> message) {
+            object method,parameters,url,id;
+            if(!message.TryGetValue("method",out method)||!Equals(method,"Debugger.scriptParsed")||
+               !message.TryGetValue("params",out parameters))return;
+            var parsed=parameters as Dictionary<string,object>;
+            Uri address;
+            if(parsed!=null&&parsed.TryGetValue("url",out url)&&Uri.TryCreate(url as string,UriKind.Absolute,out address)&&
+               (address.Scheme=="http"||address.Scheme=="https")&&address.Host=="tauri.localhost"&&
+               address.AbsolutePath==CooldownScriptPath&&parsed.TryGetValue("scriptId",out id)&&id is string)
+                script.TrySetResult((string)id);
+        }
+        async void InstallNativeCooldown(string probeId) {
+            var id=Json.Encode(probeId);
+            bool ready=false;
+            try {
+                // Detaching or aborting this optional debugger must leave the claim socket alone.
+                using(var debugger=new AppClient(new ClientWebSocket())) {
+                    debugger.socket.Options.Proxy=null;
+                    using(var timeout=CancellationTokenSource.CreateLinkedTokenSource(lifetime.Token)) {
+                        timeout.CancelAfter(1500);
+                        await debugger.socket.ConnectAsync(debugAddress,timeout.Token).ConfigureAwait(false);
+                    }
+                    debugger.StartReceive();
+                    var samePage=await debugger.Evaluate("location.hostname==='tauri.localhost'&&window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label==='main'&&globalThis.__TAPPO_HELPER_NATIVE_COOLDOWN__?.id==="+id,1500).ConfigureAwait(false);
+                    if(Equals(samePage,true))
+                        ready=await debugger.CaptureNativeCooldown(id,lifetime.Token).ConfigureAwait(false);
+                }
+            } catch(Exception) {
+                // The shared-slot update still works without this optional UI capability.
+            }
+            try {
+                if(Connected)await Evaluate("(()=>{const probe=globalThis.__TAPPO_HELPER_NATIVE_COOLDOWN__;if(probe?.id==="+id+")probe.complete("+(ready?"true":"false")+")})()",1500).ConfigureAwait(false);
+            } catch(Exception) {
+                // The page may have navigated or the worker may have stopped.
+            }
+        }
+        async Task<bool> CaptureNativeCooldown(string probeId,CancellationToken cancelled) {
+            var script=new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+            cooldownScript=script;
+            bool ready=false;
+            try {
+                await SendCommand("Debugger.enable",new {},1500).ConfigureAwait(false);
+                if(await Task.WhenAny(script.Task,Task.Delay(250,cancelled)).ConfigureAwait(false)==script.Task)
+                    ready=await ReadNativeCooldownScope(await script.Task.ConfigureAwait(false),probeId,cancelled).ConfigureAwait(false);
+            } catch(Exception) {
+                // Still disable the debugger before completing a failed capture.
+            }
+            cooldownScript=null;
+            await SendCommand("Debugger.disable",new {},1500).ConfigureAwait(false);
+            return ready;
+        }
+        async Task<bool> ReadNativeCooldownScope(string scriptId,string probeId,CancellationToken cancelled) {
+            var response=await SendCommand("Debugger.getScriptSource",new {scriptId=scriptId},1500).ConfigureAwait(false);
+            var source=response["scriptSource"] as string;
+            if(source==null)return false;
+            using(var sha=SHA256.Create())
+                if(BitConverter.ToString(sha.ComputeHash(Encoding.UTF8.GetBytes(source))).Replace("-","")!=CooldownScriptHash)return false;
+            const string entry="function oo(){";
+            var offset=source.IndexOf(entry,StringComparison.Ordinal);
+            if(offset<0)return false;
+            offset+=entry.Length;
+            var lineNumber=source.Take(offset).Count(c=>c=='\n');
+            var columnNumber=offset-source.LastIndexOf('\n',offset-1)-1;
+            await SendCommand("Debugger.setBreakpoint",new {location=new {scriptId=scriptId,lineNumber=lineNumber,columnNumber=columnNumber},
+                condition=Resources.Text("bridge.cooldown.js").Replace("__PROBE_ID__",probeId)},1500).ConfigureAwait(false);
+            await Task.Delay(1250,cancelled).ConfigureAwait(false);
+            return true;
+        }
         string StateSource() {
             if(Profile==null) throw new InvalidOperationException("尚未校验应用能力");
-            var source=Resources.Text("bridge.state.js").Replace("__COMMON__",Json.Encode(Profile.commonPath));
+            var source=Resources.Text("bridge.state.js").Replace("__COMMON__",Json.Encode(Profile.commonPath))
+                .Replace("__REPORT_OBSERVER__",Resources.Text("bridge.report.js"));
             foreach(var pair in Profile.exports) source=source.Replace("__"+pair.Key.ToUpperInvariant()+"__",Json.Encode(pair.Value));
             return source;
         }
         string Script(string name,Snapshot before) {
-            var text=Resources.Text("bridge."+name+".js").Replace("__STATE__",StateSource());
+            var text=Resources.Text("bridge."+name+".js");
+            if(name=="claim"||name=="pair")
+                text=text.Replace("__CLAIM_TRANSPORT__",Resources.Text("bridge.claim-transport.js"));
+            text=text.Replace("__STATE__",StateSource());
             text=text.Replace("__CLICKMODULE__",Json.Encode(Profile.clickPath));
             foreach(var pair in Profile.exports) text=text.Replace("__"+pair.Key.ToUpperInvariant()+"__",Json.Encode(pair.Value));
             if(before!=null) foreach(var pair in Json.Decode<Dictionary<string,object>>(Json.Encode(before)))
@@ -176,14 +262,17 @@ namespace Tappo {
         }
         public async Task<Snapshot> Snapshot() {
             await capabilities.Ensure().ConfigureAwait(false);
-            var state=Json.Convert<Snapshot>(await Evaluate("(async()=>{"+StateSource()+"return snapshot();})()").ConfigureAwait(false));
+            var read=Profile.version=="1.0.5"&&debugAddress!=null?
+                "const state=snapshot();try{state.nativeCooldownProbe=beginNativeCooldown("+Json.Encode(cooldownOwner)+")}catch{}return state;":"return snapshot();";
+            var state=Json.Convert<Snapshot>(await Evaluate("(async()=>{"+StateSource()+read+"})()").ConfigureAwait(false));
+            if(!string.IsNullOrEmpty(state.nativeCooldownProbe))InstallNativeCooldown(state.nativeCooldownProbe);
             state.appVersion=Profile.version;return state;
         }
         public async Task<string> CheckVersion() {
             await capabilities.Ensure(true).ConfigureAwait(false);return Profile.version;
         }
         public async Task<ServerState> Server() {
-            var reply=Json.Convert<QueryReply>(await Evaluate("(async()=>{"+StateSource()+"try{const d=await readServer();return {state:{accountKey,total:Number(d.total_click_count??NaN),consumed:Number(d.total_click_consume??NaN),left:Number(d.left_treasure_chest??NaN),right:Number(d.right_treasure_chest??NaN)}}}catch(e){return failure(e,'query')}})()",12000).ConfigureAwait(false));
+            var reply=Json.Convert<QueryReply>(await Evaluate("(async()=>{"+StateSource()+"try{return {state:await readServer()}}catch(e){return failure(e,'query')}})()",12000).ConfigureAwait(false));
             if(reply==null||reply.state==null)throw new AppQueryException(reply??new QueryReply {errorType="InvalidReply"});
             return reply.state;
         }
@@ -194,9 +283,13 @@ namespace Tappo {
             if(delta<1||delta>2000) throw new InvalidOperationException("补充次数超出范围");
             return Json.Convert<Snapshot>(await Evaluate(Script("boost",before).Replace("__DELTA__",delta.ToString()).Replace("__RECOVER__","false")).ConfigureAwait(false));
         }
-        public async Task<Snapshot> Claim(string side,Snapshot before) {
-            if(side!="left"&&side!="right") throw new InvalidOperationException("槽位不匹配");
-            return Json.Convert<Snapshot>(await Evaluate(Script("claim",before).Replace("__SIDE__",Json.Encode(side)).Replace("__RECOVER__","false"),12000).ConfigureAwait(false));
+        string ClaimScript(Journal journal,bool recover) {
+            return Script("claim",journal.before).Replace("__SIDE__",Json.Encode(journal.action.side))
+                .Replace("__CLAIM_SERVER__",Json.Encode(journal.server)).Replace("__RECOVER__",recover?"true":"false");
+        }
+        public async Task<Snapshot> Claim(Journal journal) {
+            if(journal.action.side!="left"&&journal.action.side!="right") throw new InvalidOperationException("槽位不匹配");
+            return Json.Convert<Snapshot>(await Evaluate(ClaimScript(journal,false),12000).ConfigureAwait(false));
         }
         public bool SupportsClaimPair {get{
             return Profile!=null&&Profile.exports.ContainsKey("chestHost")&&!string.IsNullOrEmpty(Profile.exports["chestHost"]);
@@ -204,11 +297,7 @@ namespace Tappo {
         public async Task<PairResult> ClaimPair(Journal journal,string command) {
             if(journal.action.kind!="claim-pair"||Array.IndexOf(new[]{"left","right","observe"},command)<0)
                 throw new InvalidOperationException("双箱操作不匹配");
-            var claim=Script("claim",null);
-            var start=claim.IndexOf("  const requestChest=",StringComparison.Ordinal);
-            var end=claim.IndexOf("  const id=",StringComparison.Ordinal);
-            if(start<0||end<=start)throw new InvalidOperationException("领取传输资源不匹配");
-            var script=Script("pair",null).Replace("__CLAIM_TRANSPORT__",claim.Substring(start,end-start))
+            var script=Script("pair",null)
                 .Replace("__PAIR_COMMAND__",Json.Encode(command)).Replace("__PAIR_JOURNAL__",Json.Encode(journal));
             return Json.Convert<PairResult>(await Evaluate(script,command=="observe"?22000:30000).ConfigureAwait(false));
         }
@@ -217,7 +306,7 @@ namespace Tappo {
                (journal.action.kind=="claim"&&(journal.action.side!="left"&&journal.action.side!="right")))
                 return new Snapshot {outcome="unknown",failureStage="legacy-journal"};
             if(journal.action.kind=="boost")return Json.Convert<Snapshot>(await Evaluate(Script("boost",journal.before).Replace("__DELTA__",journal.action.delta.ToString()).Replace("__RECOVER__","true")).ConfigureAwait(false));
-            return Json.Convert<Snapshot>(await Evaluate(Script("claim",journal.before).Replace("__SIDE__",Json.Encode(journal.action.side)).Replace("__RECOVER__","true"),12000).ConfigureAwait(false));
+            return Json.Convert<Snapshot>(await Evaluate(ClaimScript(journal,true),12000).ConfigureAwait(false));
         }
         public async Task Quit() { await Evaluate("(async()=>{await(await import("+Json.Encode(Profile.quitPath)+")).quitApp();return true;})()",15000).ConfigureAwait(false); }
         public void Dispose() {

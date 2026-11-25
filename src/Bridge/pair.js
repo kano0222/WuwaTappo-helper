@@ -6,15 +6,13 @@
   const spendClear=()=>s.serverClickSpend===undefined||s.serverClickSpend===0;
   const timing={};
   const answer=(outcome,stage,extra={})=>({operationId:journal.id,accountKey,outcome,stage,timing,...extra});
-  const readAccount=async()=>{
+  const readAccount=async(baseline)=>{
     timing.queryStartedAt=Date.now();
-    let d;
-    try{d=await readServer(timing);}
+    let server;
+    try{server=await readServer(timing,baseline);}
     finally{timing.queryFinishedAt=Date.now();}
-    const values=['total_click_count','total_click_consume','left_treasure_chest','right_treasure_chest']
-      .map(key=>d?.[key]==null?NaN:Number(d[key]));
-    if(!context()||!values.every(n=>Number.isSafeInteger(n)&&n>=0))throw Error('账号或查询异常');
-    const [total,consumed,left,right]=values;return {accountKey,total,consumed,left,right};
+    if(!context())throw Error('账号或查询异常');
+    return server;
   };
   const readBag=async()=>{
     const items=m[__DECODE__](await bounded(m[__BAGLIST__](),8000));
@@ -38,6 +36,8 @@
     if(!spendClear()||after.consumed!==expectedConsumed||after.local!==before.local||
        after.serverTotal!==before.serverTotal||after.cumulative!==before.cumulative||
        after.available!==before.available-debit)throw Error('本地计数异常');
+    for(const side of slots)
+      if(fields[side+'_treasure_chest']===after[side])syncNativeCooldown(side,before[side],after[side]);
     return after;
   };
   const validReceipt=slot=>slot?.outcome==='success'&&slot.cost===1000&&
@@ -63,7 +63,7 @@
   };
   let stage='account', sent=false, request, observed;
   try{
-    if(!context()||!spendClear())return answer('unknown',stage);
+    if(!context()||command==='observe'&&!spendClear())return answer('unknown',stage);
     if(command==='observe'){
       stage='local-sync';
       syncReceiptSlots(journal.right);
@@ -81,7 +81,7 @@
       const expectedDebit=1000*selected.length, debit=server.consumed-base.consumed;
       const local=snapshot(), localDebit=local.consumed-base.consumed;
       if(![0,1000,2000].includes(debit)||debit>expectedDebit||![0,1000,2000].includes(localDebit)||
-         localDebit>expectedDebit||server.total<Math.max(...selected.map(slot=>slot.clickNum))||
+         localDebit>expectedDebit||server.total<Math.max(...selected.map(slot=>slot.queryTotal??slot.clickNum))||
          server.left<base.left||server.right<base.right||(selected.length===1&&server.right!==base.right))
         return answer('unknown','conflict',{server});
       const complete=debit===expectedDebit&&server.left>base.left&&(selected.length===1||server.right>base.right);
@@ -96,6 +96,7 @@
         }
       if(complete&&localDebit<expectedDebit)fields.total_click_consume=server.consumed;
       timing.awaitingDebit=debit!==expectedDebit;
+      timing.awaitingTotal=server.total<Math.max(...selected.map(slot=>slot.clickNum));
       timing.leftEligible=server.left>base.left;
       timing.rightEligible=selected.length===2&&server.right>base.right;
       stage='local-sync';
@@ -112,7 +113,7 @@
         try{await bounded(window.__TAURI_INTERNALS__.invoke('plugin:event|emit',{event:'cat-panel-action',payload:{type:'ready'}}),3000);}
         catch{}
       }
-      if(!complete)return answer('pending','verify',{server,state:synced});
+      if(!complete||timing.awaitingTotal)return answer('pending','verify',{server,state:synced});
       stage='reward-verify';
       timing.bagStartedAt=Date.now();
       let bag;
@@ -152,10 +153,12 @@
     let received;
     try{
       stage='preflight';
+      if(!owned())return answer('skipped',stage);
       const bagBefore=first?await readBag():null;
-      const server=await readAccount();
+      const server=observed=await readAccount(first?base:null);
       const local=snapshot(), expected=base.consumed+(first?0:1000);
-      if(!claimCountCurrent(server.total,local))return answer('skipped','click-baseline',{server});
+      const clickNum=claimClickNum(server.total,local);
+      if(clickNum===null||!first&&clickNum<journal.left.clickNum)return answer('skipped','click-baseline',{server});
       if(!owned()||!due('left')||!due('right')||server.total<base.total||
          server.right!==base.right||server.left<base.left||
          (first?server.left!==base.left||server.consumed!==base.consumed:
@@ -165,17 +168,22 @@
          !Number.isSafeInteger(local.available)||local.available<1000)
         return answer('skipped',stage,{server});
       stage='request';
-      request={id:slot.id,outcome:'unknown',clickNum:server.total};
-      let data,countChanged=false;
-      try{data=m[__DECODE__](await requestChest({place:side,click_num:request.clickNum},()=>{
+      request={id:slot.id,outcome:'unknown',clickNum,queryTotal:server.total};
+      let data,invalidated=false;
+      const payload={place:side,click_num:clickNum};
+      try{data=m[__DECODE__](await requestChest(payload,()=>{
         const current=snapshot();
-        if(!owned()||current.consumed!==expected||current.left!==local.left||current.right!==local.right)
-          throw Error('请求发送前条件已变化');
-        if(!claimCountCurrent(request.clickNum,current)){countChanged=true;throw Error('等待服务器同步点击数');}
+        const selected=claimClickNum(server.total,current);
+        if(!owned()||current.consumed!==expected||
+           current.left!==local.left||current.right!==local.right||!Number.isSafeInteger(current.available)||
+           current.available<1000||selected===null||selected<clickNum){
+          invalidated=true;throw Error('请求发送前条件已变化');
+        }
+        request.clickNum=payload.click_num=selected;
         live.sent[side]=sent=true;request.sentAt=Date.now();
       },slot.id));}
       catch(e){
-        if(countChanged)return answer('skipped','click-baseline',{server});
+        if(invalidated)return answer('skipped','request-context',{server});
         const info=failure(e,stage);
         if(sent&&info.httpStatus===0&&[70004,70005,70006].includes(info.code)&&owned())
           return answer('rejected',stage,{slot:{...request,outcome:'rejected',code:info.code,receivedAt:Date.now()},server});
@@ -205,6 +213,7 @@
   }catch(error){
     const info=failure(error,stage);
     timing.errorType=info.errorType;
-    return answer('unknown',stage,{server:observed,slot:sent?request:null,retryAfterMs:info.retryAfterMs,httpStatus:info.httpStatus});
+    return answer(command==='observe'||sent?'unknown':'skipped',stage,{server:observed,slot:sent?request:null,
+      retryAfterMs:info.retryAfterMs,requiredRetryAfterMs:info.requiredRetryAfterMs,httpStatus:info.httpStatus});
   }
 })()

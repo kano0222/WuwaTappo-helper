@@ -5,8 +5,9 @@ using System.Text;
 
 namespace Tappo {
     internal sealed class ActivityRecord {
-        public DateTimeOffset at;
-        public string message;
+        public DateTimeOffset at,loggedAt;
+        public string message,operationId;
+        public bool confirming,resolvesPending;
         public bool error;
         public string Line { get {return at.ToOffset(TimeSpan.FromHours(8)).ToString("MM-dd HH:mm:ss")+"    "+message.Replace('\r',' ').Replace('\n',' ');} }
     }
@@ -26,12 +27,20 @@ namespace Tappo {
                 }
                 if(info.Length==length&&info.LastWriteTimeUtc==written&&ReadError==null)return;
                 var recent=new List<ActivityRecord>();
+                var seenClaims=new HashSet<string>();
+                bool pendingResolved=false;
                 foreach(var row in Rows(path)) {
                     ActivityRecord record;
                     try {record=Parse(row);}catch {continue;}
                     if(record==null)continue;
-                    recent.Add(record);
-                    if(recent.Count>=3)break;
+                    // Confirmation is appended later but the activity keeps the original claim time.
+                    if(recent.Count==3&&record.loggedAt<=recent[2].at)break;
+                    if(!string.IsNullOrEmpty(record.operationId)&&!seenClaims.Add(record.operationId))continue;
+                    if(record.resolvesPending)pendingResolved=true;
+                    if(record.confirming&&pendingResolved)record.message=record.message.Replace("确认中","结果未确认");
+                    int index=recent.FindIndex(item=>item.at<record.at);
+                    recent.Insert(index<0?recent.Count:index,record);
+                    if(recent.Count>3)recent.RemoveAt(3);
                 }
                 Recent=recent;ReadError=null;
                 length=info.Length;written=info.LastWriteTimeUtc;
@@ -44,12 +53,17 @@ namespace Tappo {
         internal static ActivityRecord Parse(string row) {
             var ev=Json.Decode<Dictionary<string,object>>(row);var name=Field(ev,"event");string text=null;bool error=false;
             var reason=Field(ev,"message");var stage=Field(ev,"stage");var kind=Field(ev,"errorType");
+            bool confirming=name=="claim-received"||name=="claim-pair-slot"&&Field(ev,"outcome")=="success";
+            bool claim=confirming||name=="claim-confirmed";
+            var operationId=claim?Field(ev,"operationId"):null;
+            var side=claim?Field(ev,"side"):null;
             if(name=="started")text="后台已连接";
             else if(name=="program-selected")text="已更改桌宠程序位置";
             else if(name=="mode-selected")text="模式已切换为"+(Field(ev,"mode")=="brute"?"暴力模式":Field(ev,"mode")=="clicker"?"连点器模式":"人类模式");
             else if(name=="reserve-target-selected")text="储备目标已改为 "+Convert.ToInt32(ev["target"]).ToString("N0")+" 次";
             else if(name=="clicker-rate-selected")text="补充速度已改为 "+Convert.ToInt32(ev["rate"]).ToString("N0")+" 次/秒";
-            else if(name=="claim-confirmed")text="已领取"+(Field(ev,"side")=="left"?"宝箱一":"宝箱二")+" · 消耗 1,000 次";
+            else if(claim&&(side=="left"||side=="right")&&(!confirming||!string.IsNullOrEmpty(operationId)))
+                text="已领取"+(side=="left"?"宝箱一":"宝箱二")+(confirming?" · 确认中":" · 消耗 1,000 次");
             else if(name=="boost-confirmed")text="已补充 "+ev["delta"]+" 次";
             else if(name=="boost-recovered") {
                 var after=ev.ContainsKey("after")?Json.Convert<Snapshot>(ev["after"]):null;
@@ -68,14 +82,19 @@ namespace Tappo {
                 else if(!string.IsNullOrWhiteSpace(operation))text+="（"+operation+"）";
             }
             else if(name=="operation-state"&&!string.IsNullOrEmpty(kind)) {
-                error=true;text=stage=="local-save"?"计数保存失败，正在重试":stage=="request"?"领取回执未确认，正在核对":stage=="verify"?"领取结果查询失败，正在重试":"领取结果仍在核对中";
+                error=true;text=stage=="local-save"?"计数保存失败，正在重试":stage=="request"?"领取结果尚未确认，正在核对":stage=="verify"?"领取结果查询失败，正在重试":"领取结果仍在核对中";
             }
             else if(name=="read-query-recovered")text="状态查询已恢复";
             else if(name=="connection-restored")text="桌宠连接已恢复";
             else if(name=="app-version-validated")text="已校验桌宠 "+ev["version"]+" 接口";
             else if(name=="boost-overwritten")text="本次补数被旧上报覆盖，按最新计数继续";
             if(text==null)return null;
-            return new ActivityRecord {at=DateTimeOffset.Parse(Field(ev,"at")),message=text,error=error};
+            var loggedAt=DateTimeOffset.Parse(Field(ev,"at"));var at=loggedAt;
+            long receivedAt;
+            if(claim&&long.TryParse(Field(ev,"receivedAt"),out receivedAt)&&receivedAt>0&&receivedAt<=loggedAt.ToUnixTimeMilliseconds())
+                at=DateTimeOffset.FromUnixTimeMilliseconds(receivedAt);
+            return new ActivityRecord {at=at,loggedAt=loggedAt,message=text,error=error,operationId=operationId,
+                confirming=confirming,resolvesPending=name=="pending-resolved"};
         }
         static IEnumerable<string> Rows(string path) {
             using(var stream=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete)) {

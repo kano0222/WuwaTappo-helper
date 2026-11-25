@@ -1,6 +1,8 @@
 (async()=>{// These checks describe capabilities, not release versions or generated aliases.
+__REPORT_OBSERVER__
 class ContractError extends Error {}
 class MainNotReadyError extends Error {}
+const isSharedSource=source=>source.includes('function userInfo()')&&source.includes('function isForceUpdateLocked()');
 function inspectModule(m, source = '') {
   const unique = (predicate, label) => {
     const keys = Object.keys(m).filter(k => predicate(m[k]));
@@ -78,7 +80,7 @@ function inspectCountMode(sources) {
     return 'event';
   }
   if (!/case"pet-clap":if\(\w+\(\)\)break;\w+\.incrementLocalClickCount\(\)/.test(source) ||
-      sources.filter(([, s]) => s.includes('function userInfo()') && s.includes('function isForceUpdateLocked()') &&
+      sources.filter(([, s]) => isSharedSource(s) &&
         // 1.0.5 adds a native input pause guard; keep invoking the original action
         // so a paused counter still fails the per-increment receipt check.
         ['incrementLocalClickCount(){this.localClickCount>=Number.MAX_SAFE_INTEGER||(this.localClickCount+=1)}',
@@ -106,15 +108,18 @@ function inspectClickModule(m) {
 async function discoverProfile() {
   if (location.hostname !== 'tauri.localhost' || window.__TAURI_INTERNALS__?.metadata?.currentWindow?.label !== 'main' ||
       typeof window.__TAURI_INTERNALS__?.invoke !== 'function') throw new Error('兼容性检查失败：非桌宠主窗口');
-  const sources = await waitForSources();
+  let shared;
+  const sources = await waitForSources((path,source)=>{
+    // The socket can acknowledge its first report before the rest of discovery finishes.
+    if(!shared)shared=inspectSharedModule(path,source).catch(()=>null);
+  });
   const quitPath = inspectSources(sources);
-  const candidates = sources.filter(([, s]) => s.includes('function userInfo()') && s.includes('function isForceUpdateLocked()'));
+  const candidates = sources.filter(([, s]) => isSharedSource(s));
   if (candidates.length !== 1) throw new ContractError('兼容性检查失败：共享状态模块缺失或不唯一');
   const commonPath = candidates[0][0];
-  const exports = inspectModule(await import(commonPath), candidates[0][1]);
+  const {exports,store}=await shared??await inspectSharedModule(commonPath,candidates[0][1]);
   exports.countMode=inspectCountMode(sources);
   exports.refreshPanel=sources.some(([,s])=>/case"ready":\w+\(\w+\.value\),\w+\(\);break/.test(s))?'ready':'';
-  const store=(await import(commonPath))[exports.store];
   if(typeof store[exports.countMode==='increment'?'incrementLocalClickCount':'addLocalClickCount']!=='function')
     throw new ContractError('兼容性检查失败：计数动作缺失');
   const clickSources=sources.filter(([,s])=>s.includes('"save_key_press_count"'));
@@ -128,9 +133,16 @@ async function discoverProfile() {
   return { commonPath, quitPath, clickPath, exports };
 }
 
-async function waitForSources() {
-  // CDP becomes reachable before the router's lazy main module finishes loading.
-  // Observe resources only; importing the main module here could run app startup twice.
+async function inspectSharedModule(commonPath,source) {
+  const common=await import(commonPath);
+  const exports=inspectModule(common,source);
+  const store=common[exports.store], environment=common[exports.environment];
+  observeClickReports(store,environment===true?(exports.userInfo?'cn-cn-prod':'global-global-prod'):environment);
+  return {exports,store};
+}
+
+async function waitForSources(onSharedSource) {
+  // Read the router's observed resources without importing the lazy main module.
   const cache = new Map(), deadline = Date.now() + 8000;
   for (;;) {
     const paths = [...new Set([...document.scripts].map(s => s.src).concat(performance.getEntriesByType('resource').map(e => e.name))
@@ -142,11 +154,12 @@ async function waitForSources() {
       const s = await r.text();
       if (s.length > 4000000) throw new Error('兼容性检查失败：应用资源过大');
       cache.set(p, s);
+      if(onSharedSource&&isSharedSource(s))onSharedSource(p,s);
     }));
     const sources = [...cache];
     if (sources.some(([, s]) => s.includes('case"boost-local-clicks":') || s.includes('case"pet-clap":')) &&
         sources.some(([, s]) => s.includes('"save_key_press_count"')) &&
-        sources.some(([, s]) => s.includes('function userInfo()') && s.includes('function isForceUpdateLocked()')) &&
+        sources.some(([, s]) => isSharedSource(s)) &&
         sources.some(([p]) => /\/quitApp-[\w-]+\.js$/.test(p))) return sources;
     if (Date.now() >= deadline) throw new MainNotReadyError('兼容性检查失败：主界面资源未就绪或版本不兼容，请等待桌宠启动完成后重试');
     await new Promise(r => setTimeout(r, 250));

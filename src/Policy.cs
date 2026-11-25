@@ -12,14 +12,20 @@ namespace Tappo {
             if(mode=="brute") {
                 if(!Preference.ValidBruteTarget(reserveTarget)||!Preference.ValidBruteRate(clickerRate))throw new InvalidOperationException("暴力模式参数超出范围");
             } else new Preference {mode=mode,reserveTarget=reserveTarget,clickerRate=clickerRate}.Validate();
-            var target=reserveTarget;
             if(!s.loggedIn||s.locked) return Wait("等待登录或更新完成");
             if(!new[]{s.available,s.cumulative,s.consumed}.All(v=>v.HasValue&&v>=0&&v<=9007199254740991L)) throw new InvalidOperationException("计数格式异常");
             if(!new[]{s.left,s.right}.All(v=>v.HasValue&&v>=0&&v<=9007199254740991L)) throw new InvalidOperationException("宝箱时间尚未就绪");
             if(s.claimBusy) return Wait("等待当前宝箱领取完成");
-            var claimReady=new[]{"left","right"}.FirstOrDefault(side=>s.Slot(side)<=s.time-ClaimSafetyMarginMs);
+            var claimReady=ClaimSide(s.time,s.left,s.right);
             if(claimReady!=null&&s.available>=1000) return new Plan {kind="claim",side=claimReady};
-            if(s.available<target) {
+            return ChooseBoost(s,mode,boostDue,random,reserveTarget,clickerRate);
+        }
+        internal static string ClaimSide(long time,long? left,long? right) {
+            if(left<=time-ClaimSafetyMarginMs)return "left";
+            return right<=time-ClaimSafetyMarginMs?"right":null;
+        }
+        internal static Plan ChooseBoost(Snapshot s,string mode,bool boostDue,Func<double> random,int reserveTarget,int clickerRate) {
+            if(s.available<reserveTarget) {
                 if(!boostDue) return Wait("按所选速率补充次数");
                 if(mode=="clicker"||mode=="brute") return new Plan {kind="boost",delta=clickerRate,delayMs=1000};
                 if(random()<0.15) return new Plan {kind="wait",reason="波动模式短暂间歇",delayMs=2000+(int)(random()*2000)};

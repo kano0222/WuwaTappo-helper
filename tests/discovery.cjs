@@ -3,10 +3,12 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
-const source = fs.readFileSync(path.join(__dirname, '../src/Bridge/discover.js'), 'utf8');
+const source = fs.readFileSync(path.join(__dirname, '../src/Bridge/discover.js'), 'utf8')
+  .replace('__REPORT_OBSERVER__',fs.readFileSync(path.join(__dirname,'../src/Bridge/report.js'),'utf8'));
 const boundary = source.lastIndexOf('try{return {profile:await discoverProfile()}');
 assert(boundary > 0);
-const testSource = source.slice(0, boundary) + 'return {waitForSources,inspectSources,inspectCountMode,inspectModule,inspectClickModule,discoveryFailure};})()';
+const testSource = source.slice(0, boundary).replaceAll('await import(', 'await loadModule(') +
+  'return {discoverProfile,waitForSources,inspectSources,inspectCountMode,inspectModule,inspectClickModule,discoveryFailure};})()';
 const main = 'case"boost-local-clicks":{const t=Math.max(0,Math.floor(Number(e.delta)||0));t>0&&(R.addLocalClickCount(t),Sn())}' +
   ' "cat-panel-action"';
 const common = 'function userInfo(){} function isForceUpdateLocked(){}';
@@ -15,20 +17,22 @@ const assets = { '/assets/common-A.js': common, '/assets/main-A.js': main, '/ass
 const paths = Object.keys(assets);
 let checks = 0;
 function check(value) { assert(value); checks++; }
-async function fixture(resources, overrides = {}) {
+async function fixture(resources, overrides = {}, modules = {}) {
   let now = 0, ticks = 0;
   const reads = [];
   const context = {
     URL, AbortSignal,
     Date: { now: () => now },
-    location: { href: 'http://tauri.localhost/', origin: 'http://tauri.localhost' },
+    location: new URL('http://tauri.localhost/'),
+    window: { __TAURI_INTERNALS__: { metadata: { currentWindow: { label: 'main' } }, invoke() { throw Error('unexpected native call'); } } },
+    loadModule: async p => { if(!modules[p])throw Error('unexpected module: '+p);return modules[p]; },
     document: { scripts: [] },
     performance: { getEntriesByType: () => resources(ticks).map(name => ({ name })) },
     setTimeout: (callback, ms) => { ticks++; now += ms; callback(); },
     fetch: async p => { reads.push(p); return { ok: true, text: async () => (overrides[p] ?? assets[p]) }; },
   };
   const api = await vm.runInNewContext(testSource, context);
-  return { api, reads, ticks: () => ticks };
+  return { api, reads, ticks: () => ticks, observedReport:()=>context.__TAPPO_HELPER_CLICK_REPORT__?.total };
 }
 (async () => {
   let f = await fixture(() => paths);
@@ -115,6 +119,27 @@ async function fixture(resources, overrides = {}) {
   check(f.api.inspectClickModule(persistence)==='save');
   assert.throws(()=>f.api.inspectClickModule({}),/保存能力/);checks++;
   assert.throws(()=>f.api.inspectClickModule({...persistence,duplicate:persistence.save}),/保存能力/);checks++;
+
+  let listener, subscriptions=0;
+  const store={...module.b,userInfo:{cuid:'fixture'},
+    $onAction(fn,detached){check(detached);listener=fn;subscriptions++;return ()=>{};}};
+  f=await fixture(t=>{
+    if(t<2)return [paths[0]];
+    if(t===2){
+      check(typeof listener==='function');
+      let after;
+      listener({name:'applyClickReportSuccess',args:[123],after:fn=>{after=fn;}});
+      store.serverClickTotal=123;
+      after();
+    }
+    return paths;
+  },{}, {
+    [paths[0]]:{...module,b:store},
+    [paths[2]]:{quitApp(){invoke("exit_app");}},
+    [paths[3]]:persistence
+  });
+  check((await f.api.discoverProfile()).commonPath===paths[0]);
+  check(subscriptions===1&&f.observedReport()===123);
 
   // CDP is ready but the lazy main module and its dependencies arrive later.
   f = await fixture(t => t < 4 ? [paths[0]] : paths);

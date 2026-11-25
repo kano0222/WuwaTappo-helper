@@ -1,42 +1,8 @@
 (async()=>{ __STATE__
-  const requestChest=async (payload,beforeSend=()=>{},trace=null)=>{
-    if(!__CHESTHOST__){beforeSend();return m[__OPENCHEST__](payload);}
-    // The native bag preflight already performs token renewal, including on
-    // Global builds where renewal is private. Keep credentials inside the page.
-    if(__CHESTRENEW__)await m[__CHESTRENEW__]();
-    if(!sameAccount()||locked())throw new Error('账号或更新状态已变化');
-    const token=m[__CHESTCOOKIE__]('infoToken');
-    if(typeof token!=='string'||!token)throw new Error('桌宠尚未登录');
-    beforeSend();
-    try{
-      const response=await fetch(__CHESTHOST__+'/api/frontend/chests/open',{
-        method:'POST',headers:{Authorization:'Bearer '+token,'Content-Type':'application/json',
-          'X-BLM-CID':localStorage.getItem('KURO_YCK_REQ_CID')||'','X-BLM-FRID':trace??crypto.randomUUID().replaceAll('-','')},
-        body:JSON.stringify(payload),credentials:'omit',cache:'no-store',redirect:'error',signal:AbortSignal.timeout(10000)});
-      let envelope;
-      try{envelope=await response.json();}catch{throw Object.assign(new Error('领取响应格式异常'),{httpStatus:response.status,retryAfter:response.headers.get('Retry-After')});}
-      if(!response.ok){
-        // Preserve business rejections and Retry-After on HTTP error replies.
-        let error;
-        try{m[__DECODE__](envelope);}catch(cause){error=cause;}
-        throw Object.assign(error||new Error('领取请求失败'),{httpStatus:response.status,retryAfter:response.headers.get('Retry-After')});
-      }
-      // Decode through the native contract (including login-expiry handling).
-      m[__DECODE__](envelope);return envelope;
-    }catch(error){
-      if(Number(error?.code)!==70006){try{m[__CHESTTOAST__](error);}catch{}}
-      throw error;
-    }
-  };
-  const receiptDeadline=(value,baseline)=>Number.isSafeInteger(value)&&value<=253402300799999&&
-    value>Math.max(baseline,Date.now())?value:null;
+  __CLAIM_TRANSPORT__
   const id=__BEFORE_OPERATIONID__,side=__SIDE__,other=side==='left'?'right':'left',expectedAccount=__BEFORE_ACCOUNTKEY__;
+  const baseline=__CLAIM_SERVER__;
   const uncertain=()=>new Error('结果无法确认');
-  const serverState=data=>{
-    const fields=['total_click_count','total_click_consume','left_treasure_chest','right_treasure_chest'];
-    if(!fields.every(k=>data?.[k]!=null&&Number.isSafeInteger(Number(data[k]))&&Number(data[k])>=0))throw uncertain();
-    return {accountKey,total:Number(data.total_click_count),consumed:Number(data.total_click_consume),left:Number(data.left_treasure_chest),right:Number(data.right_treasure_chest)};
-  };
   const contextMatches=()=>sameAccount()&&accountKey===expectedAccount&&!locked();
   const hasUnsettledSpend=()=>s.serverClickSpend!==undefined&&s.serverClickSpend!==0;
   const readBag=async()=>{
@@ -50,16 +16,17 @@
   const answer=tx=>({...snapshot(),claimBusy:false,operationId:id,outcome:tx.result?.outcome??(tx.busy&&Date.now()-tx.attemptAt>45000?'unknown':'pending'),
     failureStage:tx.error?.failureStage??tx.stage,errorType:tx.error?.errorType??(tx.busy&&Date.now()-tx.attemptAt>45000?'TimeoutError':null),httpStatus:tx.error?.httpStatus??0,
     retryAfterMs:Math.max(0,(tx.nextRetryAt??0)-Date.now()),code:tx.rejection??tx.error?.code??0,
+    requiredRetryAfterMs:Math.max(0,(tx.requiredRetryAt??0)-Date.now()),
     waitReason:tx.error?null:tx.waitReason??null,reward:tx.reward??null,uiRefreshRequested:!!tx.uiRefreshRequested,
     observedServer:tx.observedServer??null,serverObservedAt:tx.serverObservedAt??null,
-    receiptCooldown:tx.receiptCooldown??null,...(tx.result??{})});
+    clickNum:tx.clickNum??null,receiptCooldown:tx.receiptCooldown??null,claimReceivedAt:tx.receivedAt??null,...(tx.result??{})});
   let tx=globalThis.__TAPPO_HELPER_TX__;
   if(!contextMatches())return {...snapshot(),operationId:id,outcome:'unknown',failureStage:'account'};
   if(__RECOVER__){
     if(!tx||tx.id!==id||tx.accountKey!==expectedAccount||tx.store!==s)
       return {...snapshot(),operationId:id,outcome:'unknown',failureStage:'receipt-missing'};
     const observed=answer(tx);
-    if(!tx.busy&&Date.now()>=(tx.nextRetryAt??0)&&!['confirmed','rejected','skipped'].includes(tx.result?.outcome)){tx.result=null;tx.start();}
+    if(tx.sent&&!tx.busy&&Date.now()>=(tx.nextRetryAt??0)&&!['confirmed','rejected','skipped'].includes(tx.result?.outcome)){tx.result=null;tx.start();}
     return observed;
   }
   if(tx?.id===id)return answer(tx);
@@ -82,6 +49,7 @@
        synced.serverTotal!==current.serverTotal||synced.local!==current.local||
        synced[side]!==server[side]||synced[other]!==(final?server[other]:current[other]))throw uncertain();
     check();
+    syncNativeCooldown(side,current[side],synced[side]);
     if(refresh&&__REFRESHPANEL__==='ready'&&(tx.refreshCooldown!==server[side]||final&&!tx.uiRefreshRequested)){
       tx.refreshCooldown=server[side];
       try{await bounded(window.__TAURI_INTERNALS__.invoke('plugin:event|emit',{event:'cat-panel-action',payload:{type:'ready'}}),3000);tx.uiRefreshRequested=true;}
@@ -91,18 +59,18 @@
   };
   const verify=async()=>{
     check();tx.stage='verify';
-    const server=serverState(await readServer());check();const local=snapshot();
-    tx.observedServer=server;tx.serverObservedAt=Date.now();
+    const server=await readServer();check();const local=snapshot();
+    tx.observedServer=server;tx.serverObservedAt=server.observedAt;
     if(tx.rejection!==null){tx.result={...local,claimBusy:false,outcome:'rejected',rejected:true,code:tx.rejection,left:server.left,right:server.right,confirmedServer:server};return;}
     if(!tx.receipt||!tx.applied||local.consumed!==tx.before.consumed+1000||server.consumed<tx.initial.consumed||
        server.consumed>tx.initial.consumed+1000||server[other]!==tx.initial[other]){tx.waitReason=null;tx.result={outcome:'unknown'};return;}
     const waits=[];
     if(server.consumed!==tx.initial.consumed+1000)waits.push('consumption');
     if(server[side]<=tx.initial[side])waits.push('cooldown');
-    if(server.total<tx.initial.total)waits.push('cumulative');
+    if(server.total<(tx.clickNum??tx.initial.total))waits.push('cumulative');
     // The account query can supply a fresh slot before the debit or reward is visible.
     const olderThanReceipt=local[side]===tx.receiptCooldown&&server[side]<tx.receiptCooldown;
-    if(tx.reward&&!waits.includes('cooldown')&&!waits.includes('cumulative')&&!olderThanReceipt){
+    if(tx.reward&&!waits.includes('cooldown')&&server.total>=tx.initial.total&&!olderThanReceipt){
       if(!await syncSlots(server,false)){tx.result={outcome:'unknown'};return;}
       tx.stage='verify';
     }
@@ -122,22 +90,31 @@
     check();
     if(!tx.sent){
       tx.stage='reward-preflight';tx.bagBefore=await readBag();check();
-      tx.stage='preflight';tx.initial=serverState(await readServer());check();
-      tx.before={...snapshot(),left:tx.initial.left,right:tx.initial.right};const before=tx.before;
-      const countWait=()=>({outcome:'skipped',skipped:true,reason:'等待服务器同步点击数',confirmedServer:tx.initial});
-      if(!claimCountCurrent(tx.initial.total,before)){tx.result=countWait();return;}
-      if(!Number.isSafeInteger(before.cumulative)||before.cumulative<tx.initial.total||tx.initial.total-tx.initial.consumed<1000||hasUnsettledSpend()||
+      tx.stage='preflight';tx.initial=await readServer(undefined,baseline);check();
+      const local=snapshot();
+      tx.before={...local,left:tx.initial.left,right:tx.initial.right};const before=tx.before;
+      const skip=(reason='领取条件已变化')=>({outcome:'skipped',skipped:true,reason,confirmedServer:tx.initial});
+      const clickNum=claimClickNum(tx.initial.total,before);
+      if(clickNum===null){tx.result=skip('等待服务器同步点击数');return;}
+      if(!Number.isSafeInteger(before.cumulative)||!Number.isSafeInteger(before.available)||before.available<1000||
+         tx.initial.total-tx.initial.consumed<1000||hasUnsettledSpend()||
          before.left!==__BEFORE_LEFT__||before.right!==__BEFORE_RIGHT__||before[side]>Date.now()||
-         before.consumed!==__BEFORE_CONSUMED__||tx.initial.consumed!==before.consumed){tx.result={outcome:'skipped',skipped:true,reason:'领取条件已变化',confirmedServer:tx.initial};return;}
+         before.consumed!==__BEFORE_CONSUMED__||tx.initial.consumed!==before.consumed){tx.result=skip();return;}
       tx.stage='request';
-      let data,countChanged=false;
-      try{data=m[__DECODE__](await requestChest({place:side,click_num:tx.initial.total},()=>{
+      let data,invalidated=false;
+      const payload={place:side,click_num:clickNum};
+      try{data=m[__DECODE__](await requestChest(payload,()=>{
         check();
-        if(!claimCountCurrent(tx.initial.total,snapshot())){countChanged=true;throw uncertain();}
-        tx.sent=true;
+        const current=snapshot(), selected=claimClickNum(tx.initial.total,current);
+        if(selected===null||selected<clickNum||current.consumed!==before.consumed||
+           current.left!==local.left||current.right!==local.right||
+           !Number.isSafeInteger(current.available)||current.available<1000||hasUnsettledSpend()){
+          invalidated=true;throw uncertain();
+        }
+        tx.clickNum=payload.click_num=selected;tx.sent=true;
       }));}
       catch(error){
-        if(countChanged){tx.result=countWait();return;}
+        if(invalidated){tx.result=skip();return;}
         const code=Number(error?.code);if(!tx.sent||![70004,70005,70006].includes(code)||Number(error?.httpStatus)>=400)throw error;tx.rejection=code;
       }
       check();
@@ -145,6 +122,7 @@
         tx.stage='response';
         tx.receipt=Number(data?.click_consume)===1000;
         if(!tx.receipt)throw uncertain();
+        tx.receivedAt=Date.now();
         const assetId=Number(data.asset_id),assetName=String(data.asset_name??'').trim(),assetType=String(data.asset_type??'').trim();
         if(Number.isSafeInteger(assetId)&&assetId>0&&assetName.length>0&&assetName.length<=200&&assetType.length>0&&assetType.length<=100)
           tx.reward={assetId,assetName,assetType,quantityBefore:quantity(tx.bagBefore,assetId),quantityAfter:0};
@@ -168,6 +146,12 @@
     if(tx.busy)return;tx.busy=true;tx.error=null;tx.attemptAt=Date.now();
     tx.task=run().catch(error=>{
       tx.error=failure(error,tx.stage);
+      if(!tx.sent){
+        tx.requiredRetryAt=Date.now()+tx.error.requiredRetryAfterMs;
+        tx.nextRetryAt=Date.now()+tx.error.retryAfterMs;
+        tx.result={outcome:'skipped',skipped:true,reason:'领取条件已变化',confirmedServer:tx.initial};
+        return;
+      }
       tx.failures=(tx.failures??0)+1;
       tx.nextRetryAt=Date.now()+Math.max(Math.min(60000,5000*2**Math.min(4,tx.failures-1))+Math.floor(Math.random()*1000),tx.error.retryAfterMs,[403,429].includes(tx.error.httpStatus)?60000:0);
       // After submission, recovery can verify the result but cannot repeat the request.

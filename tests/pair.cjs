@@ -1,15 +1,17 @@
 const assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
 const bridge=name=>fs.readFileSync(path.join(__dirname,'../src/Bridge/'+name+'.js'),'utf8');
-const claim=bridge('claim');
-const transport=claim.slice(claim.indexOf('  const requestChest='),claim.indexOf('  const id='));
+const selection=bridge('state').split('const claimClickNum=')[1];
+const transport=bridge('claim-transport');
 const injected=`
-  const s=store,m=api,accountKey='fixture',sameAccount=()=>store.userInfo.cuid==='fixture',locked=()=>false;
-  const claimCountCurrent=(total,v)=>v.serverTotal<=total;
-  const readServer=async()=>({...projection});
+  const s=store,m=api,account='fixture',accountKey='fixture',sameAccount=()=>store.userInfo.cuid==='fixture',locked=()=>false;
+  const claimClickNum=${selection}
+  const readServer=async()=>({accountKey,total:projection.total_click_count,consumed:projection.total_click_consume,
+    left:projection.left_treasure_chest,right:projection.right_treasure_chest,observedAt:Date.now()});
+  const freshClaimRead=server=>Date.now()-server.observedAt<5000;
   const snapshot=()=>({time:Date.now(),accountKey,consumed:s.userInfo.total_click_consume,
     left:s.userInfo.left_treasure_chest,right:s.userInfo.right_treasure_chest,available:s.userInfo.total_click_count+15-s.userInfo.total_click_consume,
-    local:15,cumulative:s.userInfo.total_click_count+15,serverTotal:s.userInfo.total_click_count});
+    local:15,cumulative:s.userInfo.total_click_count+15,serverTotal:s.userInfo.total_click_count,reportedClickTotal:s.reportedClickTotal??null});
   const bounded=p=>p;
   const failure=(e,stage)=>({code:e.code??0,httpStatus:0,retryAfterMs:0});
 `;
@@ -18,9 +20,11 @@ function fixture(kind,receiptFields={}){
   const journal={id:'first',server:baseline,before:{left:1000,right:2000},left:{id:'first',outcome:'armed'}};
   const projection={total_click_count:3000,total_click_consume:1000,left_treasure_chest:1000,right_treasure_chest:2000};
   const store={serverClickSpend:0,userInfo:{cuid:'fixture',...projection},updateUserInfo(info){this.userInfo=info;}};
-  const requests=[],bag={42:1,43:1};
+  if(kind==='reported-query-count')store.reportedClickTotal=store.userInfo.total_click_count=3006;
+  const requests=[],cooldowns=[],bag={42:1,43:1};
   let refreshes=0;
   const context=vm.createContext({store,projection,Date:{now:()=>100000},
+    __TAPPO_HELPER_NATIVE_COOLDOWN__:{apply:(bound,cuid,slot,deadline)=>cooldowns.push([bound===store,cuid,slot,deadline,store.userInfo[slot+'_treasure_chest']])},
     api:{
       decode(value){if(value.code)throw Object.assign(Error('rejected'),{code:value.code});return value.data;},
       bag:()=>({data:Object.entries(bag).map(([asset_id,quantity])=>({asset_id,quantity}))}),
@@ -28,6 +32,7 @@ function fixture(kind,receiptFields={}){
       async renew(){
         if(kind==='renew-conflict'&&requests.length)store.serverClickSpend=1;
         if(kind==='renew-count-race'&&requests.length)store.userInfo.total_click_count+=6;
+        if(kind==='reported-query-count'&&requests.length)store.reportedClickTotal=store.userInfo.total_click_count=3012;
       }
     },
     fetch:async(url,options)=>{
@@ -52,7 +57,7 @@ function fixture(kind,receiptFields={}){
     if(command==='left')journal.bagBefore=result.bagBefore;
     return result;
   }
-  return {journal,projection,store,requests,bag,execute,submit,refreshes:()=>refreshes,
+  return {journal,projection,store,requests,cooldowns,bag,execute,submit,refreshes:()=>refreshes,
     armRight:()=>{journal.right={id:'second',outcome:'armed'};},
     restart:()=>vm.runInContext('delete globalThis.__TAPPO_HELPER_PAIR__',context)};
 }
@@ -66,7 +71,7 @@ function fixture(kind,receiptFields={}){
     if(kind==='account-conflict')f.projection.total_click_consume=4000;
     if(kind!=='restart-first'){
       const second=await f.submit('right');
-      const expected=kind==='account-conflict'||kind==='renew-count-race'?'skipped':kind==='unknown-right'||kind==='renew-conflict'?'unknown':'success';
+      const expected=['account-conflict','renew-count-race','renew-conflict'].includes(kind)?'skipped':kind==='unknown-right'?'unknown':'success';
       assert.equal(second.outcome,expected,kind);
       if(['account-conflict','renew-conflict','renew-count-race'].includes(kind)){assert.equal(f.requests.length,1);continue;}
       assert.equal(f.requests.length,2);
@@ -98,6 +103,24 @@ function fixture(kind,receiptFields={}){
     assert.equal(f.refreshes(),1);
     assert.equal(f.requests.length,both?2:1);
   }
+  {
+    const f=fixture('reported-query-count',{left:{left_next_time:1801000},right:{right_next_time:1802000}});
+    assert.equal((await f.submit('left')).outcome,'success');
+    f.armRight();
+    assert.equal((await f.submit('right')).outcome,'success');
+    assert.deepEqual(f.requests.map(x=>x.body.click_num),[3006,3012]);
+    assert.equal(f.store.userInfo.left_treasure_chest,1801000);
+    assert.equal(f.store.userInfo.right_treasure_chest,1802000);
+    Object.assign(f.projection,{total_click_consume:3000,left_treasure_chest:1801000,right_treasure_chest:1802000});
+    f.bag[42]=f.bag[43]=2;
+    const pending=await f.execute('observe');
+    assert.equal(pending.outcome,'pending');assert.equal(pending.timing.awaitingTotal,true);
+    f.projection.total_click_count=2999;
+    assert.equal((await f.execute('observe')).outcome,'unknown','regression below the query baseline was accepted');
+    f.projection.total_click_count=3012;
+    assert.equal((await f.execute('observe')).outcome,'confirmed');
+    assert.equal(f.requests.length,2);
+  }
   const early=fixture('success');
   await early.submit('left');early.armRight();await early.submit('right');
   assert.equal(early.store.userInfo.left_treasure_chest,1000);
@@ -110,6 +133,7 @@ function fixture(kind,receiptFields={}){
   assert.equal(partial.state.left,1801000);assert.equal(partial.state.right,2000);
   assert.equal(partial.state.consumed,3000);assert.equal(partial.state.local,15);
   assert.equal(early.refreshes(),1);assert.equal(early.requests.length,2);
+  assert.deepEqual(early.cooldowns,[[true,'fixture','left',1801000,1801000]]);
   early.journal.left.outcome='armed';
   assert.equal((await early.execute('left')).outcome,'unknown');
   assert.equal(early.requests.length,2);
@@ -130,6 +154,7 @@ function fixture(kind,receiptFields={}){
   observed=await receipted.execute('observe');
   assert.equal(observed.outcome,'confirmed');assert.equal(observed.state.left,1800500);assert.equal(observed.state.right,1802000);
   assert.equal(receipted.requests.length,2);
+  assert.deepEqual(receipted.cooldowns,[[true,'fixture','left',1801000,1801000],[true,'fixture','right',1802000,1802000]]);
   const conflict=fixture('success',fields);
   await conflict.submit('left');conflict.armRight();await conflict.submit('right');
   conflict.store.userInfo.left_treasure_chest=1801500;

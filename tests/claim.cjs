@@ -1,7 +1,9 @@
 // Transaction/recovery checks use an isolated fake app, never a desktop app or account.
 const assert=require('node:assert/strict');
 const fs=require('node:fs'),path=require('node:path'),vm=require('node:vm');
-const source=fs.readFileSync(path.join(__dirname,'../src/Bridge/claim.js'),'utf8');
+const transport=fs.readFileSync(path.join(__dirname,'../src/Bridge/claim-transport.js'),'utf8');
+const source=fs.readFileSync(path.join(__dirname,'../src/Bridge/claim.js'),'utf8').replace('__CLAIM_TRANSPORT__',transport);
+const selection=fs.readFileSync(path.join(__dirname,'../src/Bridge/state.js'),'utf8').split('const claimClickNum=')[1];
 const drain=async()=>{for(let i=0;i<25;i++)await Promise.resolve()};
 function fixture(kind='success',side='left',quiet=false,receiptFields={}){
   let time=5000,calls=0,reads=0,applies=0,folds=0,saves=0,local=0,release,bagReads=0,emits=0;
@@ -19,14 +21,16 @@ function fixture(kind='success',side='left',quiet=false,receiptFields={}){
     }};
   if(Object.keys(receiptFields).length)store.userInfo.left_treasure_chest=initial.left_treasure_chest;
   if(kind==='server-poor')store.userInfo.total_click_consume=server.total_click_consume=2010;
+  if(kind==='query-ahead')store.userInfo.total_click_count=2900;
   if(kind==='spend-before')store.serverClickSpend=10;
   if(kind==='future')server[side+'_treasure_chest']=9000;
-  if(kind==='older-query-count')store.userInfo.total_click_count=3006;
+  if(['older-query-count','reported-query-count'].includes(kind))store.userInfo.total_click_count=3006;
   let context,toasts=0;
+  const cooldowns=[];
   const report=total=>{server.total_click_count=total;store.userInfo.total_click_count=total;local=persistedLocal=0;};
   const takeSnapshot=()=>({time,loggedIn:store.isLoggedIn,accountKey:store.userInfo.cuid==='test'?'test-key':null,
     locked:kind==='locked',claimBusy:!!context?.__TAPPO_HELPER_TX__?.busy,available:store.userInfo.total_click_count+local-store.userInfo.total_click_consume-store.serverClickSpend,
-    local,serverTotal:store.userInfo.total_click_count,
+    local,serverTotal:store.userInfo.total_click_count,reportedClickTotal:kind==='reported-query-count'?3006:null,
     cumulative:kind==='invalid-count'?NaN:store.userInfo.total_click_count+local,consumed:store.userInfo.total_click_consume,
     left:store.userInfo.left_treasure_chest,right:store.userInfo.right_treasure_chest});
   const consoleStub={warn(){}};
@@ -39,7 +43,7 @@ function fixture(kind='success',side='left',quiet=false,receiptFields={}){
       if(kind==='bag-error'&&bagReads===2)throw Error('inventory temporarily unavailable');
       if(kind==='bag-preflight-error'&&bagReads===1)throw Error('inventory preflight unavailable');
       return {code:0,data:[{asset_id:123,quantity:5+(calls&&kind!=='bag-unchanged'&&!(kind==='bag-delayed'&&bagReads<4)?1:0)}]};
-    },async open(payload){calls++;assert.deepEqual(JSON.parse(JSON.stringify(payload)),{place:side,click_num:3000});
+    },async open(payload){calls++;assert.deepEqual(JSON.parse(JSON.stringify(payload)),{place:side,click_num:kind==='reported-query-count'?3006:3000});
       if(kind.startsWith('reject'))return {code:Number(kind.slice(6))};
       if(kind==='long')await new Promise(r=>release=r);
       if(kind==='timeout')throw Error('request timeout');
@@ -59,6 +63,7 @@ function fixture(kind='success',side='left',quiet=false,receiptFields={}){
       return {code:0,data:{click_consume:kind==='bad-cost'?500:1000,asset_id:123,asset_name:kind==='missing-reward'?'':'test-item',asset_type:'accessory',...receiptFields}};
     }};
   context=vm.createContext({store,api,console:consoleStub,takeSnapshot,AbortSignal,
+    __TAPPO_HELPER_NATIVE_COOLDOWN__:{apply:(bound,cuid,slot,deadline)=>cooldowns.push([bound===store,cuid,slot,deadline,store.userInfo[slot+'_treasure_chest']])},
     localStorage:{getItem:()=>''},crypto:{randomUUID:()=> '11111111-1111-4111-8111-111111111111'},
     fetch:async(url,options)=>{const reply=await api.open(JSON.parse(options.body));return {ok:true,status:200,json:async()=>reply};},
     window:{__TAURI_INTERNALS__:{async invoke(command,payload){emits++;assert.equal(command,'plugin:event|emit');assert.equal(payload.payload.type,'ready');if(kind==='ui-error'||kind==='ui-transient'&&emits===1)throw Error('UI not ready');}}},
@@ -66,31 +71,35 @@ function fixture(kind='success',side='left',quiet=false,receiptFields={}){
     observeBudget:p=>p,
     read:async()=>{reads++;
       if((kind==='query-error'&&reads===2)||(kind==='preflight-error'&&reads===1))throw Object.assign(Error('read failed'),{status:503,retryAfterMs:7000});
-      return {...(['delayed','report-after'].includes(kind)&&calls&&reads<4?initial:server)};
+      const data=['delayed','report-after'].includes(kind)&&calls&&reads<4?initial:server;
+      const [total,consumed,left,right]=['total_click_count','total_click_consume','left_treasure_chest','right_treasure_chest'].map(key=>data[key]);
+      if(![total,consumed,left,right].every(Number.isSafeInteger))throw Error('invalid query');
+      return {accountKey:'test-key',total,consumed,left,right,observedAt:time};
     },Date:{now:()=>time},setTimeout,clearTimeout});
-  const injected='const s=store,m=api,snapshot=takeSnapshot,readServer=read,accountKey="test-key",sameAccount=()=>store.isLoggedIn&&store.userInfo.cuid==="test",locked=()=>snapshot().locked;const claimCountCurrent=(total,v)=>v.serverTotal<=total;const bounded=observeBudget;const failure=(e,stage)=>({failureStage:stage,errorType:e.name??"Error",httpStatus:e.status??0,code:e.code??0,retryAfterMs:e.retryAfterMs??0});';
+  const injected='const s=store,m=api,snapshot=takeSnapshot,readServer=read,account="test",accountKey="test-key",sameAccount=()=>store.isLoggedIn&&store.userInfo.cuid==="test",locked=()=>snapshot().locked;const freshClaimRead=s=>Date.now()-s.observedAt<5000;const bounded=observeBudget;const failure=(e,stage)=>({failureStage:stage,errorType:e.name??"Error",httpStatus:e.status??0,code:e.code??0,retryAfterMs:e.retryAfterMs??0,requiredRetryAfterMs:e.retryAfterMs??0});\nconst claimClickNum='+selection;
   async function evaluate(recover=false,id='op-1'){
     const script=source.replace('__STATE__',injected).replace('__SIDE__',JSON.stringify(side)).replaceAll('__RECOVER__',String(recover))
       .replace('await import(__CLICKMODULE__)','persistence').replaceAll('__SAVECLICKS__','"save"').replaceAll('__OPENCHEST__','"open"').replaceAll('__DECODE__','"decode"')
       .replaceAll('__BAGLIST__','"bag"').replaceAll('__REFRESHPANEL__','"ready"')
       .replaceAll('__CHESTHOST__',JSON.stringify(quiet?'https://api-mc-wuwatappo.kurogames-global.com':'')).replaceAll('__CHESTCOOKIE__','"cookie"').replaceAll('__CHESTTOAST__','"toast"').replaceAll('__CHESTRENEW__','""')
       .replaceAll('__BEFORE_OPERATIONID__',JSON.stringify(id)).replaceAll('__BEFORE_ACCOUNTKEY__','"test-key"')
+      .replace('__CLAIM_SERVER__','null')
       .replaceAll('__BEFORE_LEFT__','3000').replaceAll('__BEFORE_RIGHT__','2000').replaceAll('__BEFORE_CONSUMED__',kind==='server-poor'?'2010':'1000');
     let timer;
     try{return await Promise.race([vm.runInContext(script,context),new Promise((_,reject)=>{timer=setTimeout(()=>reject(Error('observer blocked on a remote request')),1000)})]);}
     finally{clearTimeout(timer);}
   }
-  return {evaluate,drain,store,context,report,release:()=>release?.(),stats:()=>({calls,reads,applies,folds,saves,bagReads,emits,toasts,state:takeSnapshot()}),
+  return {evaluate,drain,store,context,report,cooldowns,release:()=>release?.(),stats:()=>({calls,reads,applies,folds,saves,bagReads,emits,toasts,state:takeSnapshot()}),
     restartTotal:()=>server.total_click_count+persistedLocal,
     advance:ms=>{time+=ms},
     reflectDebit:()=>{server.total_click_consume=2000;},
     reflectCooldown:value=>{server[side+'_treasure_chest']=value;},
-    async settle(){let result;for(let i=0;i<12;i++){time+=10000;await drain();result=await evaluate(true);if(['confirmed','rejected','skipped','unknown'].includes(result.outcome))return result;}return result;}};
+    async settle(){let result;for(let i=0;i<12;i++){await drain();time+=10000;result=await evaluate(true);if(['confirmed','rejected','skipped','unknown'].includes(result.outcome))return result;}return result;}};
 }
 (async()=>{
   let checks=0;
   // Exercise the real request wrapper without a desktop, token, or network.
-  const requestSource=source.slice(source.indexOf('  const requestChest='),source.indexOf('  const id='))+'return requestChest;';
+  const requestSource=transport+'return requestChest;';
   for(const host of ['https://api-mc-wuwatappo.kurogames-global.com','https://api-wutheringwaves-wuwatappo.kurogames-global.com']){
     for(const kind of ['success','cooldown','insufficient','expired','http-limit','http-cooldown','network','bad-json','renew-error','account','missing-token','private-renew']){
       let calls=0,toasts=0,renews=0,native=0;
@@ -122,12 +131,19 @@ function fixture(kind='success',side='left',quiet=false,receiptFields={}){
       assert.equal(renews,kind==='private-renew'?0:1);assert.equal(native,0);checks++;
     }
   }
-  for(const [kind,side]of [['success','left'],['success','right'],['clicks','left'],['delayed','left'],['preflight-error','left'],['query-error','left'],['report-before','left'],['bag-error','left'],['bag-preflight-error','left'],['bag-delayed','left'],['ui-error','left'],['ui-transient','left']]){
+  for(const [kind,side]of [['success','left'],['success','right'],['clicks','left'],['delayed','left'],['query-ahead','left'],['query-error','left'],['report-before','left'],['bag-error','left'],['bag-delayed','left'],['ui-error','left'],['ui-transient','left']]){
     const f=fixture(kind,side);await f.evaluate();const result=await f.settle(),stats=f.stats();
     assert.equal(result.outcome,'confirmed',kind);assert.equal(result.confirmedServer.accountKey,'test-key');assert.equal(result[side],9000);
-    assert.equal(stats.calls,1);assert.equal(stats.applies,1);assert.equal(result.available,kind==='clicks'?1005:kind==='report-before'?1015:1000);assert.equal(f.store.userInfo.appearance,'keep');
+    assert.deepEqual(f.cooldowns,[[true,'test',side,9000,9000]],kind+' native cooldown projection');
+    assert.equal(stats.calls,1);assert.equal(stats.applies,1);assert.equal(result.available,kind==='clicks'?1005:kind==='report-before'?1015:kind==='query-ahead'?900:1000);assert.equal(f.store.userInfo.appearance,'keep');
     assert.equal(stats.state.local,kind==='clicks'?5:0);assert.equal(stats.folds,0);assert.equal(stats.saves,0);assert(!stats.state.claimBusy);checks++;
     assert.equal(result.rewardVerified,true);assert.equal(result.reward.assetId,123);assert.equal(result.reward.quantityBefore,5);assert.equal(result.reward.quantityAfter,6);assert.equal(stats.emits,kind.startsWith('ui-')?2:1);assert.equal(result.uiRefreshRequested,kind!=='ui-error');
+  }
+  for(const kind of ['preflight-error','bag-preflight-error']){
+    const f=fixture(kind);await f.evaluate();await drain();
+    f.advance(10000);
+    assert.equal((await f.evaluate(true)).outcome,'skipped');
+    await drain();assert.equal(f.stats().calls,0,'recovery sent a proven unsent claim');checks++;
   }
   for(const kind of ['other','excess','account','timeout','timeout-after-server','bad-cost','bad-action','bad-refresh','counter-race','reject12345','spend','spend-before-sync','old-report','missing-reward','bag-account']){
     const f=fixture(kind);await f.evaluate();const result=await f.settle();assert.equal(result.outcome,'unknown',kind);await f.evaluate(true);await drain();
@@ -140,9 +156,11 @@ function fixture(kind='success',side='left',quiet=false,receiptFields={}){
   {
     const f=fixture('report-after');await f.evaluate();await drain();
     const waiting=await f.evaluate(true);assert.equal(waiting.waitReason,'consumption.cooldown');
+    assert(Number.isSafeInteger(waiting.claimReceivedAt));
     assert.equal(f.stats().state.local,15);
     f.report(3015);const result=await f.settle();
     assert.equal(result.outcome,'confirmed');assert.equal(result.consumed,2000);assert.equal(result.cumulative,3015);
+    assert.equal(result.claimReceivedAt,waiting.claimReceivedAt);
     assert.equal(f.stats().calls,1);assert.equal(f.stats().applies,1);assert.equal(f.stats().saves,0);checks++;
   }
   {
@@ -209,6 +227,17 @@ function fixture(kind='success',side='left',quiet=false,receiptFields={}){
     assert(['skipped','unknown'].includes(final.outcome),kind);assert.equal(f.stats().calls,0);checks++;
     if(kind==='spend-before')assert.equal(f.store.serverClickSpend,10);
     if(kind==='older-query-count')assert.equal(final.reason,'等待服务器同步点击数');
+  }
+  {
+    const f=fixture('reported-query-count','left',false,{left_next_time:10000});
+    await f.evaluate();await drain();
+    const pending=await f.evaluate(true);
+    assert.equal(pending.clickNum,3006);assert.equal(pending.outcome,'pending');assert.equal(pending.waitReason,'cumulative');
+    assert.equal(pending.receiptCooldown,10000);
+    f.reflectCooldown(10000);
+    f.report(3006);
+    assert.equal((await f.settle()).outcome,'confirmed');
+    assert.equal(f.stats().calls,1);assert.equal(f.stats().folds,0);assert.equal(f.stats().saves,0);checks++;
   }
   {
     const f=fixture();await f.evaluate();await drain();vm.runInContext('globalThis.__TAPPO_HELPER_TX__=null',f.context);

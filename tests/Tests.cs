@@ -32,7 +32,7 @@ namespace Tappo {
         public Task<Snapshot> Snapshot() {return SnapshotTask==null?Task.FromResult(SnapshotResult==null?State:SnapshotResult()):SnapshotTask();}
         public Task<ServerState> Server() {Reads++;return Task.FromResult(ServerResult==null?new ServerState {accountKey=State.accountKey,total=State.cumulative,consumed=State.consumed,left=State.left,right=State.right}:ServerResult());}
         public Task<Snapshot> Boost(int delta,Snapshot before) {Boosts++;if(BoostResult!=null)return Task.FromResult(BoostResult(delta,before));var result=Tests.Copy(before);result.cumulative+=delta;result.available+=delta;State=result;return Task.FromResult(result);}
-        public Task<Snapshot> Claim(string side,Snapshot before) {Claims++;if(ThrowClaim) throw new TimeoutException("调用超时，禁止自动重发操作");var result=ClaimResult==null?Tests.Copy(before):ClaimResult();result.operationId=before.operationId;result.rewardVerified=!OmitReward;result.reward=OmitReward?null:new RewardReceipt {assetId=123,assetName="test",assetType="accessory",quantityBefore=0,quantityAfter=1};State=result;return Task.FromResult(result);}
+        public Task<Snapshot> Claim(Journal journal) {var before=journal.before;Claims++;if(ThrowClaim) throw new TimeoutException("调用超时，禁止自动重发操作");var result=ClaimResult==null?Tests.Copy(before):ClaimResult();result.operationId=before.operationId;result.rewardVerified=!OmitReward;result.reward=OmitReward?null:new RewardReceipt {assetId=123,assetName="test",assetType="accessory",quantityBefore=0,quantityAfter=1};State=result;return Task.FromResult(result);}
         public Func<Task> QuitResult;
         public Task Quit() {Quits++;return QuitResult==null?Task.FromResult(0):QuitResult();}
         public void Dispose() {Closed++;}
@@ -107,15 +107,42 @@ namespace Tappo {
                     ServerChestConfirmation().GetAwaiter().GetResult();WaitForServerClaimBalance().GetAwaiter().GetResult();VersionPreflight().GetAwaiter().GetResult();
                     StartupChestClock().GetAwaiter().GetResult();PendingChestClock().GetAwaiter().GetResult();
                     FixedPairWorker().GetAwaiter().GetResult();
+                    PairScheduling().GetAwaiter().GetResult();
                     checks+=ConnectionChecks.Run().GetAwaiter().GetResult();checks+=RetryChecks.Run().GetAwaiter().GetResult();checks+=ResumeChecks.Run().GetAwaiter().GetResult();checks+=RecoveryChecks.Run().GetAwaiter().GetResult();checks+=CapabilityChecks.Run().GetAwaiter().GetResult();
                 }
-                if(suite=="All"||suite=="Panel") {ResetPanels();Layouts();CloseChoices();Lifecycle();checks+=ConnectionChecks.Panels();UpdatePanels();StartupPanels();TrayRunControls();checks+=ConsoleUiChecks.Run();checks+=PanelMessagingChecks.Run();checks+=PanelLifetimeChecks.Run();checks+=DiagnosticChecks.Run();checks+=AutoRunChecks.Run();checks+=ReleaseNotesChecks.Run();}
+                if(suite=="All"||suite=="Panel") {ResetPanels();Layouts();ClaimActivities();CloseChoices();Lifecycle();checks+=ConnectionChecks.Panels();UpdatePanels();StartupPanels();TrayRunControls();checks+=ConsoleUiChecks.Run();checks+=PanelMessagingChecks.Run();checks+=PanelLifetimeChecks.Run();checks+=DiagnosticChecks.Run();checks+=AutoRunChecks.Run();checks+=ReleaseNotesChecks.Run();}
                 if(suite=="All"||suite=="Platform") {checks+=StartupChecks.Run();checks+=PetLifecycleChecks.Run();checks+=TransportChecks.Run().GetAwaiter().GetResult();checks+=UpdateChecks.Run().GetAwaiter().GetResult();checks+=InstallerChecks.Run().GetAwaiter().GetResult();}
                 Console.WriteLine("PASS: "+checks+" native checks ("+suite+"); no account mutations, app restarts, or system policy changes.");return 0;
             } catch(Exception error) {Console.Error.WriteLine(error);return 1;}
             finally {
                 var target=Path.GetFullPath(root);var temp=Path.GetFullPath(Path.GetTempPath());
                 if(target.StartsWith(temp,StringComparison.OrdinalIgnoreCase)&&Path.GetFileName(target).StartsWith("tappo-native-tests-")) Directory.Delete(target,true);
+            }
+        }
+        static void ClaimActivities() {
+            var store=Store();
+            var receivedAt=RuntimeStore.Now-10000;
+            store.Log("claim-pair-slot",new {side="left",operationId="left",outcome="success",receivedAt});
+            store.Log("claim-pair-slot",new {side="right",operationId="skipped",outcome="skipped"});
+            store.Log("claim-received",new {side="right",operationId="right",receivedAt=receivedAt+2000});
+            store.Log("boost-confirmed",new {delta=100});
+            using(var panel=new Panel(store,preview:true)) {
+                panel.Refresh();
+                var activity=panel.E<TextBlock>("ActivityText");
+                var pending=activity.Text;
+                var lines=pending.Split('\n');
+                Check(lines.Length==3&&lines[0].EndsWith("已补充 100 次")&&
+                    lines[1].EndsWith("已领取宝箱二 · 确认中")&&lines[2].EndsWith("已领取宝箱一 · 确认中"),
+                    "activity did not show both successful receipts in time order");
+                store.Log("claim-confirmed",new {side="left",operationId="left",receivedAt});
+                panel.Refresh();
+                Check(activity.Text==pending.Replace("宝箱一 · 确认中","宝箱一 · 消耗 1,000 次"),
+                    "pair confirmation changed the original time or added another activity");
+                store.Log("claim-confirmed",new {side="right",operationId="right",receivedAt=receivedAt+2000});
+                store.Log("claim-confirmed",new {side="right",operationId="right",receivedAt=receivedAt+2000});
+                panel.Refresh();
+                Check(activity.Text==pending.Replace(" · 确认中"," · 消耗 1,000 次"),
+                    "single confirmation changed the original time or added another activity");
             }
         }
         static void TrayRunControls() {
@@ -285,11 +312,24 @@ namespace Tappo {
                     {"openChest","openAlias"},{"saveClicks","persistAlias"},{"bagList","bagAlias"},{"refreshPanel","ready"},
                     {"chestHost","https://api-mc-wuwatappo.kurogames-global.com"},{"chestCookie","cookieAlias"},{"chestToast","toastAlias"},{"chestRenew","renewAlias"}}};
                 typeof(Capabilities).GetProperty("Profile").GetSetMethod(true).Invoke(caps,new object[]{profile});
-                var script=(string)typeof(AppClient).GetMethod("Script",flags).Invoke(client,new object[]{"claim",State()});
+                var journal=new Journal {action=new Plan {side="left"},before=State(),server=new ServerState {observedAt=123}};
+                var script=(string)typeof(AppClient).GetMethod("ClaimScript",flags).Invoke(client,new object[]{journal,false});
                 var tokens=System.Text.RegularExpressions.Regex.Matches(script,"__[A-Z_]+__");
-                Check(tokens.Cast<System.Text.RegularExpressions.Match>().All(t=>new[]{"__SIDE__","__RECOVER__","__TAURI_INTERNALS__","__TAPPO_HELPER_TX__","__TAPPO_HELPER_QUERY__"}.Contains(t.Value)),"unresolved claim bridge placeholders");
+                Check(tokens.Cast<System.Text.RegularExpressions.Match>().All(t=>new[]{"__SIDE__","__RECOVER__","__TAURI_INTERNALS__","__TAPPO_HELPER_TX__","__TAPPO_HELPER_QUERY__","__TAPPO_HELPER_CLICK_REPORT__","__TAPPO_HELPER_REPORT_TIMING__","__TAPPO_HELPER_NATIVE_COOLDOWN__"}.Contains(t.Value)),"unresolved claim bridge placeholders");
                 Check(script.Contains("m[\"openAlias\"]")&&script.Contains("m[\"decodeAlias\"]"),"discovered claim aliases not rendered");
+                Check(script.Contains("\"observedAt\":123"),"claim query baseline not rendered");
                 Check(!script.Contains("persistAlias")&&!script.Contains("/assets/clicks.js"),"claim still depends on click persistence");
+                Check(!script.Contains("__CLAIM_TRANSPORT__")&&script.Contains("const requestChest="),"single claim transport was not rendered");
+                var pair=(string)typeof(AppClient).GetMethod("Script",flags).Invoke(client,new object[]{"pair",null});
+                Check(!pair.Contains("__CLAIM_TRANSPORT__")&&pair.Contains("const requestChest=")&&pair.Contains("m[\"cookieAlias\"]"),
+                    "paired claim transport was not rendered");
+                journal.action.kind="claim-pair";
+                foreach(var step in new[]{"left","observe"}) {
+                    bool reachedTransport=false;
+                    try {client.ClaimPair(journal,step).GetAwaiter().GetResult();}
+                    catch(IOException) {reachedTransport=true;}
+                    Check(reachedTransport,"paired claim could not reach the disconnected test transport");
+                }
                 var boost=(string)typeof(AppClient).GetMethod("Script",flags).Invoke(client,new object[]{"boost",State()});
                 Check(boost.Contains("clicks[\"persistAlias\"]")&&boost.Contains("import(\"/assets/clicks.js\")"),"boost click persistence not rendered");
             }
@@ -424,12 +464,12 @@ namespace Tappo {
             }
         }
         static async Task FixedPairWorker() {
-            foreach(var scenario in new[]{"success","right-timeout","pause-after-left","reward-stalled","receipt-clock"}) {
+            foreach(var scenario in new[]{"success","left-skipped","right-skipped","right-timeout","pause-after-left","reward-stalled","receipt-clock"}) {
                 var store=Store();var client=new FakeClient();var calls=new List<string>();
                 const long now=100000;
                 var state=client.State;state.time=now;state.left=1000;state.right=2000;
                 state.cumulative=4015;state.local=15;state.serverTotal=4000;state.available=2015;
-                var baseline=new ServerState {accountKey=state.accountKey,total=4000,consumed=2000,left=1000,right=2000};
+                var baseline=new ServerState {accountKey=state.accountKey,total=4000,consumed=2000,left=1000,right=2000,observedAt=now-400};
                 client.ServerResult=()=>baseline;
                 client.PairResult=(journal,command)=>{
                     calls.Add(command);
@@ -446,6 +486,12 @@ namespace Tappo {
                                 Check(times.left==900000&&times.right==baseline.right,"first receipt was not published before right submission");
                             }
                             if(scenario=="right-timeout")throw new IOException("fixture lost response");
+                            if(scenario=="right-skipped"){result.outcome="skipped";return result;}
+                        }else if(scenario=="left-skipped") {
+                            result.outcome="skipped";
+                            result.server=new ServerState {accountKey=baseline.accountKey,total=4000,consumed=2000,
+                                left=900000,right=901000,observedAt=now-123};
+                            return result;
                         }else if(scenario=="pause-after-left")store.Write("control.json",new Command {id="pause",action="pause"});
                         result.outcome="success";
                         var sentAt=scenario=="reward-stalled"?now-61000:now;
@@ -458,15 +504,24 @@ namespace Tappo {
                     result.server=new ServerState {accountKey=baseline.accountKey,total=4000,consumed=both?4000:3000,left=900000,right=both?901000:2000};
                     result.state=Copy(state);result.state.consumed=result.server.consumed;
                     result.state.left=result.server.left;result.state.right=result.server.right;
-                    result.outcome=scenario=="reward-stalled"?"pending":disk.right!=null&&!both?"unknown":"confirmed";
+                    result.outcome=scenario=="reward-stalled"?"pending":
+                        disk.right!=null&&!both&&disk.right.outcome!="skipped"?"unknown":"confirmed";
                     if(scenario=="receipt-clock"){result.server=baseline;result.outcome="pending";}
                     return result;
                 };
-                Worker worker=null;
+                Worker worker=null;var loops=0;
                 Func<Worker> make=()=>new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>Task.FromResult(0),
-                    ms=>{worker.RequestDisconnect();return Task.FromResult(0);},()=>now);
+                    ms=>{if(scenario!="left-skipped"||++loops>=2)worker.RequestDisconnect();return Task.FromResult(0);},()=>now);
                 worker=make();await worker.Run();
-                if(scenario=="right-timeout") {
+                if(scenario=="left-skipped") {
+                    var times=worker.Status.chestTimes;
+                    Check(string.Join(",",calls)=="left"&&client.Reads==1&&!store.Exists("pending.json")&&
+                        times.left==900000&&times.right==901000&&times.updatedAt==now-123,
+                        "unsent left slot lost the new query or scheduled another mutation");
+                }else if(scenario=="right-skipped") {
+                    Check(string.Join(",",calls)=="left,right,observe"&&!store.Exists("pending.json")&&worker.Status.claimsThisRun==1,
+                        "unsent right slot prevented independent verification of the left receipt");
+                }else if(scenario=="right-timeout") {
                     Check(store.Read<Journal>("pending.json").right.outcome=="armed","lost response discarded second intent");
                     worker=make();await worker.Run();
                     Check(store.Exists("pending.json")&&string.Join(",",calls)=="left,right,observe","restart replayed a pair request");
@@ -487,8 +542,48 @@ namespace Tappo {
                 Check(client.Claims==0&&client.Boosts==0,"pair fell through to another mutation");
             }
         }
+        static async Task PairScheduling() {
+            const long start=100000;
+            foreach(var scenario in new[]{"left-near","right-near","far","slots-change"}) {
+                var store=Store();var client=new FakeClient();
+                var now=start;
+                var first=start-Policy.ClaimSafetyMarginMs;
+                var gap=scenario=="far"?60000:scenario=="right-near"?5000:1750;
+                var left=scenario=="right-near"?first+gap:first;
+                var right=scenario=="right-near"?first:first+gap;
+                var state=client.State;
+                state.time=now;state.left=left;state.right=right;state.serverTotal=4000;
+                client.ServerResult=()=>new ServerState {accountKey=state.accountKey,total=4000,consumed=2000,
+                    left=left,right=right,observedAt=now};
+                string selected=null;
+                client.PairResult=(journal,command)=>{
+                    Check(command=="left"&&selected==null&&now==start+gap,scenario+" double claim started at the wrong time");
+                    selected="pair";
+                    return new PairResult {operationId=journal.id,accountKey=state.accountKey,outcome="skipped"};
+                };
+                client.ClaimResult=()=>{
+                    selected=store.Read<Journal>("pending.json").action.side;
+                    return new Snapshot {accountKey=state.accountKey,outcome="skipped",skipped=true};
+                };
+                Worker worker=null;
+                worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>Task.FromResult(0),ms=>{
+                    if(selected!=null||now>=start+5000)worker.RequestDisconnect();
+                    else {
+                        Check(!store.Exists("pending.json")&&client.Boosts==0,scenario+" mutated while waiting for the other slot");
+                        now+=ms;state.time=now;
+                        if(scenario=="slots-change")state.right=right+1000;
+                    }
+                    return Task.FromResult(0);
+                },()=>now);
+                await worker.Run();
+                var expected=scenario=="far"?0:scenario=="slots-change"?1000:gap;
+                Check(selected==(scenario=="far"||scenario=="slots-change"?"left":"pair")&&now==start+expected&&
+                    !store.Exists("pending.json")&&client.Boosts==0,scenario+" selected the wrong claim or exceeded the wait window");
+            }
+        }
         static async Task PendingChestClock() {
             var store=Store();var client=new FakeClient();long now=5000;var sides=new List<string>();
+            var receivedAt=RuntimeStore.Now-1000;
             var state=client.State;state.time=now;state.left=state.right=1000;state.cumulative=5000;state.available=3000;
             var initial=new ServerState {accountKey=state.accountKey,total=5000,consumed=2000,left=1000,right=1000};
             var advanced=new ServerState {accountKey=state.accountKey,total=5000,consumed=3000,left=900000,right=1000};
@@ -496,11 +591,12 @@ namespace Tappo {
             client.ClaimResult=()=>{
                 sides.Add(store.Read<Journal>("pending.json").action.side);
                 var after=Copy(client.State);after.outcome="pending";
+                after.claimReceivedAt=sides.Count==1?receivedAt:(long?)null;
                 if(sides.Count==1){after.receiptCooldown=900000;after.left=after.receiptCooldown;}
                 return after;
             };
             client.RecoveryResult=journal=>{
-                var after=Copy(client.State);after.operationId=journal.id;
+                var after=Copy(client.State);after.operationId=journal.id;after.claimReceivedAt=receivedAt;
                 after.left=advanced.left;after.consumed=advanced.consumed;after.available=2000;
                 after.observedServer=advanced;after.serverObservedAt=6000;after.outcome="pending";
                 if(now==8000){
@@ -516,6 +612,8 @@ namespace Tappo {
                 if(now==5000)Check(status.chestTimes.left==advanced.left&&status.chestTimes.right==initial.right&&
                     store.Read<Journal>("pending.json").receiptCooldown==advanced.left&&status.claimsThisRun==0,
                     "single receipt did not publish its cooldown while verification was pending");
+                if(now==5000)Check(File.ReadLines(store.FilePath("events.jsonl")).Any(line=>line.Contains("\"event\":\"claim-received\"")),
+                    "single receipt did not publish an activity before verification");
                 if(now==6000||now==7000)Check(status.chestTimes.left==advanced.left&&status.chestTimes.updatedAt==6000&&
                     store.Exists("pending.json")&&status.claimsThisRun==0&&client.Claims==1,"early clock retired or replayed the pending claim");
                 if(now==8000)Check(!store.Exists("pending.json")&&status.claimsThisRun==1&&client.Claims==1,"final confirmation did not retire just the first claim");
@@ -525,6 +623,8 @@ namespace Tappo {
             },()=>now);
             await worker.Run();
             Check(string.Join(",",sides)=="left,right"&&client.Reads==1,"second slot scheduling or query reuse changed");
+            Check(File.ReadLines(store.FilePath("events.jsonl")).Count(line=>line.Contains("\"event\":\"claim-received\""))==1,
+                "single receipt activity repeated during recovery");
         }
         static async Task WaitForServerClaimBalance() {
             var store=Store();var client=new FakeClient();long now=7000;int loops=0;
@@ -539,14 +639,30 @@ namespace Tappo {
             Worker worker=null;
             worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>Task.FromResult(0),ms=> {
                 if(++loops<=2) {
-                    Check(client.Claims==0&&client.Boosts==0&&!store.Exists("pending.json"),"unconfirmed local balance started an operation");
-                    Check(worker.Status.message=="等待桌宠同步服务器余额","balance sync wait not shown");
+                    Check(client.Claims==0&&client.Boosts==1&&!store.Exists("pending.json"),"balance wait must allow only the scheduled boost");
+                    if(loops==2)Check(worker.Status.message=="等待桌宠同步服务器余额","balance sync wait not shown between boosts");
                     if(loops==2){server.total=3000;now+=5000;client.State.time=now;}
                 } else worker.RequestDisconnect();
                 return Task.FromResult(0);
             },()=>now);
             await worker.Run();
             Check(client.Claims==1&&worker.Status.claimsThisRun==1&&!store.Exists("pending.json"),"server-confirmed balance did not permit a single claim");
+            foreach(var scenario in new[]{"total-behind","slot-not-due","reserve-met","consumed-mismatch"}) {
+                store=Store();client=new FakeClient();now=7000;
+                client.State.time=11000;client.State.left=4000;client.State.right=900000;
+                client.State.available=scenario=="reserve-met"?2000:1200;
+                client.State.cumulative=client.State.available+2000;
+                client.State.serverTotal=scenario=="total-behind"?3200:3100;
+                client.ServerResult=()=>new ServerState {accountKey="test-key",total=scenario=="reserve-met"?2900:3100,
+                    consumed=scenario=="consumed-mismatch"?2001:2000,
+                    left=scenario=="slot-not-due"?8000:4000,right=900000};
+                worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>Task.FromResult(0),ms=>{
+                    worker.RequestDisconnect();return Task.FromResult(0);
+                },()=>now);
+                await worker.Run();
+                int expected=scenario=="total-behind"||scenario=="slot-not-due"?1:0;
+                Check(client.Claims==0&&client.Boosts==expected&&!store.Exists("pending.json"),scenario+" blocked claim fallback");
+            }
         }
         static async Task WakeReplenishment() {
             var store=Store();var client=new FakeClient();long now=5000;int loops=0;

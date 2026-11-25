@@ -305,7 +305,7 @@ namespace Tappo {
         public Task<Snapshot> Snapshot(){return diagnostics.Call("read-snapshot",inner.Snapshot);}
         public Task<ServerState> Server(){return diagnostics.Call("read-server",inner.Server);}
         public Task<Snapshot> Boost(int delta,Snapshot before){return diagnostics.Call("boost",()=>inner.Boost(delta,before));}
-        public Task<Snapshot> Claim(string side,Snapshot before){return diagnostics.Call("claim-"+side,()=>inner.Claim(side,before));}
+        public Task<Snapshot> Claim(Journal journal){return diagnostics.Call("claim-"+journal.action.side,()=>inner.Claim(journal));}
         public bool SupportsClaimPair {get{return inner.SupportsClaimPair;}}
         public Task<PairResult> ClaimPair(Journal journal,string command){return diagnostics.Call("claim-pair-"+command,()=>inner.ClaimPair(journal,command));}
         public Task<Snapshot> Recover(Journal journal){return diagnostics.Call("verify-"+journal.action.kind,()=>inner.Recover(journal));}

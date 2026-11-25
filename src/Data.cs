@@ -32,11 +32,13 @@ namespace Tappo {
     internal sealed class Snapshot {
         public string appVersion;
         public string accountKey, operationId, outcome, failureStage, errorType, waitReason;
-        public int httpStatus, retryAfterMs;
+        public int httpStatus, retryAfterMs, requiredRetryAfterMs;
         public ServerState confirmedServer;
         public ServerState observedServer;
-        public long? serverObservedAt, receiptCooldown;
+        public long? serverObservedAt, receiptCooldown, clickNum, reportedClickTotal, claimReceivedAt;
         public RewardReceipt reward; public bool rewardVerified,uiRefreshRequested;
+        public string nativeCooldownProbe;
+        public ClickReportTiming clickReportTiming;
         public long time; public bool loggedIn, locked, claimBusy, skipped, rejected;
         public long? available, cumulative, local, consumed, serverTotal, left, right;
         public bool boostOverwritten; public long? boostAppliedTotal,boostReportTotal;
@@ -45,9 +47,18 @@ namespace Tappo {
         public long? Slot(string side) { return side == "left" ? left : right; }
         public bool Button(string side) { return buttons != null && buttons.ContainsKey(side) && buttons[side]; }
     }
+    internal sealed class ClickReportTiming {
+        public long? observedFrom,loginAt,listenerAt,accountStoreReadyAt,firstNativeSuccessAt,firstStoreSuccessAt,evidenceAt,evidenceLostAt;
+        public bool loggedInAtRegistration,nativeSuccessAccountKnown;
+        public string evidenceLostReason;
+        internal void Sanitize() {
+            if(Array.IndexOf(new[]{"store-reset","manual-consume","account-change","store-total-changed","new-report-action"},evidenceLostReason)<0)
+                evidenceLostReason=null;
+        }
+    }
     internal sealed class ServerState {
         public string accountKey;
-        public long? total, consumed, left, right;
+        public long? total, consumed, left, right, observedAt;
         public long? Slot(string side) { return side == "left" ? left : right; }
         public void Validate() {
             if (!new[] {total,consumed,left,right}.All(v => v.HasValue && v >= 0 && v <= 9007199254740991L)) throw new InvalidOperationException("服务端状态格式异常");
@@ -87,7 +98,7 @@ namespace Tappo {
     internal sealed class LauncherStatus { public string failedAt, error, requestedAt; public int runnerId; }
     internal sealed class PairSlot {
         public string id, outcome;
-        public long? clickNum, sentAt, receivedAt, receiptCooldown;
+        public long? clickNum, queryTotal, sentAt, receivedAt, receiptCooldown;
         public int code, cost;
         public long assetId;
         public bool applied;
@@ -98,13 +109,13 @@ namespace Tappo {
         public ServerState server;
         public Snapshot state;
         public Dictionary<string,long> bagBefore;
-        public int retryAfterMs, httpStatus;
+        public int retryAfterMs, requiredRetryAfterMs, httpStatus;
         public PairVerificationTiming timing;
     }
     internal sealed class PairVerificationTiming {
         public long? queryStartedAt, requestStartedAt, queryFinishedAt, leftWrittenAt, rightWrittenAt, bagStartedAt, bagFinishedAt;
         public bool sharedQuery;
-        public bool? awaitingDebit, leftEligible, rightEligible;
+        public bool? awaitingDebit, awaitingTotal, leftEligible, rightEligible;
         public string errorType;
     }
     internal sealed class Journal {
@@ -114,7 +125,7 @@ namespace Tappo {
         public ServerState server;
         public PairSlot left, right;
         public Dictionary<string,long> bagBefore;
-        public long? receiptCooldown;
+        public long? receiptCooldown, clickNum;
     }
     internal sealed class RuntimeStore {
         internal event Action<string,object> DiagnosticEvent;
