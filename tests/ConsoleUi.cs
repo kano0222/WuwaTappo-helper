@@ -1,14 +1,18 @@
 using System;
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 
 namespace Tappo {
     // Isolated production-XAML fixtures: no timer, tray, worker, discovery or real startup writes.
     internal static class ConsoleUiChecks {
+        [DllImport("user32.dll",EntryPoint="SendMessageW")]
+        static extern IntPtr SendMessage(IntPtr window,int message,IntPtr wParam,IntPtr lParam);
         static int checks;
         static void Check(bool pass,string message) {checks++;if(!pass)throw new Exception(message);}
         public static int Run() {
@@ -17,6 +21,7 @@ namespace Tappo {
             var output=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"console-previews");Directory.CreateDirectory(output);
             try {
                 var store=new RuntimeStore(root);var now=RuntimeStore.Now;
+                ResizeBorders(store);
                 using(var panel=new Panel(store,preview:true)) {
                     Check(panel.Window.Width==880&&panel.Window.Height==846,"default console size does not fit the tightened layout");
                     panel.FitToWorkArea(1080);Check(panel.Window.Height==846,"startup overrides the compact default height");
@@ -155,6 +160,33 @@ namespace Tappo {
                 }
             } finally {Directory.Delete(root,true);}
             return checks;
+        }
+        static int HitTest(Window window,Point point) {
+            const int wmNcHitTest=0x0084;
+            Point screen=window.PointToScreen(point);
+            int position=(ushort)Math.Round(screen.X)|((int)(ushort)Math.Round(screen.Y)<<16);
+            return SendMessage(new WindowInteropHelper(window).Handle,wmNcHitTest,IntPtr.Zero,new IntPtr(position)).ToInt32();
+        }
+        static void ResizeBorders(RuntimeStore store) {
+            using(var panel=new Panel(store,preview:true)) {
+                var window=panel.Window;
+                window.ShowActivated=false;window.ShowInTaskbar=false;window.Opacity=0;
+                window.Show();window.UpdateLayout();
+                double width=window.ActualWidth,height=window.ActualHeight;
+                var points=new[]{new Point(3,height/2),new Point(width-3,height/2),new Point(width/2,3),new Point(16,3),
+                    new Point(width-16,3),new Point(width/2,height-3),new Point(16,height-3),new Point(width-16,height-3)};
+                for(int i=0;i<points.Length;i++)Check(HitTest(window,points[i])==10+i,"incorrect native resize hit at "+points[i]);
+
+                foreach(var name in new[]{"TitleGrip","CloseButton","MinimizeButton","ReserveTarget","UpdateButton"}) {
+                    var control=panel.E<FrameworkElement>(name);
+                    var center=control.TranslatePoint(new Point(control.ActualWidth/2,control.ActualHeight/2),window);
+                    Check(HitTest(window,center)==1,"resize border interferes with "+name);
+                }
+                Check(window.ResizeMode==ResizeMode.CanResizeWithGrip,"existing resize grip was removed");
+
+                window.WindowState=WindowState.Maximized;window.UpdateLayout();
+                Check(HitTest(window,new Point(window.ActualWidth/2,3))==1,"maximized panel exposes a resize border");
+            }
         }
         static void PathToolTip(Panel panel) {
             var button=panel.E<Button>("BrowseAppButton");

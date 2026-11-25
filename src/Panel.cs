@@ -11,6 +11,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Input;
+using System.Windows.Interop;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -59,6 +60,7 @@ namespace Tappo {
         internal int ControlTimeoutMs=40000;
         public Panel(RuntimeStore store,bool preview=false) {
             this.store=store;activityLog=new ActivityLog(store.FilePath("events.jsonl")); Window=(Window)XamlReader.Parse(Resources.Text("Panel.xaml"));
+            Window.SourceInitialized+=(s,e)=>HwndSource.FromHwnd(new WindowInteropHelper(Window).Handle).AddHook(ResizeHitTest);
             diagnostics=new DiagnosticSession(store,"panel",background:!preview);
             verifyIdentity=!preview;
             diagnostics.Sample=diagnostics.Observe;
@@ -121,6 +123,28 @@ namespace Tappo {
             Window.ContentRendered+=async(s,e)=>{if(disposed)return;Life("visible");if(!preview) {if(AutoShowReleaseNotes)ShowReleaseNotes();await AutoRunOnOpen();}if(AutoCheckUpdates&&RuntimeStore.Now>=nextUpdateCheck)await CheckForUpdates();};
             var path=preview?null:Platform.Discover(store);SetPath(path);
             Refresh();
+        }
+        IntPtr ResizeHitTest(IntPtr hwnd,int message,IntPtr wParam,IntPtr lParam,ref bool handled) {
+            const int wmNcHitTest=0x0084;
+            if(message!=wmNcHitTest||Window.WindowState!=WindowState.Normal||Window.ActualWidth==0||Window.ActualHeight==0)return IntPtr.Zero;
+
+            // The screen coordinates in WM_NCHITTEST are signed, including on secondary monitors.
+            long position=lParam.ToInt64();
+            Point point=Window.PointFromScreen(new Point((short)position,(short)(position>>16)));
+            double right=Window.ActualWidth-point.X,bottom=Window.ActualHeight-point.Y;
+            if(point.X<0||point.Y<0||right<=0||bottom<=0)return IntPtr.Zero;
+
+            const double border=7,corner=22;
+            const int htLeft=10,htRight=11,htTop=12,htTopLeft=13,htTopRight=14,htBottom=15,htBottomLeft=16,htBottomRight=17;
+            int hit;
+            if(point.Y<border) hit=point.X<corner?htTopLeft:right<corner?htTopRight:htTop;
+            else if(bottom<border) hit=point.X<corner?htBottomLeft:right<corner?htBottomRight:htBottom;
+            else if(point.X<border) hit=point.Y<corner?htTopLeft:bottom<corner?htBottomLeft:htLeft;
+            else if(right<border) hit=point.Y<corner?htTopRight:bottom<corner?htBottomRight:htRight;
+            else return IntPtr.Zero;
+
+            handled=true;
+            return new IntPtr(hit);
         }
         public T E<T>(string name) where T:class { var value=Window.FindName(name) as T; if(value==null) throw new InvalidOperationException("界面元素缺失："+name);return value; }
         void Text(string name,string text) { E<TextBlock>(name).Text=text; }
