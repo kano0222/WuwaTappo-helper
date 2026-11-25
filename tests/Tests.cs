@@ -1005,6 +1005,9 @@ namespace Tappo {
                 panel.CheckForUpdates().GetAwaiter().GetResult();Check(panel.E<Button>("UpdateButton").Content.ToString().Contains("已是最新"),"up-to-date UI");
                 Check(panel.E<Button>("UpdateButton").Content.ToString().StartsWith(versionLabel),"up-to-date UI missing local version");
                 Check(panel.E<Button>("UpdateButton").ToolTip==null,"normal update retains a tooltip");
+                panel.UpdateCheck=token=>{throw new IOException("offline");};
+                panel.CheckForUpdates().GetAwaiter().GetResult();
+                Check(panel.E<Button>("UpdateButton").Content.ToString()==versionLabel+"已是最新","failed refresh lost the last confirmed version status");
                 panel.UpdateCheck=token=>Task.FromResult(new UpdateInfo {version="0.1.17",available=true,url="https://github.com/kano0222/WuwaTappo-helper/releases/tag/v0.1.17"});
                 panel.CheckForUpdates().GetAwaiter().GetResult();string opened=null;panel.OpenUpdatePage=url=>opened=url;
                 panel.Render(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"previews","update-available.png"),820,660);
@@ -1028,7 +1031,7 @@ namespace Tappo {
                     Check(panel.E<TextBlock>("ActivityText").Text.Split('\n')[0].Contains(Connection.RetryMessage("query",kind)),"connection activity misclassified");
                 }
                 panel.UpdateCheck=token=>{throw new InvalidOperationException("GitHub 暂时限制查询");};panel.CheckForUpdates().GetAwaiter().GetResult();
-                Check(panel.E<Button>("UpdateButton").IsEnabled&&panel.E<Button>("UpdateButton").Content.ToString()==versionLabel+"重试检查","update failure disabled controls");
+                Check(panel.E<Button>("UpdateButton").IsEnabled&&panel.E<Button>("UpdateButton").Content.ToString()==versionLabel+"检查更新","update failure did not restore the check action");
                 Check(updateButton.Content.ToString().StartsWith(versionLabel)&&updateButton.ToolTip==null,"failed check hid version or retains a tooltip");
                 panel.UpdateCheck=token=>{throw new System.Net.Http.HttpRequestException("offline");};panel.CheckForUpdates().GetAwaiter().GetResult();
                 Check(updateButton.Content.ToString().StartsWith(versionLabel)&&updateButton.ToolTip==null,"offline check hid local version or retains a tooltip");

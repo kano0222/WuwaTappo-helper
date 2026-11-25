@@ -326,9 +326,10 @@ namespace Tappo {
                 UpdateCaption(result.available?"下载新版":"已是最新");
             } catch {
                 if(disposed)return;
-                update=null;button.Tag=null;
+                if(update!=null&&update.available)update=null;
+                button.Tag=null;
                 nextUpdateCheck=RuntimeStore.Now+15*60*1000L;
-                UpdateCaption("重试检查");
+                UpdateCaption(update==null?"检查更新":"已是最新");
             } finally {checkingUpdates=false;if(!disposed)button.IsEnabled=true;}
         }
         void OpenAnother() {
