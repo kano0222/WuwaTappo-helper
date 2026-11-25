@@ -84,11 +84,20 @@ namespace Tappo {
                 try {await session.Call<int>("read-snapshot",()=>{throw new IOException("Cookie: PRIVATE-SECRET C:\\Users\\private\\token");});}catch(IOException) { }
                 store.Log("operation-state",new {operationId="test-op",stage="verify",code=70006,httpStatus=503,errorType="AppQueryException",detail="PRIVATE-SECRET",before=new {accountKey="PRIVATE-ACCOUNT"}});
                 store.Log("operation-state",new {operationId="test-op",stage="verify",outcome="pending",waitReason="consumption.cooldown.cumulative"});
+                store.Log("claim-startup-timing",new {stage="first-claim-check",result="server-total-behind",
+                    timing=new {observedFrom=1000L,loginAt=1100L,listenerAt=1300L,firstNativeSuccessAt=1200L,
+                        evidenceLostReason="PRIVATE-SECRET",accountKey="PRIVATE-ACCOUNT"},
+                    decisionAt=1400L,snapshotAt=1350L,queryAt=(long?)null,queryBehind=true,reportEvidenceUsable=false});
+                var timing=session.Copy().claimStartupEvents.Single();
+                Check(timing.result=="server-total-behind"&&timing.decisionAt==1400L&&timing.snapshotAt==1350L&&timing.queryAt==null&&
+                    timing.queryBehind==true&&timing.reportEvidenceUsable==false&&timing.timing.firstNativeSuccessAt==1200L&&
+                    timing.timing.listenerAt==1300L&&timing.timing.evidenceLostReason==null,"startup timing lost event order, decision, or sanitization");
                 session.Tick();
                 var bundle=Path.Combine(store.Root,"stages.zip");session.Export(bundle);
                 var text=Bundle(bundle);
                 Check(text.Contains("operation-waiting")&&text.Contains("read-server")&&text.Contains("70006")&&text.Contains("503"),"ZIP cannot identify stage/business error category");
                 Check(text.Contains("consumption.cooldown.cumulative"),"ZIP omitted the claim wait conditions");
+                Check(text.Contains("claim-startup-timing")&&text.Contains("firstNativeSuccessAt"),"ZIP omitted startup timing");
                 Check(!text.Contains("PRIVATE-SECRET")&&!text.Contains("PRIVATE-ACCOUNT")&&!text.Contains(store.Root)&&!text.Contains("C:\\\\Users"),"export leaked a credential, account or personal path");
                 var stale=Json.Decode<DiagnosticState>(Json.Encode(blocked));stale.at=DateTimeOffset.FromUnixTimeMilliseconds(now-20000).ToString("o");
                 Check(DiagnosticSession.Category(status,stale,now,"matched")=="heartbeat-stale","dead heartbeat presented as live business stall");
