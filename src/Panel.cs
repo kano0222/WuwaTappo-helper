@@ -94,7 +94,12 @@ namespace Tappo {
                 E<TextBox>(name).LostKeyboardFocus+=(s,e)=>RestoreBruteInput();
                 E<TextBox>(name).PreviewKeyDown+=(s,e)=>{if(e.Key==Key.Enter) {FinishBruteEditing();e.Handled=true;}};
             }
+            // The button templates read Window.Tag to show focus only after Tab navigation.
+            Window.PreviewKeyDown+=(s,e)=>{
+                if(e.Key==Key.Tab&&(Keyboard.Modifiers&~ModifierKeys.Shift)==ModifierKeys.None) Window.Tag="Tab";
+            };
             Window.PreviewMouseDown+=(s,e)=>{
+                Window.Tag=null;
                 var input=Keyboard.FocusedElement as TextBox;
                 if((input==E<TextBox>("BruteTarget")||input==E<TextBox>("BruteRate"))&&input!=null&&!input.IsMouseOver)FinishBruteEditing();
             };

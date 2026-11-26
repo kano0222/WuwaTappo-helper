@@ -6,6 +6,23 @@
   <Window.Resources>
     <SolidColorBrush x:Key="Ink" Color="#302C28"/>
     <SolidColorBrush x:Key="Muted" Color="#716557"/>
+    <Style x:Key="ButtonTabFocusRing" TargetType="Border">
+      <Setter Property="BorderBrush" Value="{StaticResource Muted}"/>
+      <Setter Property="BorderThickness" Value="1"/>
+      <Setter Property="CornerRadius" Value="8"/>
+      <Setter Property="Margin" Value="2"/>
+      <Setter Property="IsHitTestVisible" Value="False"/>
+      <Setter Property="Visibility" Value="Collapsed"/>
+      <Style.Triggers>
+        <MultiDataTrigger>
+          <MultiDataTrigger.Conditions>
+            <Condition Binding="{Binding IsKeyboardFocused, RelativeSource={RelativeSource TemplatedParent}}" Value="True"/>
+            <Condition Binding="{Binding Tag, RelativeSource={RelativeSource AncestorType=Window}}" Value="Tab"/>
+          </MultiDataTrigger.Conditions>
+          <Setter Property="Visibility" Value="Visible"/>
+        </MultiDataTrigger>
+      </Style.Triggers>
+    </Style>
     <Style TargetType="ScrollBar">
       <Setter Property="Width" Value="8"/>
       <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ScrollBar">
@@ -23,10 +40,13 @@
       <Setter Property="Cursor" Value="Hand"/><Setter Property="FontWeight" Value="SemiBold"/>
       <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
       <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
-        <Border x:Name="Surface" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
-                BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="11" Padding="{TemplateBinding Padding}">
-          <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-        </Border>
+        <Grid>
+          <Border x:Name="Surface" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}"
+                  BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="11" Padding="{TemplateBinding Padding}">
+            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+          </Border>
+          <Border x:Name="TabFocusRing" Style="{StaticResource ButtonTabFocusRing}"/>
+        </Grid>
         <ControlTemplate.Triggers>
           <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Surface" Property="Background" Value="#F5F1EB"/></Trigger>
           <Trigger Property="IsPressed" Value="True"><Setter TargetName="Surface" Property="Opacity" Value="0.75"/></Trigger>
@@ -39,9 +59,12 @@
       <Setter Property="Background" Value="#E9BD7D"/><Setter Property="BorderBrush" Value="#D8A55D"/>
       <Setter Property="Foreground" Value="#55391F"/>
       <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
-        <Border x:Name="RunSurface" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="11" Padding="{TemplateBinding Padding}">
-          <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-        </Border>
+        <Grid>
+          <Border x:Name="RunSurface" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="11" Padding="{TemplateBinding Padding}">
+            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+          </Border>
+          <Border x:Name="TabFocusRing" Style="{StaticResource ButtonTabFocusRing}"/>
+        </Grid>
         <ControlTemplate.Triggers>
           <MultiTrigger><MultiTrigger.Conditions><Condition Property="IsMouseOver" Value="True"/><Condition Property="IsEnabled" Value="True"/></MultiTrigger.Conditions>
             <Setter TargetName="RunSurface" Property="Background" Value="#DFAD66"/>
@@ -76,9 +99,12 @@
       <Setter Property="Background" Value="#F7F6F2"/><Setter Property="BorderBrush" Value="#D5CCBF"/>
       <Setter Property="FontWeight" Value="Normal"/>
       <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
-        <Border x:Name="PathSurface" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="11" Padding="{TemplateBinding Padding}">
-          <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Center"/>
-        </Border>
+        <Grid>
+          <Border x:Name="PathSurface" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="11" Padding="{TemplateBinding Padding}">
+            <ContentPresenter HorizontalAlignment="Stretch" VerticalAlignment="Center"/>
+          </Border>
+          <Border x:Name="TabFocusRing" Style="{StaticResource ButtonTabFocusRing}"/>
+        </Grid>
         <ControlTemplate.Triggers>
           <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="PathSurface" Property="Background" Value="#F5F1EB"/><Setter TargetName="PathSurface" Property="BorderBrush" Value="#BFAF98"/></Trigger>
           <Trigger Property="IsPressed" Value="True"><Setter TargetName="PathSurface" Property="Opacity" Value="0.75"/></Trigger>
@@ -196,20 +222,17 @@
 
     <Geometry x:Key="ShrinkWindowIcon">M16,2 L10,8 M10,3 V8 H15 M2,16 L8,10 M3,10 H8 V15</Geometry>
     <Geometry x:Key="ExpandWindowIcon">M10,8 L16,2 M11,2 H16 V7 M8,10 L2,16 M2,11 V16 H7</Geometry>
-    <Style x:Key="ToolbarKeyboardFocus" TargetType="Control">
-      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Control">
-        <Border BorderBrush="{StaticResource Muted}" BorderThickness="1" CornerRadius="8" IsHitTestVisible="False"/>
-      </ControlTemplate></Setter.Value></Setter>
-    </Style>
     <Style x:Key="ToolbarButton" TargetType="Button" BasedOn="{StaticResource ButtonBase}">
       <Setter Property="Width" Value="36"/><Setter Property="Height" Value="34"/>
       <Setter Property="Padding" Value="0"/><Setter Property="Background" Value="Transparent"/>
       <Setter Property="Foreground" Value="#5F5549"/><Setter Property="BorderThickness" Value="0"/>
-      <Setter Property="FocusVisualStyle" Value="{StaticResource ToolbarKeyboardFocus}"/>
       <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
-        <Border x:Name="ToolbarSurface" Background="{TemplateBinding Background}" CornerRadius="8" BorderThickness="1" BorderBrush="Transparent">
-          <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
-        </Border>
+        <Grid>
+          <Border Background="{TemplateBinding Background}" CornerRadius="8" BorderThickness="1" BorderBrush="Transparent">
+            <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+          </Border>
+          <Border x:Name="TabFocusRing" Style="{StaticResource ButtonTabFocusRing}" CornerRadius="6"/>
+        </Grid>
         <ControlTemplate.Triggers>
           <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.42"/></Trigger>
         </ControlTemplate.Triggers>
@@ -257,7 +280,7 @@
           <TextBlock x:Name="InstanceTitle" TextTrimming="CharacterEllipsis" Text="WUWA TAPPO  /  后台助手" FontSize="10" FontWeight="SemiBold" Foreground="#716557" VerticalAlignment="Center"/>
         </Grid>
         <Button x:Name="ViewModeButton" Grid.Column="1" Style="{StaticResource ToolbarButton}" Height="30" Margin="0,0,4,0"
-                FocusVisualStyle="{x:Null}" AutomationProperties.Name="切换到迷你模式">
+                AutomationProperties.Name="切换到迷你模式">
           <Path Data="{StaticResource ShrinkWindowIcon}" Width="14" Height="14" Stretch="Uniform" Stroke="#5F5549" StrokeThickness="1.5"
                 StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
         </Button>

@@ -201,8 +201,8 @@ namespace Tappo {
                     "mini switch lost its common hit area or compact icon");
                 foreach(var name in new[]{"ViewModeButton","MiniViewModeButton","MiniStartButton","MiniMinimizeButton","MiniCloseButton"})
                     Check(panel.E<Button>(name).ToolTip==null,"routine toolbar button has a tooltip: "+name);
-                CheckToolbarFocus(run);
-                CheckToolbarFocus(expand);
+                CheckTabFocus(run);
+                CheckTabFocus(expand);
 
                 string command=null;panel.DispatchOverride=action=>command=action;
                 run.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -310,7 +310,10 @@ namespace Tappo {
                 window.Show();window.UpdateLayout();
                 var shrink=panel.E<Button>("ViewModeButton");
                 var expand=panel.E<Button>("MiniViewModeButton");
-                CheckToolbarFocus(shrink,keyboardCue:false);
+                CheckTabFocus(shrink);
+                CheckTabFocus(panel.E<Button>("StartButton"));
+                CheckTabFocus(panel.E<Button>("BrowseAppButton"));
+                CheckTabFocus(panel.E<Button>("UpdateButton"));
 
                 var center=window.PointToScreen(new Point(window.ActualWidth/2,window.ActualHeight/2));
                 shrink.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -334,15 +337,38 @@ namespace Tappo {
                     "expanding near the window work area edge does not stay inside it");
             }
         }
-        static void CheckToolbarFocus(Button button,bool keyboardCue=true) {
+        static void CheckTabFocus(Button button) {
             var flags=System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic;
             var key=(DependencyPropertyKey)typeof(UIElement).GetField("IsKeyboardFocusedPropertyKey",flags).GetValue(null);
             var oldValue=button.IsKeyboardFocused;
+            var ring=(Border)button.Template.FindName("TabFocusRing",button);
+            var source=PresentationSource.FromVisual(button);
+            Action settle=()=>button.Dispatcher.Invoke(new Action(()=>{}),System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+            Action<Key> press=input=>{
+                var args=new KeyEventArgs(Keyboard.PrimaryDevice,source,0,input){RoutedEvent=Keyboard.PreviewKeyDownEvent};
+                button.RaiseEvent(args);
+                settle();
+                Check(!args.Handled,"panel intercepts a keyboard key: "+input);
+            };
             try {
                 button.SetValue(key,true);
-                var surface=(Border)button.Template.FindName("ToolbarSurface",button);
-                Check(((SolidColorBrush)surface.BorderBrush).Color==Colors.Transparent&&(button.FocusVisualStyle!=null)==keyboardCue,
-                    "toolbar draws a persistent outline or uses the wrong keyboard cue");
+                press(Key.LeftAlt);
+                press(Key.System);
+                Check(ring.Visibility==Visibility.Collapsed&&button.FocusVisualStyle==null&&button.Focusable&&button.IsTabStop,
+                    "Alt reveals a button outline or focus navigation was disabled");
+                press(Key.Tab);
+                Check(Equals(Window.GetWindow(button).Tag,"Tab"),"the panel does not recognize the Tab key");
+                Check(ring.Visibility==Visibility.Visible&&!ring.IsHitTestVisible,"Tab does not reveal the focused button or the outline blocks mouse clicks");
+                button.SetValue(key,false);
+                settle();
+                Check(ring.Visibility==Visibility.Collapsed,"unfocused button keeps its outline");
+                button.SetValue(key,true);
+                press(Key.RightAlt);
+                Check(ring.Visibility==Visibility.Visible,"Alt clears a focus outline requested by Tab");
+                button.RaiseEvent(new MouseButtonEventArgs(Mouse.PrimaryDevice,0,MouseButton.Left){RoutedEvent=Mouse.PreviewMouseDownEvent});
+                settle();
+                Check(ring.Visibility==Visibility.Collapsed&&Equals(button.GetValue(UIElement.IsKeyboardFocusedProperty),true),
+                    "mouse input changes focus instead of clearing just the outline");
             } finally {button.SetValue(key,oldValue);}
         }
         static void Wheel(FrameworkElement source,int delta) {
