@@ -95,7 +95,7 @@ namespace Tappo {
     }
     internal sealed class Settings { public string appPath; }
     internal sealed class Command { public string id, action, pendingHash; }
-    internal sealed class LauncherStatus { public string failedAt, error, requestedAt; public int runnerId; }
+    internal sealed class LauncherStatus { public string failedAt, error; }
     internal sealed class PairSlot {
         public string id, outcome;
         public long? clickNum, queryTotal, sentAt, receivedAt, receiptCooldown;

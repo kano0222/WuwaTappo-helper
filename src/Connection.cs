@@ -26,12 +26,20 @@ namespace Tappo {
             return failure!=null?failure.Kind:error is MainWindowNotReadyException?"main-not-ready":"connection-failed";
         }
         public static string Hint(Status status,long now) {
+            bool needsUserAction;
+            return Hint(status,now,out needsUserAction);
+        }
+        public static string Hint(Status status,long now,out bool needsUserAction) {
+            needsUserAction=true;
             if(status.connectionFailure=="app-mismatch") return "请退出其他国服或国际服桌宠，确认助手选择的程序路径后重试。";
             if(status.connectionFailure=="incompatible") return "请检查助手是否有新版本。";
+            needsUserAction=false;
             if(status.connected!=false&&status.state!=null&&status.state.locked) return "更新完成后自动继续。";
             if(status.disconnectedSince.HasValue) {
-                if(status.connectionFailure=="debug-unavailable"&&now-status.disconnectedSince.Value>60000)
+                if(status.connectionFailure=="debug-unavailable"&&now-status.disconnectedSince.Value>60000) {
+                    needsUserAction=true;
                     return "暂时无法连接桌宠。请先停止运行；若桌宠仍开着，请正常退出，再点击“启动后台”。";
+                }
                 return status.connectionFailure=="main-not-ready"&&now-status.disconnectedSince.Value>60000?
                     "桌宠还未启动完成，请稍候。":"正在重新连接桌宠";
             }

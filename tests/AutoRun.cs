@@ -22,6 +22,7 @@ namespace Tappo {
                     if(!process.WaitForExit(10000)||process.ExitCode!=0)throw new Exception("auto-run pet metadata fixture did not compile");
                 }
                 Check(Platform.ValidPath(pet),"fixture path is invalid");
+                LauncherConflict(root,pet);
                 var freshRoot=Path.Combine(root,"first-open");Directory.CreateDirectory(freshRoot);
                 File.Copy(pet,Path.Combine(freshRoot,"WuwaTappo.exe"));
                 var fresh=new RuntimeStore(freshRoot);fresh.Write("preferences.json",new Preference {mode="clicker",autoRun=true});
@@ -98,6 +99,31 @@ namespace Tappo {
                 }
                 return checks;
             } finally {Directory.Delete(root,true);}
+        }
+        static void LauncherConflict(string root,string pet) {
+            var store=new RuntimeStore(Path.Combine(root,"launcher-conflict"));Platform.SavePath(store,pet);
+            var exe=Path.Combine(store.Root,"WuwaTappoHelper.exe");
+            File.Copy(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"WuwaTappoHelper.exe"),exe);
+            File.Copy(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"WuwaTappoHelper.exe.config"),exe+".config");
+            using(Instances.Acquire(pet))
+            using(var child=Process.Start(new ProcessStartInfo(exe,"--worker") {UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=store.Root})) {
+                Check(child.WaitForExit(10000)&&child.ExitCode==1,"launcher did not reject an occupied fixture pet");
+            }
+            var failure=store.Read<LauncherStatus>("launcher-status.json");
+            Check(failure!=null&&failure.error.Contains("已由另一个助手后台接管")&&!store.Exists("status.json"),"launcher lost the conflict reason or ran a worker");
+            var now=RuntimeStore.Now;
+            store.Write("status.json",new Status {pid=int.MaxValue,at=DateTimeOffset.FromUnixTimeMilliseconds(now-60000).ToString("o"),claimsThisRun=7});
+            using(var panel=new Panel(store,preview:true)) {
+                panel.ReadClock=()=>now;panel.Refresh();
+                Check(panel.E<TextBlock>("MainMessage").Text=="后台已退出","conflict fixture does not start from an exited worker");
+                int starts=0;
+                panel.DispatchOverride=action=>{starts++;throw new InvalidOperationException(failure.error);};
+                panel.E<Button>("StartButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                now+=30000;panel.Refresh();
+                Check(starts==1&&panel.E<TextBlock>("StatusLabel").Text=="启动失败"&&panel.E<TextBlock>("DetailMessage").Text==failure.error&&
+                    panel.E<TextBlock>("MiniDetailMessage").Text==failure.error&&panel.E<TextBlock>("ClaimsValue").Text=="7",
+                    "old worker history or the notice timeout hid the current launch failure");
+            }
         }
     }
 }

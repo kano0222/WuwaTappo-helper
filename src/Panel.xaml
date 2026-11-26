@@ -194,19 +194,121 @@
                   </ControlTemplate.Triggers>
                 </ControlTemplate>
 
+    <Geometry x:Key="ShrinkWindowIcon">M16,2 L10,8 M10,3 V8 H15 M2,16 L8,10 M3,10 H8 V15</Geometry>
+    <Geometry x:Key="ExpandWindowIcon">M10,8 L16,2 M11,2 H16 V7 M8,10 L2,16 M2,11 V16 H7</Geometry>
+    <Style x:Key="ToolbarKeyboardFocus" TargetType="Control">
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Control">
+        <Border BorderBrush="{StaticResource Muted}" BorderThickness="1" CornerRadius="8" IsHitTestVisible="False"/>
+      </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style x:Key="ToolbarButton" TargetType="Button" BasedOn="{StaticResource ButtonBase}">
+      <Setter Property="Width" Value="36"/><Setter Property="Height" Value="34"/>
+      <Setter Property="Padding" Value="0"/><Setter Property="Background" Value="Transparent"/>
+      <Setter Property="Foreground" Value="#5F5549"/><Setter Property="BorderThickness" Value="0"/>
+      <Setter Property="FocusVisualStyle" Value="{StaticResource ToolbarKeyboardFocus}"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button">
+        <Border x:Name="ToolbarSurface" Background="{TemplateBinding Background}" CornerRadius="8" BorderThickness="1" BorderBrush="Transparent">
+          <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/>
+        </Border>
+        <ControlTemplate.Triggers>
+          <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.42"/></Trigger>
+        </ControlTemplate.Triggers>
+      </ControlTemplate></Setter.Value></Setter>
+      <Style.Triggers>
+        <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="#EBE6DE"/></Trigger>
+        <Trigger Property="IsPressed" Value="True"><Setter Property="Background" Value="#E0D8CC"/></Trigger>
+      </Style.Triggers>
+    </Style>
+    <Style x:Key="MiniRunButtonStyle" TargetType="Button" BasedOn="{StaticResource ToolbarButton}">
+      <Setter Property="Width" Value="38"/><Setter Property="Background" Value="#EDE8E0"/>
+      <Style.Triggers>
+        <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="#F1E2C9"/><Setter Property="Foreground" Value="#80572E"/></Trigger>
+        <Trigger Property="IsPressed" Value="True"><Setter Property="Background" Value="#E8D0AB"/><Setter Property="Foreground" Value="#80572E"/></Trigger>
+        <MultiTrigger><MultiTrigger.Conditions><Condition Property="Tag" Value="pause"/><Condition Property="IsMouseOver" Value="True"/></MultiTrigger.Conditions>
+          <Setter Property="Background" Value="#F0E0DA"/><Setter Property="Foreground" Value="#874F45"/>
+        </MultiTrigger>
+        <MultiTrigger><MultiTrigger.Conditions><Condition Property="Tag" Value="pause"/><Condition Property="IsPressed" Value="True"/></MultiTrigger.Conditions>
+          <Setter Property="Background" Value="#E7CFC5"/><Setter Property="Foreground" Value="#874F45"/>
+        </MultiTrigger>
+      </Style.Triggers>
+    </Style>
+    <Style x:Key="MiniStatLabel" TargetType="TextBlock">
+      <Setter Property="FontSize" Value="11"/><Setter Property="Foreground" Value="{StaticResource Muted}"/>
+      <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+    </Style>
+    <Style x:Key="MiniStatValue" TargetType="TextBlock">
+      <Setter Property="FontFamily" Value="Bahnschrift"/><Setter Property="FontSize" Value="23"/>
+      <Setter Property="FontWeight" Value="SemiBold"/><Setter Property="Margin" Value="0,3,0,0"/>
+      <Setter Property="Foreground" Value="{StaticResource Ink}"/>
+      <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+      <Setter Property="ToolTip" Value="{Binding Text, RelativeSource={RelativeSource Self}}"/>
+    </Style>
+    <Style x:Key="MiniFieldLabel" TargetType="Label">
+      <Setter Property="FontSize" Value="11"/><Setter Property="Foreground" Value="{StaticResource Muted}"/>
+      <Setter Property="Padding" Value="0,0,0,4"/>
+    </Style>
   </Window.Resources>
   <Border x:Name="RootSurface" Background="#F7F6F2" BorderBrush="#DDD7CE" BorderThickness="1" CornerRadius="20">
     <Grid>
       <Grid.RowDefinitions><RowDefinition Height="46"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-      <Grid Margin="20,7,12,0">
-        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="38"/><ColumnDefinition Width="38"/></Grid.ColumnDefinitions>
+      <Grid x:Name="FullToolbar" Margin="20,7,12,0">
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="38"/><ColumnDefinition Width="38"/></Grid.ColumnDefinitions>
         <Grid x:Name="TitleGrip" Background="Transparent">
           <TextBlock x:Name="InstanceTitle" TextTrimming="CharacterEllipsis" Text="WUWA TAPPO  /  后台助手" FontSize="10" FontWeight="SemiBold" Foreground="#716557" VerticalAlignment="Center"/>
         </Grid>
-        <Button x:Name="MinimizeButton" Grid.Column="1" Content="—" Height="30" Padding="0" BorderThickness="0" Background="Transparent" AutomationProperties.Name="最小化"/>
-        <Button x:Name="CloseButton" Grid.Column="2" Content="×" FontSize="20" Height="30" Padding="0" BorderThickness="0" Background="Transparent" AutomationProperties.Name="选择退出助手或最小化到托盘"/>
+        <Button x:Name="ViewModeButton" Grid.Column="1" Style="{StaticResource ToolbarButton}" Height="30" Margin="0,0,4,0"
+                FocusVisualStyle="{x:Null}" AutomationProperties.Name="切换到迷你模式">
+          <Path Data="{StaticResource ShrinkWindowIcon}" Width="14" Height="14" Stretch="Uniform" Stroke="#5F5549" StrokeThickness="1.5"
+                StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+        </Button>
+        <Button x:Name="MinimizeButton" Grid.Column="2" Content="—" Height="30" Padding="0" BorderThickness="0" Background="Transparent" AutomationProperties.Name="最小化"/>
+        <Button x:Name="CloseButton" Grid.Column="3" Content="×" FontSize="20" Height="30" Padding="0" BorderThickness="0" Background="Transparent" AutomationProperties.Name="选择退出助手或最小化到托盘"/>
       </Grid>
-      <Border x:Name="MainViewport" Grid.Row="1" Padding="24,6,24,10" ClipToBounds="True">
+      <Grid x:Name="MiniToolbar" Visibility="Collapsed" Margin="12,0" VerticalAlignment="Center">
+        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+        <Button x:Name="MiniStartButton" Style="{StaticResource MiniRunButtonStyle}" IsEnabled="{Binding IsEnabled, ElementName=StartButton}"
+                Tag="{Binding Tag, ElementName=StartButton}"
+                AutomationProperties.Name="{Binding Content, ElementName=StartButton}">
+          <Path Width="18" Height="18" Stretch="Uniform" Fill="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}">
+            <Path.Style><Style TargetType="Path">
+              <Setter Property="Data" Value="M4,1 L17,9 L4,17 Z"/>
+              <Style.Triggers><DataTrigger Binding="{Binding Tag, ElementName=StartButton}" Value="pause">
+                <Setter Property="Data"><Setter.Value><RectangleGeometry Rect="1,1,17,17" RadiusX="3" RadiusY="3"/></Setter.Value></Setter>
+              </DataTrigger></Style.Triggers>
+            </Style></Path.Style>
+          </Path>
+        </Button>
+        <Border x:Name="MiniTitleGrip" Grid.Column="1" Background="Transparent"/>
+        <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center" Margin="0,0,10,0">
+          <Ellipse Width="7" Height="7" Margin="0,0,6,0">
+            <Ellipse.Style><Style TargetType="Ellipse">
+              <Setter Property="Fill" Value="#938B81"/>
+              <Style.Triggers>
+                <DataTrigger Binding="{Binding Text, ElementName=StatusLabel}" Value="运行中"><Setter Property="Fill" Value="#64906B"/></DataTrigger>
+                <DataTrigger Binding="{Binding Tag, ElementName=MiniStatusLabel}" Value="attention"><Setter Property="Fill" Value="#BB8955"/></DataTrigger>
+              </Style.Triggers>
+            </Style></Ellipse.Style>
+          </Ellipse>
+          <TextBlock x:Name="MiniStatusLabel" FontSize="12" Foreground="{StaticResource Muted}" MaxWidth="152"
+                     TextTrimming="CharacterEllipsis" Background="Transparent"/>
+        </StackPanel>
+        <Border Grid.Column="3" Width="1" Height="18" Background="#DDD6CC" Margin="0,0,6,0"/>
+        <StackPanel Grid.Column="4" Orientation="Horizontal">
+          <Button x:Name="MiniViewModeButton" Style="{StaticResource ToolbarButton}" AutomationProperties.Name="切换到完整模式">
+            <Path Data="{StaticResource ExpandWindowIcon}" Width="14" Height="14" Stretch="Uniform" Stroke="#5F5549" StrokeThickness="1.5"
+                  StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round"/>
+          </Button>
+          <Button x:Name="MiniMinimizeButton" Style="{StaticResource ToolbarButton}" AutomationProperties.Name="最小化">
+            <Path Data="M2,10 H16" Width="18" Height="18" Stroke="#5F5549" StrokeThickness="1.5"/>
+          </Button>
+          <Button x:Name="MiniCloseButton" Style="{StaticResource ToolbarButton}" AutomationProperties.Name="选择退出助手或最小化到托盘">
+            <Path Data="M4,4 L14,14 M14,4 L4,14" Width="18" Height="18" Stroke="#5F5549" StrokeThickness="1.5"/>
+          </Button>
+        </StackPanel>
+      </Grid>
+      <ScrollViewer x:Name="MainViewport" Grid.Row="1" Margin="24,6,24,10" ClipToBounds="True"
+                    VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled"
+                    CanContentScroll="False" Focusable="False" Background="Transparent">
         <Grid ClipToBounds="True">
           <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
         <StackPanel x:Name="MainSections">
@@ -260,18 +362,19 @@
               <StackPanel><TextBlock x:Name="AvailableCaption" Text="可用次数" Foreground="#716557"/><TextBlock x:Name="AvailableValue" Text="—" FontSize="32" FontFamily="Bahnschrift" Margin="0,6,0,4"/><TextBlock x:Name="ReserveCaption" TextWrapping="Wrap" Text="每箱消耗 1,000 · 储备目标 2,000" FontSize="11" Foreground="#716557"/></StackPanel>
             </Border>
             <Border Grid.Column="1" Style="{StaticResource Card}" Padding="16,12" Margin="0,0,12,0">
-              <StackPanel><TextBlock Text="累计领取宝箱" Foreground="{StaticResource Muted}"/><TextBlock x:Name="TotalValue" Text="—" FontSize="32" FontFamily="Bahnschrift" Margin="0,6,0,4"/><TextBlock x:Name="CountCaption" TextWrapping="Wrap" Text="" FontSize="11" Foreground="#716557"/></StackPanel>
+              <StackPanel><TextBlock x:Name="TotalCaption" Text="累计领取宝箱" Foreground="{StaticResource Muted}"/><TextBlock x:Name="TotalValue" Text="—" FontSize="32" FontFamily="Bahnschrift" Margin="0,6,0,4"/><TextBlock x:Name="CountCaption" TextWrapping="Wrap" Text="" FontSize="11" Foreground="#716557"/></StackPanel>
             </Border>
             <Border Grid.Column="2" Style="{StaticResource Card}" Padding="16,12">
               <StackPanel><TextBlock x:Name="ClaimsCaption" Text="本次运行领取" Foreground="{StaticResource Muted}"/><TextBlock x:Name="ClaimsValue" Text="—" FontSize="32" FontFamily="Bahnschrift" Margin="0,6,0,4"/><TextBlock x:Name="ClaimsHint" TextWrapping="Wrap" Text="后台重启后重计" FontSize="11" Foreground="#716557"/></StackPanel>
             </Border>
           </Grid>
+          <Border x:Name="FullChestHost">
           <Border x:Name="ChestArea" Style="{StaticResource Card}" Padding="16,12" Margin="0,0,0,10">
             <StackPanel>
-              <Grid Margin="0,0,0,10"><TextBlock Text="宝箱进度" FontWeight="SemiBold"/><TextBlock x:Name="SnapshotLabel" Text="启动后同步" Foreground="#716557" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center"/></Grid>
+              <Grid x:Name="ChestHeader" Margin="0,0,0,10"><TextBlock Text="宝箱进度" FontWeight="SemiBold"/><TextBlock x:Name="SnapshotLabel" Text="启动后同步" Foreground="#716557" FontSize="11" HorizontalAlignment="Right" VerticalAlignment="Center"/></Grid>
               <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                 <StackPanel Grid.Column="0" Margin="0,0,16,0">
-                  <Grid Margin="0,0,0,8">
+                  <Grid x:Name="LeftChestLabel" Margin="0,0,0,8">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                     <TextBlock Text="宝箱一" FontWeight="SemiBold"/>
                     <TextBlock x:Name="LeftTime" Grid.Column="1" Text="--:--" HorizontalAlignment="Right" Foreground="#716557"/>
@@ -279,7 +382,7 @@
                   <Border x:Name="LeftTrack" Height="6" Background="#EFEAE1" CornerRadius="3" ClipToBounds="True"><Border x:Name="LeftFill" Background="#E9BD7D" HorizontalAlignment="Left" Width="0" CornerRadius="3"/></Border>
                 </StackPanel>
                 <StackPanel Grid.Column="1" Margin="16,0,0,0">
-                  <Grid Margin="0,0,0,8">
+                  <Grid x:Name="RightChestLabel" Margin="0,0,0,8">
                     <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                     <TextBlock Text="宝箱二" FontWeight="SemiBold"/>
                     <TextBlock x:Name="RightTime" Grid.Column="1" Text="--:--" HorizontalAlignment="Right" Foreground="#716557"/>
@@ -289,12 +392,13 @@
               </Grid>
             </StackPanel>
           </Border>
+          </Border>
           <Border Style="{StaticResource Card}" Padding="16,12" Margin="0,0,0,10">
             <StackPanel>
               <Grid Margin="0,0,0,12">
                 <TextBlock Text="次数增加模式" FontWeight="SemiBold"/>
               </Grid>
-              <ListBox x:Name="ModeSelector" SelectedIndex="1" SelectionMode="Single" Background="Transparent" BorderThickness="0" ItemContainerStyle="{StaticResource ModeOption}">
+              <ListBox x:Name="ModeSelector" SelectedIndex="1" SelectedValuePath="Tag" SelectionMode="Single" Background="Transparent" BorderThickness="0" ItemContainerStyle="{StaticResource ModeOption}">
                 <ListBox.Template><ControlTemplate TargetType="ListBox"><ItemsPresenter/></ControlTemplate></ListBox.Template>
                 <ListBox.ItemsPanel><ItemsPanelTemplate><UniformGrid Columns="3"/></ItemsPanelTemplate></ListBox.ItemsPanel>
                 <ListBoxItem Tag="brute" AutomationProperties.Name="暴力模式，提前积累，自定义目标与速率">
@@ -309,17 +413,20 @@
               </ListBox>
               <StackPanel x:Name="ReserveOptions" Orientation="Horizontal" Margin="0,16,0,0">
                 <StackPanel>
-                  <Label x:Name="ReserveLabel" Content="储备目标" Target="{Binding ElementName=ReserveTarget}" Padding="0,0,0,8" Foreground="#716557" FontSize="12"/>
-                  <Grid Width="160" Height="36">
+                  <Label x:Name="ReserveLabel" Content="储备目标（次）" Target="{Binding ElementName=ReserveTarget}" Padding="0,0,0,8" Foreground="#716557" FontSize="12"/>
+                  <Border x:Name="FullTargetHost">
+                  <Grid x:Name="TargetEditor" Width="160" Height="36">
                     <ComboBox x:Name="ReserveTarget" Style="{StaticResource ParameterSelect}" VerticalContentAlignment="Center" IsEditable="False" AutomationProperties.Name="储备目标"/>
                     <Border x:Name="BruteTargetBox" Style="{StaticResource ReadOnlyParameter}" Visibility="Collapsed">
                       <TextBox x:Name="BruteTarget" BorderThickness="0" Background="Transparent" VerticalContentAlignment="Center" AutomationProperties.Name="自定义储备目标（次）"/>
                     </Border>
                   </Grid>
+                  </Border>
                 </StackPanel>
                 <StackPanel x:Name="SpeedOptions" Margin="24,0,0,0">
-                  <Label x:Name="SpeedLabel" Content="补充速度" Target="{Binding ElementName=ClickerRate}" Padding="0,0,0,8" Foreground="#716557" FontSize="12"/>
-                  <Grid Width="180" Height="36">
+                  <Label x:Name="SpeedLabel" Content="补充速度（次/秒）" Target="{Binding ElementName=ClickerRate}" Padding="0,0,0,8" Foreground="#716557" FontSize="12"/>
+                  <Border x:Name="FullSpeedHost">
+                  <Grid x:Name="SpeedEditor" Width="180" Height="36">
                     <ComboBox x:Name="ClickerRate" Style="{StaticResource ParameterSelect}" VerticalContentAlignment="Center" IsEditable="False" AutomationProperties.Name="补充速度"/>
                     <Border x:Name="BruteRateBox" Style="{StaticResource ReadOnlyParameter}" Visibility="Collapsed">
                       <TextBox x:Name="BruteRate" BorderThickness="0" Background="Transparent" VerticalContentAlignment="Center" AutomationProperties.Name="自定义补充速度（次/秒）"/>
@@ -328,6 +435,7 @@
                       <TextBlock x:Name="FixedSpeed" Foreground="#4D443B" VerticalAlignment="Center" Visibility="Collapsed"/>
                     </Border>
                   </Grid>
+                  </Border>
                 </StackPanel>
               </StackPanel>
               <TextBlock x:Name="BruteError" Foreground="#A33E32" FontSize="11" TextWrapping="Wrap">
@@ -350,7 +458,70 @@
             </Grid>
           </Border>
         </Grid>
-      </Border>
+      </ScrollViewer>
+      <ScrollViewer x:Name="MiniViewport" Grid.Row="1" Margin="12,0,12,12" Visibility="Collapsed" ClipToBounds="True"
+                    VerticalScrollBarVisibility="Hidden" HorizontalScrollBarVisibility="Disabled"
+                    CanContentScroll="False" Focusable="False" Background="Transparent">
+        <StackPanel x:Name="MiniSections">
+          <Border x:Name="MiniAlert" Style="{StaticResource Card}" Padding="11,8" Margin="0,0,0,8" Visibility="Collapsed">
+            <StackPanel>
+              <TextBlock x:Name="MiniAlertMessage" FontWeight="SemiBold" TextWrapping="Wrap"/>
+              <TextBlock x:Name="MiniDetailMessage" FontSize="12"
+                         Foreground="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,3,0,0"/>
+              <Button x:Name="MiniResetPendingButton" Content="确认并继续" Height="30" Padding="10,0" Margin="0,7,0,0"
+                      HorizontalAlignment="Left" IsEnabled="{Binding IsEnabled, ElementName=ResetPendingButton}"
+                      Visibility="Collapsed"/>
+            </StackPanel>
+          </Border>
+          <Border x:Name="MiniStatsCard" Style="{StaticResource Card}" Padding="11,8" Margin="0,0,0,8">
+            <Grid>
+              <Grid.ColumnDefinitions><ColumnDefinition Width="1.35*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+              <StackPanel Margin="0,0,10,0">
+                <TextBlock Style="{StaticResource MiniStatLabel}" Text="{Binding Text, ElementName=AvailableCaption}"/>
+                <TextBlock x:Name="MiniAvailableValue" Style="{StaticResource MiniStatValue}" Text="{Binding Text, ElementName=AvailableValue}"/>
+              </StackPanel>
+              <Border Grid.Column="1" BorderBrush="#ECE6DF" BorderThickness="1,0,0,0" Padding="10,0">
+                <StackPanel>
+                  <TextBlock Style="{StaticResource MiniStatLabel}" Text="{Binding Text, ElementName=TotalCaption}"/>
+                  <TextBlock x:Name="MiniTotalValue" Style="{StaticResource MiniStatValue}" Text="{Binding Text, ElementName=TotalValue}"/>
+                </StackPanel>
+              </Border>
+              <Border Grid.Column="2" BorderBrush="#ECE6DF" BorderThickness="1,0,0,0" Padding="10,0,0,0">
+                <StackPanel>
+                  <TextBlock Style="{StaticResource MiniStatLabel}" Text="{Binding Text, ElementName=ClaimsCaption}"/>
+                  <TextBlock x:Name="MiniClaimsValue" Style="{StaticResource MiniStatValue}" Text="{Binding Text, ElementName=ClaimsValue}"/>
+                </StackPanel>
+              </Border>
+            </Grid>
+          </Border>
+          <Border x:Name="MiniChestHost" Margin="0,0,0,8"/>
+          <Border x:Name="MiniSettingsCard" Style="{StaticResource Card}" Padding="11,8">
+            <StackPanel>
+              <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                <StackPanel>
+                  <Label Style="{StaticResource MiniFieldLabel}" Content="模式" Target="{Binding ElementName=MiniModeSelector}"/>
+                  <ComboBox x:Name="MiniModeSelector" Height="32" Padding="9,0,25,0" Style="{StaticResource ParameterSelect}" SelectedValuePath="Tag" AutomationProperties.Name="次数增加模式">
+                    <ComboBoxItem Tag="brute">暴力模式</ComboBoxItem>
+                    <ComboBoxItem Tag="clicker">连点器模式</ComboBoxItem>
+                    <ComboBoxItem Tag="human">人类模式</ComboBoxItem>
+                  </ComboBox>
+                </StackPanel>
+                <StackPanel Grid.Column="2">
+                  <Label x:Name="MiniReserveLabel" Style="{StaticResource MiniFieldLabel}" Content="{Binding Content, ElementName=ReserveLabel}" Target="{Binding Target, ElementName=ReserveLabel}"/>
+                  <Border x:Name="MiniTargetHost"/>
+                </StackPanel>
+                <StackPanel Grid.Column="4">
+                  <Label x:Name="MiniSpeedLabel" Style="{StaticResource MiniFieldLabel}" Content="{Binding Content, ElementName=SpeedLabel}" Target="{Binding Target, ElementName=SpeedLabel}"/>
+                  <Border x:Name="MiniSpeedHost"/>
+                </StackPanel>
+              </Grid>
+              <TextBlock Text="{Binding Text, ElementName=BruteError}" Visibility="{Binding Visibility, ElementName=BruteError}"
+                         TextWrapping="Wrap" Margin="0,5,0,0" FontSize="11" Foreground="#A33E32"/>
+            </StackPanel>
+          </Border>
+        </StackPanel>
+      </ScrollViewer>
       <Border x:Name="FooterHint" Grid.Row="2" Padding="24,9,24,10" Background="#F7F6F2" BorderBrush="#EAE5DE" BorderThickness="0,1,0,0" CornerRadius="0,0,20,20">
         <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
           <StackPanel Orientation="Horizontal" VerticalAlignment="Center">

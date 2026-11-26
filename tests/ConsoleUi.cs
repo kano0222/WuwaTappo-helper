@@ -3,7 +3,9 @@ using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
@@ -22,6 +24,8 @@ namespace Tappo {
             try {
                 var store=new RuntimeStore(root);var now=RuntimeStore.Now;
                 ResizeBorders(store);
+                CenterViewToggle(new RuntimeStore(Path.Combine(root,"center-view")));
+                ViewModes(Path.Combine(root,"view"),output);
                 using(var panel=new Panel(store,preview:true)) {
                     Check(panel.Window.Width==880&&panel.Window.Height==846,"default console size does not fit the tightened layout");
                     panel.FitToWorkArea(1080);Check(panel.Window.Height==846,"startup overrides the compact default height");
@@ -45,6 +49,7 @@ namespace Tappo {
                     Check(ToolTipService.GetIsEnabled(panel.E<Button>("BrowseAppButton")),"path tooltip is disabled");
                     PathToolTip(panel);
                     Render(panel,output,"idle");
+                    ScrollContent(panel,output);
                     foreach(var height in new[]{900,940}) {
                         panel.Render(Path.Combine(output,"empty-centered-"+height+".png"),880,height);
                         var body=panel.E<Grid>("ActivityBody");var empty=panel.E<StackPanel>("ActivityEmpty");var point=empty.TranslatePoint(new Point(),body);
@@ -146,6 +151,7 @@ namespace Tappo {
                     Render(panel,output,"clicker-activity");
                     status.readRetryAt=now+10000;Render(panel,output,"clicker-retry-activity");status.readRetryAt=null;
                     panel.E<ListBox>("ModeSelector").SelectedIndex=2;Render(panel,output,"human-activity");
+                    panel.Render(Path.Combine(output,"stable-mode-2.png"));
                     var activityY=panel.E<Border>("ActivityArea").TranslatePoint(new Point(),panel.E<Border>("RootSurface")).Y;
                     foreach(var modeIndex in new[]{0,1,2}) {
                         panel.E<ListBox>("ModeSelector").SelectedIndex=modeIndex;panel.Render(Path.Combine(output,"stable-mode-"+modeIndex+".png"));
@@ -160,6 +166,221 @@ namespace Tappo {
                 }
             } finally {Directory.Delete(root,true);}
             return checks;
+        }
+        static void ViewModes(string root,string output) {
+            var store=new RuntimeStore(root);
+            var other=new RuntimeStore(Path.Combine(root,"second"),"second",root);
+            store.Write("preferences.json",new Preference {mode="human",reserveTarget=10000,autoRun=true});
+            var preferences=RuntimeStore.ReadText(store.FilePath("preferences.json"));
+            using(var panel=new Panel(store,preview:true)) {
+                var button=panel.E<Button>("ViewModeButton");
+                var expand=panel.E<Button>("MiniViewModeButton");
+                Check(button.Visibility==Visibility.Visible&&!store.Exists("panel-mini.json"),"default view is not full or was persisted without a click");
+                panel.Window.Width=900;panel.Window.Height=760;
+                button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                var window=panel.Window;
+                window.ShowActivated=false;window.ShowInTaskbar=false;window.Opacity=0;
+                window.Show();window.UpdateLayout();
+                double idleHeight=window.ActualHeight;
+                Check(panel.E<Grid>("MiniToolbar").Visibility==Visibility.Visible&&window.Width<820&&idleHeight<330,"mini mode did not compact the window");
+                Check(RuntimeStore.ReadText(store.FilePath("preferences.json"))==preferences,"switching views changes automation preferences");
+                var viewport=panel.E<ScrollViewer>("MiniViewport");
+                RenderMini(panel,output,"idle");
+                foreach(var name in new[]{"MiniStatusLabel","MiniStartButton","MiniStatsCard","ChestArea","MiniSettingsCard","MiniViewModeButton"}) {
+                    var element=panel.E<FrameworkElement>(name);
+                    Check(element.Visibility==Visibility.Visible&&element.ActualHeight>0,"mini mode lost "+name);
+                }
+                foreach(var name in new[]{"FullToolbar","MainViewport","MiniAlert","FooterHint"})
+                    Check(panel.E<FrameworkElement>(name).Visibility==Visibility.Collapsed,"mini mode still shows "+name);
+                Check(viewport.ScrollableHeight==0&&Math.Abs(viewport.ViewportHeight-panel.E<StackPanel>("MiniSections").DesiredSize.Height)<1,"idle mini content is clipped or leaves a vertical gap");
+                Check(panel.E<TextBlock>("LeftTime").Text=="--:--"&&panel.E<TextBlock>("RightTime").Text=="--:--","idle mini timers lack placeholders");
+                Check(panel.E<TextBlock>("ClaimsCaption").Text=="本次运行领取"&&panel.E<TextBlock>("MiniClaimsValue").Text=="—","fresh mini run count lost its caption or placeholder");
+                var run=panel.E<Button>("MiniStartButton");
+                Check(run.ActualWidth==38&&run.ActualHeight==34&&AutomationProperties.GetName(run)=="启动后台","mini start lost its hit target or accessible name");
+                Check(expand.ActualWidth==panel.E<Button>("MiniCloseButton").Width&&((FrameworkElement)expand.Content).Width==14,
+                    "mini switch lost its common hit area or compact icon");
+                foreach(var name in new[]{"ViewModeButton","MiniViewModeButton","MiniStartButton","MiniMinimizeButton","MiniCloseButton"})
+                    Check(panel.E<Button>(name).ToolTip==null,"routine toolbar button has a tooltip: "+name);
+                CheckToolbarFocus(run);
+                CheckToolbarFocus(expand);
+
+                string command=null;panel.DispatchOverride=action=>command=action;
+                run.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Check(command=="start","mini start did not use the existing action");
+                var modes=panel.E<ComboBox>("MiniModeSelector");
+                Check((string)modes.SelectedValue=="human"&&panel.E<Border>("FixedSpeedBox").Visibility==Visibility.Visible,"mini did not restore human options");
+                Check((string)panel.E<Label>("MiniSpeedLabel").Content=="补充方式","human mode shows a numeric speed label");
+                modes.SelectedValue="clicker";window.UpdateLayout();
+                Check((string)panel.E<Label>("MiniReserveLabel").Content=="储备目标（次）"&&(string)panel.E<Label>("MiniSpeedLabel").Content=="补充速度（次/秒）",
+                    "mini numeric labels do not include their units");
+                var target=panel.E<ComboBox>("ReserveTarget");var speed=panel.E<ComboBox>("ClickerRate");
+                Check(target.ActualWidth==modes.ActualWidth&&speed.ActualWidth==modes.ActualWidth&&modes.ActualHeight==target.ActualHeight&&speed.ActualHeight==target.ActualHeight,
+                    "mini setting editors differ in size");
+                target.SelectedIndex=3;speed.SelectedIndex=2;
+                var selected=store.Read<Preference>("preferences.json");
+                Check(selected.mode=="clicker"&&selected.reserveTarget==20000&&selected.clickerRate==1000&&selected.autoRun,"changing mini options did not share or preserve preferences");
+                modes.SelectedValue="brute";
+                Check(panel.E<Border>("BruteTargetBox").Visibility==Visibility.Visible&&panel.E<Border>("BruteRateBox").Visibility==Visibility.Visible,"mini brute options are not editable");
+                panel.E<TextBox>("BruteTarget").Text="12345";panel.E<TextBox>("BruteRate").Text="275";
+                selected=store.Read<Preference>("preferences.json");
+                Check(selected.bruteReserveTarget==12345&&selected.bruteRate==275,"mini did not save custom brute values");
+                RenderMini(panel,output,"brute");
+                modes.SelectedValue="clicker";
+                var now=RuntimeStore.Now;panel.ReadClock=()=>now;
+                var status=new Status {running=true,pid=Process.GetCurrentProcess().Id,at=DateTimeOffset.FromUnixTimeMilliseconds(now).ToString("o"),
+                    connected=true,state=Tests.State(),chestTimes=new ChestTimes {updatedAt=now,left=now+600000,right=now+1200000}};
+                status.state.time=now;status.state.available=267304;
+                panel.ReadStatus=()=>status;panel.Refresh();
+                status.state.loggedIn=false;panel.Refresh();window.UpdateLayout();
+                Check(panel.E<TextBlock>("StatusLabel").Text=="等待登录"&&panel.E<TextBlock>("MiniStatusLabel").Text=="等待登录"&&
+                    panel.E<TextBlock>("LeftTime").Text=="--:--"&&window.ActualHeight==idleHeight,
+                    "login requirement differs between views or changes mini height");
+                RenderMini(panel,output,"waiting-login");
+                status.state.loggedIn=true;panel.Refresh();
+                Check(panel.E<TextBlock>("LeftTime").Text=="10:00"&&panel.E<TextBlock>("RightTime").Text=="20:00","mini chest slots do not show current progress independently");
+                RenderMini(panel,output,"running");
+                Check(window.ActualHeight==idleHeight&&AutomationProperties.GetName(run)=="停止运行"&&panel.E<TextBlock>("MiniAvailableValue").Text=="267,304",
+                    "running changed the mini layout, accessible name or available count");
+                foreach(var name in new[]{"AvailableValue","TotalValue","ClaimsValue"})
+                    Check(panel.E<TextBlock>("Mini"+name).Foreground==panel.E<TextBlock>(name).Foreground,"mini statistic does not reuse the full view foreground");
+                run.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Check(command=="pause","mini stop did not use the existing action");
+                var width=window.Width;window.Width=window.MinWidth;
+                target.SelectedIndex=4;
+                RenderMini(panel,output,"minimum");
+                foreach(var editor in new[]{modes,target,speed}) {
+                    var selectedText=new TextBlock {Text=editor.SelectionBoxItem.ToString(),FontFamily=editor.FontFamily,FontSize=editor.FontSize};
+                    selectedText.Measure(new Size(double.PositiveInfinity,double.PositiveInfinity));
+                    Check(selectedText.DesiredSize.Width+editor.Padding.Left+editor.Padding.Right<=editor.ActualWidth,"mini setting value is clipped at minimum width");
+                }
+                window.Width=width;
+
+                status.disconnectedSince=now;status.connected=false;status.connectionFailure="debug-unavailable";
+                panel.Refresh();window.UpdateLayout();
+                Check(window.ActualHeight==idleHeight&&panel.E<Border>("MiniAlert").Visibility==Visibility.Collapsed&&
+                    panel.E<TextBlock>("MiniStatusLabel").ToolTip.ToString().Contains("正在重新连接桌宠"),"routine reconnect expands mini or loses its hint");
+                status.disconnectedSince=now-61000;panel.Refresh();
+                Check(panel.E<Border>("MiniAlert").Visibility==Visibility.Visible&&panel.E<TextBlock>("MiniDetailMessage").Text.Contains("请先停止运行"),
+                    "mini reconnect hides actionable guidance");
+                status.disconnectedSince=null;status.connected=true;status.connectionFailure=null;
+
+                store.Write("pending.json",new {fixture=true});
+                status.paused=true;status.fault="请核对桌宠内的结果。";panel.Refresh();
+                var confirm=panel.E<Button>("MiniResetPendingButton");
+                RenderMini(panel,output,"pending");
+                Check(panel.E<Border>("MiniAlert").Visibility==Visibility.Visible&&panel.E<TextBlock>("MiniDetailMessage").Text==status.fault&&confirm.Visibility==Visibility.Visible&&confirm.IsEnabled,
+                    "mini mode hides pending confirmation or its explanation");
+                Check(confirm.TranslatePoint(new Point(0,confirm.ActualHeight),viewport).Y<=viewport.ViewportHeight,"mini confirmation is clipped in the default window");
+                int prompts=0;panel.ConfirmReset=()=>{prompts++;return true;};
+                confirm.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Check(command=="reset"&&prompts==1&&store.Exists("pending.json"),"mini confirmation bypasses the existing confirmation path");
+                store.ClearPending();
+
+                window.Hide();
+                expand.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                Check(panel.E<Grid>("FullToolbar").Visibility==Visibility.Visible&&window.Width==900&&window.Height==760&&panel.E<Border>("FooterHint").Visibility==Visibility.Visible&&
+                    (string)panel.E<ListBox>("ModeSelector").SelectedValue=="clicker"&&panel.E<Border>("FullTargetHost").Child==panel.E<Grid>("TargetEditor"),
+                    "returning to full mode did not restore window size and controls");
+                button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+            }
+            using(var reopened=new Panel(store,preview:true))
+            using(var separate=new Panel(other,preview:true)) {
+                var button=reopened.E<Button>("MiniViewModeButton");
+                Check(reopened.E<Grid>("MiniToolbar").Visibility==Visibility.Visible&&separate.E<Grid>("FullToolbar").Visibility==Visibility.Visible,"mini preference did not persist or leaked to another instance");
+                var window=reopened.Window;
+                window.ShowActivated=false;window.ShowInTaskbar=false;window.Opacity=0;
+                window.Show();window.Hide();reopened.Show();window.UpdateLayout();
+                Check(button.IsVisible,"restoring the window changed the chosen view");
+                button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                window.UpdateLayout();
+                Check(window.WindowState==WindowState.Normal&&window.ActualWidth>=820&&window.ActualHeight>=660,"shown mini window did not expand to full size");
+            }
+            using(var reopened=new Panel(store,preview:true))
+                Check(reopened.E<Grid>("FullToolbar").Visibility==Visibility.Visible,"explicit return to full mode did not persist");
+        }
+        static void RenderMini(Panel panel,string output,string name) {
+            panel.Window.UpdateLayout();
+            panel.Render(Path.Combine(output,"mini-"+name+".png"),(int)Math.Ceiling(panel.Window.ActualWidth),(int)Math.Ceiling(panel.Window.ActualHeight));
+        }
+        static void CenterViewToggle(RuntimeStore store) {
+            using(var panel=new Panel(store,preview:true)) {
+                var window=panel.Window;
+                window.ShowActivated=false;window.ShowInTaskbar=false;window.Opacity=0;
+                panel.FitToWorkArea(SystemParameters.WorkArea.Height);
+                window.Show();window.UpdateLayout();
+                var shrink=panel.E<Button>("ViewModeButton");
+                var expand=panel.E<Button>("MiniViewModeButton");
+                CheckToolbarFocus(shrink,keyboardCue:false);
+
+                var center=window.PointToScreen(new Point(window.ActualWidth/2,window.ActualHeight/2));
+                shrink.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                window.UpdateLayout();
+                var compactCenter=window.PointToScreen(new Point(window.ActualWidth/2,window.ActualHeight/2));
+                Check((compactCenter-center).Length<=2,"shrinking the window moves its center");
+                expand.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                window.UpdateLayout();
+                var restoredCenter=window.PointToScreen(new Point(window.ActualWidth/2,window.ActualHeight/2));
+                Check((restoredCenter-center).Length<=2,"expanding the window moves its center");
+
+                shrink.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                window.UpdateLayout();
+                var area=System.Windows.Forms.Screen.FromHandle(new WindowInteropHelper(window).Handle).WorkingArea;
+                var corner=window.PointFromScreen(new Point(area.Right,area.Bottom));
+                window.Left+=corner.X-window.ActualWidth;window.Top+=corner.Y-window.ActualHeight;
+                expand.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                window.UpdateLayout();
+                var expandedCorner=window.PointToScreen(new Point(window.ActualWidth,window.ActualHeight));
+                Check(Math.Abs(expandedCorner.X-area.Right)<=2&&Math.Abs(expandedCorner.Y-area.Bottom)<=2,
+                    "expanding near the window work area edge does not stay inside it");
+            }
+        }
+        static void CheckToolbarFocus(Button button,bool keyboardCue=true) {
+            var flags=System.Reflection.BindingFlags.Static|System.Reflection.BindingFlags.NonPublic;
+            var key=(DependencyPropertyKey)typeof(UIElement).GetField("IsKeyboardFocusedPropertyKey",flags).GetValue(null);
+            var oldValue=button.IsKeyboardFocused;
+            try {
+                button.SetValue(key,true);
+                var surface=(Border)button.Template.FindName("ToolbarSurface",button);
+                Check(((SolidColorBrush)surface.BorderBrush).Color==Colors.Transparent&&(button.FocusVisualStyle!=null)==keyboardCue,
+                    "toolbar draws a persistent outline or uses the wrong keyboard cue");
+            } finally {button.SetValue(key,oldValue);}
+        }
+        static void Wheel(FrameworkElement source,int delta) {
+            source.RaiseEvent(new MouseWheelEventArgs(Mouse.PrimaryDevice,0,delta){RoutedEvent=Mouse.MouseWheelEvent});
+        }
+        static void ScrollContent(Panel panel,string output) {
+            var surface=panel.E<Border>("RootSurface");
+            var viewport=panel.E<ScrollViewer>("MainViewport");
+            var modes=panel.E<ListBox>("ModeSelector");
+            var title=panel.E<Grid>("TitleGrip");var footer=panel.E<Border>("FooterHint");
+            var minimum=Path.Combine(output,"scroll-top-minimum.png");
+            panel.Render(minimum,820,660);
+            double footerTop=footer.TranslatePoint(new Point(),surface).Y;
+            double titleTop=title.TranslatePoint(new Point(),surface).Y;
+            Check(viewport.ScrollableHeight>0&&viewport.VerticalOffset==0,"short window has no content to scroll");
+            Check(Math.Abs(viewport.ViewportWidth-viewport.ActualWidth)<1,"hidden scroll bar takes up horizontal space");
+
+            Wheel(modes,-120);surface.UpdateLayout();
+            Check(viewport.VerticalOffset>0,"mouse wheel over modes does not scroll short window");
+            while(viewport.VerticalOffset<viewport.ScrollableHeight) {
+                double offset=viewport.VerticalOffset;
+                Wheel(viewport,-120);surface.UpdateLayout();
+                Check(viewport.VerticalOffset>offset,"mouse wheel stopped before the end");
+            }
+            foreach(var name in new[]{"ReserveTarget","ClickerRate"}) {
+                var option=panel.E<ComboBox>(name);
+                double top=option.TranslatePoint(new Point(),viewport).Y;
+                Check(top>=0&&top+option.ActualHeight<=viewport.ViewportHeight,"parameter stays clipped after scrolling: "+name);
+            }
+            Check(footer.TranslatePoint(new Point(),surface).Y==footerTop&&title.TranslatePoint(new Point(),surface).Y==titleTop,"scrolling moved the title or footer");
+            panel.Render(Path.Combine(output,"scroll-bottom-minimum.png"),820,660);
+            Wheel(viewport,120);surface.UpdateLayout();
+            Check(viewport.VerticalOffset<viewport.ScrollableHeight,"mouse wheel cannot scroll back up");
+
+            panel.Render(Path.Combine(output,"scroll-default.png"));
+            Check(viewport.ScrollableHeight==0&&viewport.VerticalOffset==0,"content remains offset or scrollable after enlarging the window");
+            Wheel(viewport,-120);surface.UpdateLayout();
+            Check(viewport.VerticalOffset==0,"mouse wheel moves content that already fits");
         }
         static int HitTest(Window window,Point point) {
             const int wmNcHitTest=0x0084;
@@ -177,7 +398,7 @@ namespace Tappo {
                     new Point(width-16,3),new Point(width/2,height-3),new Point(16,height-3),new Point(width-16,height-3)};
                 for(int i=0;i<points.Length;i++)Check(HitTest(window,points[i])==10+i,"incorrect native resize hit at "+points[i]);
 
-                foreach(var name in new[]{"TitleGrip","CloseButton","MinimizeButton","ReserveTarget","UpdateButton"}) {
+                foreach(var name in new[]{"TitleGrip","ViewModeButton","CloseButton","MinimizeButton","ReserveTarget","UpdateButton"}) {
                     var control=panel.E<FrameworkElement>(name);
                     var center=control.TranslatePoint(new Point(control.ActualWidth/2,control.ActualHeight/2),window);
                     Check(HitTest(window,center)==1,"resize border interferes with "+name);
@@ -235,7 +456,8 @@ namespace Tappo {
             foreach(var size in new[]{new Size(880,846),new Size(820,660)}) {
                 var suffix=size.Width==880?"-default":"-minimum";
                 panel.Render(Path.Combine(output,name+suffix+".png"),(int)size.Width,(int)size.Height);
-                Check(panel.Window.FindName("ContentScroll")==null&&panel.E<Border>("MainViewport").ClipToBounds,"main panel scrolls instead of clipping");
+                var viewport=panel.E<ScrollViewer>("MainViewport");
+                Check(viewport.ClipToBounds&&viewport.ComputedVerticalScrollBarVisibility==Visibility.Collapsed&&viewport.ComputedHorizontalScrollBarVisibility==Visibility.Collapsed,"viewport does not clip or shows scroll bars");
                 Check(panel.Window.FindName("ModeHint")==null,"removed mode hint still occupies the parameter card");
                 var surface=panel.E<Border>("RootSurface");
                 var picker=panel.E<Button>("BrowseAppButton");var path=panel.E<TextBlock>("AppPathText");var change=panel.E<Border>("ChangePathAction");
@@ -280,7 +502,7 @@ namespace Tappo {
                 var startup=panel.E<CheckBox>("StartupCheckBox");var autoRun=panel.E<CheckBox>("AutoRunCheckBox");var feedback=panel.E<Button>("FeedbackButton");
                 var startupPoint=startup.TranslatePoint(new Point(),surface);var autoPoint=autoRun.TranslatePoint(new Point(),surface);var feedbackPoint=feedback.TranslatePoint(new Point(),surface);
                 Check(autoRun.Template==startup.Template&&autoPoint.X>=startupPoint.X+startup.ActualWidth+6&&autoPoint.X+autoRun.ActualWidth+6<=feedbackPoint.X&&Math.Abs(autoPoint.Y-startupPoint.Y)<1,"footer switches differ, overlap or are out of order");
-                Check(panel.E<Border>("MainViewport").TranslatePoint(new Point(),surface).Y+panel.E<Border>("MainViewport").ActualHeight<=footer.TranslatePoint(new Point(),surface).Y,"main viewport covers footer");
+                Check(viewport.TranslatePoint(new Point(),surface).Y+viewport.ActualHeight<=footer.TranslatePoint(new Point(),surface).Y,"main viewport covers footer");
                 Check(panel.E<Border>("ActivityArea").ClipToBounds,"activity does not clip to the available space");
                 if(size.Width==880) {
                     var activity=panel.E<Border>("ActivityArea");var text=panel.E<TextBlock>("ActivityText");

@@ -20,14 +20,20 @@ using Forms=System.Windows.Forms;
 
 namespace Tappo {
     internal sealed class Panel : IDisposable {
+        const string ViewModeFile="panel-mini.json";
+        static readonly Size MiniMinimum=new Size(390,220);
         readonly RuntimeStore store; public readonly Window Window;
+        readonly Size fullMinimum;
+        Size fullSize;
+        double miniWidth=480;
+        bool mini;
         readonly ActivityLog activityLog;
         readonly DiagnosticSession diagnostics;
         readonly bool verifyIdentity;
         public bool Busy {get;private set;} public bool AllowExit;
         internal bool TrayExitEnabled {get {return trayExit!=null&&trayExit.Enabled;}}
         string notice,savedMode=Preference.DefaultMode; bool selecting,choosingClose,noticeIsSuccess;
-        string busyAction,busyCommandId,unconfirmedCommand,unconfirmedAction,unconfirmedSession; bool startupElevation;
+        string busyAction,busyCommandId,unconfirmedCommand,unconfirmedAction,unconfirmedSession,startupError; bool startupElevation;
         Status lastDisplayedStatus; long noticeUntil;
         bool noticeActionFailure; string noticeStatusAt;
         internal Func<RuntimeIdentity,string> InspectIdentity=RuntimeIdentity.Inspect;
@@ -60,6 +66,8 @@ namespace Tappo {
         internal int ControlTimeoutMs=40000;
         public Panel(RuntimeStore store,bool preview=false) {
             this.store=store;activityLog=new ActivityLog(store.FilePath("events.jsonl")); Window=(Window)XamlReader.Parse(Resources.Text("Panel.xaml"));
+            fullMinimum=new Size(Window.MinWidth,Window.MinHeight);
+            fullSize=new Size(Window.Width,Window.Height);
             Window.SourceInitialized+=(s,e)=>HwndSource.FromHwnd(new WindowInteropHelper(Window).Handle).AddHook(ResizeHitTest);
             diagnostics=new DiagnosticSession(store,"panel",background:!preview);
             verifyIdentity=!preview;
@@ -78,8 +86,8 @@ namespace Tappo {
             if(preference!=null&&Preference.ClickerRates.Contains(preference.clickerRate)) savedRate=preference.clickerRate;
             if(preference!=null&&Preference.ValidBruteTarget(preference.bruteReserveTarget))savedBruteTarget=preference.bruteReserveTarget;
             if(preference!=null&&Preference.ValidBruteRate(preference.bruteRate))savedBruteRate=preference.bruteRate;
-            E<ComboBox>("ReserveTarget").ItemsSource=Preference.ReserveTargets.Select(v=>new ComboBoxItem {Content=v.ToString("N0")+" 次",Tag=v}).ToArray();
-            E<ComboBox>("ClickerRate").ItemsSource=Preference.ClickerRates.Select(v=>new ComboBoxItem {Content=v.ToString("N0")+" 次/秒",Tag=v}).ToArray();
+            E<ComboBox>("ReserveTarget").ItemsSource=Preference.ReserveTargets.Select(v=>new ComboBoxItem {Content=v.ToString("N0"),Tag=v}).ToArray();
+            E<ComboBox>("ClickerRate").ItemsSource=Preference.ClickerRates.Select(v=>new ComboBoxItem {Content=v.ToString("N0"),Tag=v}).ToArray();
             RestoreSelection();
             foreach(var name in new[]{"BruteTarget","BruteRate"}) {
                 E<TextBox>(name).TextChanged+=(s,e)=>SaveBrute();
@@ -91,15 +99,27 @@ namespace Tappo {
                 if((input==E<TextBox>("BruteTarget")||input==E<TextBox>("BruteRate"))&&input!=null&&!input.IsMouseOver)FinishBruteEditing();
             };
             E<ListBox>("ModeSelector").SelectionChanged+=(s,e)=>SaveMode();
+            E<ComboBox>("MiniModeSelector").SelectionChanged+=(s,e)=>{
+                if(!selecting&&E<ComboBox>("MiniModeSelector").SelectedValue is string)
+                    E<ListBox>("ModeSelector").SelectedValue=E<ComboBox>("MiniModeSelector").SelectedValue;
+            };
             E<ComboBox>("ReserveTarget").SelectionChanged+=(s,e)=>SaveMode();
             E<ComboBox>("ClickerRate").SelectionChanged+=(s,e)=>SaveMode();
-            E<Button>("StartButton").Click+=async(s,e)=>{if(E<Button>("StartButton").IsEnabled)await UserAction(runAction);};
-            E<Button>("ResetPendingButton").Click+=async(s,e)=>await ResetPending();
+            foreach(var name in new[]{"StartButton","MiniStartButton"})
+                E<Button>(name).Click+=async(s,e)=>{if(E<Button>("StartButton").IsEnabled)await UserAction(runAction);};
+            foreach(var name in new[]{"ResetPendingButton","MiniResetPendingButton"})
+                E<Button>(name).Click+=async(s,e)=>await ResetPending();
             E<Button>("BrowseAppButton").Click+=async(s,e)=>await ChoosePath(true);
             E<Button>("BrowseAppButton").ToolTipOpening+=(s,e)=>{if(!E<Button>("BrowseAppButton").IsMouseOver)e.Handled=true;};
+            foreach(var name in new[]{"MiniAvailableValue","MiniTotalValue","MiniClaimsValue"})
+                E<TextBlock>(name).ToolTipOpening+=ShowClippedNumberToolTip;
             E<Button>("AnotherAppButton").Click+=(s,e)=>OpenAnother();
-            E<Button>("MinimizeButton").Click+=(s,e)=>Window.WindowState=WindowState.Minimized;
-            E<Button>("CloseButton").Click+=async(s,e)=>await RequestClose();
+            foreach(var name in new[]{"ViewModeButton","MiniViewModeButton"})
+                E<Button>(name).Click+=(s,e)=>ToggleView();
+            foreach(var name in new[]{"MinimizeButton","MiniMinimizeButton"})
+                E<Button>(name).Click+=(s,e)=>Window.WindowState=WindowState.Minimized;
+            foreach(var name in new[]{"CloseButton","MiniCloseButton"})
+                E<Button>(name).Click+=async(s,e)=>await RequestClose();
             UpdateCaption("检查更新");
             E<Button>("UpdateButton").Click+=async(s,e)=>await UpdateAction();
             E<Button>("FeedbackButton").Click+=(s,e)=>{
@@ -114,15 +134,111 @@ namespace Tappo {
                 catch(Exception error) {SetNotice("日志保存失败："+error.Message);}
                 finally {button.IsEnabled=true;Refresh();}
             };
-            E<System.Windows.Controls.Grid>("TitleGrip").MouseLeftButtonDown+=(s,e)=>{
-                if(e.ClickCount==2) Window.WindowState=Window.WindowState==WindowState.Maximized?WindowState.Normal:WindowState.Maximized;
-                else if(e.LeftButton==MouseButtonState.Pressed) Window.DragMove();
-            };
+            foreach(var name in new[]{"TitleGrip","MiniTitleGrip"})
+                E<FrameworkElement>(name).MouseLeftButtonDown+=(s,e)=>{
+                    if(e.ClickCount==2) Window.WindowState=Window.WindowState==WindowState.Maximized?WindowState.Normal:WindowState.Maximized;
+                    else if(e.LeftButton==MouseButtonState.Pressed) Window.DragMove();
+                };
             Window.Closing+=(s,e)=>{if(!AllowExit){e.Cancel=true;Window.Dispatcher.BeginInvoke(new Action(async()=>await RequestClose()));}};
             Window.Closed+=(s,e)=>Life("closed");
             Window.ContentRendered+=async(s,e)=>{if(disposed)return;Life("visible");if(!preview) {if(AutoShowReleaseNotes)ShowReleaseNotes();await AutoRunOnOpen();}if(AutoCheckUpdates&&RuntimeStore.Now>=nextUpdateCheck)await CheckForUpdates();};
             var path=preview?null:Platform.Discover(store);SetPath(path);
+            if(ReadMiniView())ApplyView(true);
             Refresh();
+        }
+        bool ReadMiniView() {
+            try {return store.Read<bool>(ViewModeFile);}
+            catch(Exception) {return false;}
+        }
+        void ToggleView() {
+            try {store.Write(ViewModeFile,!mini);}
+            catch(Exception) {SetNotice("未能保存窗口模式，请重试。");Refresh();return;}
+
+            var previousButton=E<Button>(mini?"MiniViewModeButton":"ViewModeButton");
+            bool restoreFocus=previousButton.IsKeyboardFocused;
+            var screen=Window.IsVisible?Forms.Screen.FromHandle(new WindowInteropHelper(Window).Handle):null;
+            var center=screen==null?new Point():Window.PointToScreen(new Point(Window.ActualWidth/2,Window.ActualHeight/2));
+            if(mini)miniWidth=Window.Width;else fullSize=new Size(Window.Width,Window.Height);
+            Window.WindowState=WindowState.Normal;
+            ApplyView(!mini);
+            Refresh();
+            if(screen!=null)FitViewOnScreen(screen.WorkingArea,center);
+            if(restoreFocus)E<Button>(mini?"MiniViewModeButton":"ViewModeButton").Focus();
+        }
+        void ApplyView(bool compact) {
+            mini=compact;
+            foreach(var name in new[]{"FullToolbar","MainViewport","FooterHint"})
+                E<FrameworkElement>(name).Visibility=mini?Visibility.Collapsed:Visibility.Visible;
+            foreach(var name in new[]{"MiniToolbar","MiniViewport"})
+                E<FrameworkElement>(name).Visibility=mini?Visibility.Visible:Visibility.Collapsed;
+
+            // Each view hosts the same chest and parameter controls.
+            MoveViewContent("FullChestHost","MiniChestHost");
+            MoveViewContent("FullTargetHost","MiniTargetHost");
+            MoveViewContent("FullSpeedHost","MiniSpeedHost");
+            var chest=E<Border>("ChestArea");
+            chest.Margin=new Thickness(0,0,0,mini?0:10);
+            chest.Padding=mini?new Thickness(11,8,11,8):new Thickness(16,12,16,12);
+            E<Grid>("ChestHeader").Margin=new Thickness(0,0,0,mini?6:10);
+            foreach(var name in new[]{"LeftChestLabel","RightChestLabel"})
+                E<Grid>(name).Margin=new Thickness(0,0,0,mini?4:8);
+            E<Grid>("TargetEditor").Width=mini?double.NaN:160;
+            E<Grid>("SpeedEditor").Width=mini?double.NaN:180;
+            E<Grid>("TargetEditor").Height=E<Grid>("SpeedEditor").Height=mini?32:36;
+            foreach(var name in new[]{"ReserveTarget","ClickerRate"}) {
+                var editor=E<ComboBox>(name);
+                if(mini)editor.Padding=new Thickness(9,0,25,0);
+                else editor.ClearValue(Control.PaddingProperty);
+            }
+
+            Window.SizeToContent=mini?SizeToContent.Height:SizeToContent.Manual;
+            Window.MaxHeight=double.PositiveInfinity;
+            var minimum=mini?MiniMinimum:fullMinimum;
+            Window.MinWidth=minimum.Width;Window.MinHeight=minimum.Height;
+            Window.Width=mini?miniWidth:fullSize.Width;
+            if(!mini)Window.Height=fullSize.Height;
+            E<ScrollViewer>(mini?"MiniViewport":"MainViewport").ScrollToHome();
+        }
+        void MoveViewContent(string full,string compact) {
+            var from=E<Border>(mini?full:compact);
+            var to=E<Border>(mini?compact:full);
+            var child=from.Child;
+            from.Child=null;to.Child=child;
+        }
+        void FitViewOnScreen(System.Drawing.Rectangle area,Point screenCenter) {
+            var topLeft=Window.PointFromScreen(new Point(area.Left,area.Top));
+            var bottomRight=Window.PointFromScreen(new Point(area.Right,area.Bottom));
+            if(mini)Window.MaxHeight=Math.Max(Window.MinHeight,bottomRight.Y-topLeft.Y);
+            else Window.Height=Math.Max(Window.MinHeight,Math.Min(Window.Height,bottomRight.Y-topLeft.Y));
+            Window.Width=Math.Max(Window.MinWidth,Math.Min(Window.Width,bottomRight.X-topLeft.X));
+            Window.UpdateLayout();
+            topLeft=Window.PointFromScreen(new Point(area.Left,area.Top));
+            bottomRight=Window.PointFromScreen(new Point(area.Right,area.Bottom));
+            var center=Window.PointFromScreen(screenCenter);
+            Window.Left+=Math.Max(topLeft.X,Math.Min(center.X-Window.ActualWidth/2,bottomRight.X-Window.ActualWidth));
+            Window.Top+=Math.Max(topLeft.Y,Math.Min(center.Y-Window.ActualHeight/2,bottomRight.Y-Window.ActualHeight));
+        }
+        static void ShowClippedNumberToolTip(object sender,ToolTipEventArgs e) {
+            var value=(TextBlock)sender;
+            if(!value.IsMouseOver) {e.Handled=true;return;}
+            var measure=new TextBlock {Text=value.Text,FontFamily=value.FontFamily,FontSize=value.FontSize,FontWeight=value.FontWeight};
+            measure.Measure(new Size(double.PositiveInfinity,double.PositiveInfinity));
+            e.Handled=measure.DesiredSize.Width<=value.ActualWidth;
+        }
+        void PresentMiniStatus(string label,string message,string detail,bool busy,bool waiting,bool alert,bool canConfirm) {
+            var indicator=E<TextBlock>("MiniStatusLabel");
+            indicator.Text=busy?message:label;
+            indicator.Tag=busy||waiting||alert?"attention":null;
+            if(busy) {
+                // Keep an existing alert and its dimensions while an operation is in flight.
+                indicator.ToolTip=detail==message||string.IsNullOrWhiteSpace(detail)?null:detail;
+                return;
+            }
+            indicator.ToolTip=waiting&&!alert?message+(string.IsNullOrWhiteSpace(detail)||detail==message?"":"\n"+detail):null;
+            E<Border>("MiniAlert").Visibility=alert?Visibility.Visible:Visibility.Collapsed;
+            Text("MiniAlertMessage",message);
+            Text("MiniDetailMessage",detail);
+            E<Button>("MiniResetPendingButton").Visibility=canConfirm?Visibility.Visible:Visibility.Collapsed;
         }
         IntPtr ResizeHitTest(IntPtr hwnd,int message,IntPtr wParam,IntPtr lParam,ref bool handled) {
             const int wmNcHitTest=0x0084;
@@ -181,7 +297,7 @@ namespace Tappo {
         void HistoricalNumbers(Status status,bool history,bool? balanceHistory=null) {
             var oldBalance=balanceHistory??history;
             Text("AvailableCaption",oldBalance?"可用次数 · 上次记录":"可用次数");
-            Text("ClaimsCaption",status==null?"运行领取":history?status.running?"领取数 · 上次记录":"上次运行领取":"本次运行领取");
+            Text("ClaimsCaption",status!=null&&history?status.running?"领取数 · 上次记录":"上次运行领取":"本次运行领取");
             Text("ClaimsHint",history?"记录于 "+RecordTime(status==null?null:status.at):"后台重启后重计");
             var sampleAt=status==null?null:status.at;
             if(status!=null&&status.state!=null&&status.state.time>0) {
@@ -209,7 +325,10 @@ namespace Tappo {
             try {ownsMutex=mutex.WaitOne(0);} catch(AbandonedMutexException){ownsMutex=true;}
             if(!ownsMutex) showEvent.Set(); return ownsMutex;
         }
-        internal void FitToWorkArea(double height) {Window.Height=Math.Max(Window.MinHeight,Math.Min(Window.Height,height-40));}
+        internal void FitToWorkArea(double height) {
+            if(mini)Window.MaxHeight=Math.Max(Window.MinHeight,height-40);
+            else Window.Height=Math.Max(Window.MinHeight,Math.Min(Window.Height,height-40));
+        }
         public void Show() {autoTrayCancelled=true;Window.ShowInTaskbar=true;Window.Show();Window.WindowState=WindowState.Normal;Window.Activate();if(releaseNotesDialog!=null)releaseNotesDialog.Window.Activate();Life("restored");}
         void HideToTray() {Window.Hide();Window.ShowInTaskbar=false;Life("hidden-to-tray");}
         internal async Task RequestClose() {
@@ -393,6 +512,7 @@ namespace Tappo {
                     Platform.SavePath(store,path);
                 }
                 SetPath(path);
+                if(previous==null||Instances.Key(previous)!=Instances.Key(path))startupError=null;
                 if(force&&(previous==null||Instances.Key(previous)!=Instances.Key(path))) {
                     try {store.Log("program-selected");}
                     catch {SetNotice("程序位置已保存，但活动记录写入失败。");}
@@ -416,6 +536,7 @@ namespace Tappo {
             selecting=true;
             try {
                 foreach(ListBoxItem item in E<ListBox>("ModeSelector").Items) if((string)item.Tag==savedMode) E<ListBox>("ModeSelector").SelectedItem=item;
+                E<ComboBox>("MiniModeSelector").SelectedValue=savedMode;
                 foreach(ComboBoxItem item in E<ComboBox>("ReserveTarget").Items) if((int)item.Tag==savedTarget) E<ComboBox>("ReserveTarget").SelectedItem=item;
                 foreach(ComboBoxItem item in E<ComboBox>("ClickerRate").Items) if((int)item.Tag==savedRate) E<ComboBox>("ClickerRate").SelectedItem=item;
                 E<TextBox>("BruteTarget").Text=savedBruteTarget.ToString();
@@ -490,6 +611,7 @@ namespace Tappo {
             if(Busy) return;
             if(DispatchOverride!=null) {DispatchOverride(action);return;}
             if(action=="start"&&!await ChoosePath(false)) return;
+            if(action=="start")startupError=null;
             string commandId=Guid.NewGuid().ToString();
             busyAction=action;busyCommandId=commandId;startupElevation=false;
             Busy=true;SetNotice(null);Refresh();var requested=DateTimeOffset.UtcNow;
@@ -509,7 +631,6 @@ namespace Tappo {
                     if(!Platform.Administrator) {info.Verb="runas";startupElevation=true;}
                     using(var process=Process.Start(info)) {
                         if(process==null) throw new InvalidOperationException("后台未启动。");
-                        store.Write("launcher-status.json",new LauncherStatus {requestedAt=requested.ToString("o"),runnerId=process.Id});
                     }
                 } else {
                     var status=ReadStatus();if(!Alive(status)) throw new InvalidOperationException("后台未运行。");
@@ -523,8 +644,11 @@ namespace Tappo {
                 string displayedResumeStage=null;
                 while(RuntimeStore.Now<until) {
                     await Task.Delay(300);var status=ReadStatus();
-                    var launcher=store.Read<LauncherStatus>("launcher-status.json");DateTimeOffset failed;
-                    if(launcher!=null&&launcher.error!=null&&DateTimeOffset.TryParse(launcher.failedAt,out failed)&&failed>=requested) throw new InvalidOperationException(launcher.error);
+                    if(action=="start") {
+                        var launcher=store.Read<LauncherStatus>("launcher-status.json");DateTimeOffset failed;
+                        if(launcher!=null&&launcher.error!=null&&DateTimeOffset.TryParse(launcher.failedAt,out failed)&&failed>=requested)
+                            throw new InvalidOperationException(launcher.error);
+                    }
                     DateTimeOffset at;
                     if(status==null||!DateTimeOffset.TryParse(status.at,out at)||at<requested) continue;
                     if(targetSession!=null&&(status.identity==null||status.identity.session!=targetSession||status.commandId!=commandId))continue;
@@ -554,7 +678,7 @@ namespace Tappo {
                     diagnostics.CaptureControlTimeout(commandId);
                     unconfirmedCommand=commandId;unconfirmedAction=action;unconfirmedSession=targetSession;
                 }
-                SetNotice(error.Message,operationFailure:true);throw;
+                SetActionFailure(action,error);throw;
             }
             finally {diagnostics.Record("command-wait-ended",action,commandId,commandResult,elapsed:Math.Max(0,RuntimeStore.Now-commandStarted));Busy=false;busyCommandId=null;Refresh();}
         }
@@ -562,11 +686,15 @@ namespace Tappo {
             if(!automatic)autoTrayCancelled=true;
             try {await Act(action);return true;}
             catch(Exception error) {
-                SetNotice(error.Message,operationFailure:true);
+                SetActionFailure(action,error);
                 try {store.Log("panel-action-failed",new {action=action,errorType=error.GetType().Name,message=error.Message});} catch { }
                 Refresh();
                 return false;
             }
+        }
+        void SetActionFailure(string action,Exception error) {
+            if(action=="start"&&!(error is TimeoutException))startupError=error.Message;
+            SetNotice(error.Message,operationFailure:true);
         }
         internal async Task ResetPending() {
             if(Busy) return;
@@ -599,6 +727,8 @@ namespace Tappo {
                 var exited=identity=="process-exited"||identity=="pid-reused";
                 var unknown=s!=null&&identity!="matched"&&!exited;
                 var history=s!=null&&(!alive||stale||unknown||exited);
+                if(alive&&!history)startupError=null;
+                var state=s==null?null:s.state;
                 lastDisplayedStatus=s;
                 if(unconfirmedCommand!=null&&s!=null) {
                     var sameSession=unconfirmedSession==null||s.identity!=null&&s.identity.session==unconfirmedSession;
@@ -612,14 +742,18 @@ namespace Tappo {
                 var pending=store.Exists("pending.json");
                 if(noticeActionFailure&&unconfirmedCommand==null&&!history&&s!=null&&s.at!=noticeStatusAt&&!pending&&s.fault==null&&!s.readRetryAt.HasValue&&!s.paused)SetNotice(null);
                 string label="未运行",color="#EAE7E1",message="准备启动后台",detail="请先退出已打开的桌宠，再启动后台。";
+                bool connectionNeedsUserAction=false;
+                var connectionHint=alive?Connection.Hint(s,ReadClock(),out connectionNeedsUserAction):null;
                 if(alive) {
                     label="运行中";color="#E2EFDD";message="后台运行中";detail="自动补充次数，领取到期宝箱。";
+                    if(s.connected==true&&state!=null&&!state.loggedIn) {
+                        label="等待登录";color="#FFF0D1";message="请在桌宠中登录";detail="登录后会自动继续。";
+                    }
                     if(s.readRetryAt.HasValue) {label="等待重试";color="#FFF0D1";message=Connection.RetryMessage(s.readRetryStage,s.connectionFailure);detail=(s.readRetryError??"暂时无法获取桌宠信息")+"；约 "+Math.Max(0,(long)Math.Ceiling((s.readRetryAt.Value-ReadClock())/1000.0))+" 秒后重试。";}
                     if(s.paused) {label=s.manuallyPaused?"已停止":"已暂停";color="#FFF0D1";message=s.manuallyPaused?"已停止运行":"已暂停运行";detail=s.manuallyPaused?"桌宠不受影响，点击“启动后台”可继续。":"";}
                     if(pending&&!s.paused&&s.fault==null) {label="处理中";color="#FFF0D1";message="正在检查领取或补充是否成功";detail="";}
                     if(s.fault!=null||pending&&s.paused) {label="需处理";color="#F8E0D8";message="后台已暂停，需要确认";detail=s.fault??"请查看上次领取或补充是否成功，再点击“确认并继续”。";}
                     if(s.recovering) {label="检查中";color="#FFF0D1";message="正在检查上次领取或补充是否成功";detail=s.fault??"无需重复操作。";if(s.manuallyPaused)detail+=" 已停止运行，检查后也不会自动继续。";}
-                    var connectionHint=Connection.Hint(s,ReadClock());
                     if(connectionHint!=null) {
                         if(pending||s.manuallyPaused||s.fault!=null||s.recovering) detail=connectionHint+" "+detail;
                         else {label=s.connectionFailure=="incompatible"?"需处理":s.connected!=false&&s.state!=null&&s.state.locked?"等待更新":"等待连接";color="#FFF0D1";message=s.connectionFailure=="incompatible"?"暂不支持当前桌宠版本":s.connectionFailure=="main-not-ready"?"正在等待桌宠启动":s.connected!=false&&s.state!=null&&s.state.locked?"等待桌宠更新完成":"正在重新连接桌宠";detail=connectionHint;}
@@ -634,8 +768,10 @@ namespace Tappo {
                 } else if(unknown) {
                     label="状态未知";color="#FFF0D1";message="无法确认后台状态";detail=StatusAge(s)+"，当前显示上次记录。请勿重复启动；请导出日志。";
                 }
+                bool showStartupError=!Busy&&!alive&&startupError!=null;
+                if(showStartupError) {label="启动失败";color="#F8E0D8";message="后台启动失败";detail=startupError;}
                 if(alive&&s.connected==false&&detail==message) detail="连接后自动继续。";
-                if(unconfirmedCommand!=null&&!Busy) {label="结果未确认";color="#FFF0D1";message="操作结果尚未确认";detail=TimeoutMessage(unconfirmedAction,startupElevation);}
+                if(unconfirmedCommand!=null&&!Busy&&!showStartupError) {label="结果未确认";color="#FFF0D1";message="操作结果尚未确认";detail=TimeoutMessage(unconfirmedAction,startupElevation);}
                 if(Busy) {
                     label="处理中";message="正在处理，请稍候";
                     detail=busyAction=="start"&&startupElevation?"如出现管理员确认窗口，请处理后等待后台确认。":"正在等待后台确认操作结果。";
@@ -646,10 +782,12 @@ namespace Tappo {
                     }
                 }
                 Text("StatusLabel",label);E<Border>("StatusPill").Background=(Brush)new BrushConverter().ConvertFromString(color);
-                var statusNeedsAttention=pending||stale||s!=null&&s.fault!=null||
-                    alive&&(s.paused||s.manuallyPaused||s.recovering||s.readRetryAt.HasValue||Connection.Hint(s,ReadClock())!=null);
+                var operationalIssue=pending||stale||s!=null&&s.fault!=null||
+                    alive&&(s.recovering||s.readRetryAt.HasValue||connectionHint!=null);
+                var statusNeedsAttention=operationalIssue||alive&&(s.paused||s.manuallyPaused);
                 if(statusNeedsAttention&&noticeIsSuccess) SetNotice(null);
-                Text("MainMessage",message);Text("DetailMessage",Busy||unknown||exited||stale||unconfirmedCommand!=null?detail:notice??detail);
+                var displayedDetail=Busy||showStartupError||unknown||exited||stale||unconfirmedCommand!=null?detail:notice??detail;
+                Text("MainMessage",message);Text("DetailMessage",displayedDetail);
                 var pauseAction=alive?PauseAction(s,pending):"pause";var pauseEnabled=alive&&!Busy&&(!pending||!s.manuallyPaused);
                 runAction=alive?pauseAction:"start";
                 E<Button>("StartButton").Content=runAction=="pause"?"停止运行":"启动后台";
@@ -660,7 +798,11 @@ namespace Tappo {
                 var canConfirm=pending&&(!alive||!stale&&s.paused&&s.fault!=null);
                 E<Button>("ResetPendingButton").Visibility=canConfirm?Visibility.Visible:Visibility.Collapsed;
                 E<Button>("ResetPendingButton").IsEnabled=canConfirm&&!Busy;
-                var state=s==null?null:s.state;
+                bool waitingForLogin=label=="等待登录";
+                var waiting=waitingForLogin||pending&&!canConfirm||alive&&(s.recovering||s.readRetryAt.HasValue||connectionHint!=null);
+                var alert=canConfirm||showStartupError||stale||unknown||exited||s!=null&&s.fault!=null||connectionNeedsUserAction||
+                    alive&&s.paused&&!s.manuallyPaused&&!s.recovering||unconfirmedCommand!=null||notice!=null&&!noticeIsSuccess;
+                PresentMiniStatus(label,message,waitingForLogin&&!alert?detail:displayedDetail,Busy,waiting,alert,canConfirm);
                 Text("AvailableValue",state==null||!state.available.HasValue?"—":state.available.Value.ToString("N0"));
                 Text("ClaimsValue",s==null?"—":s.claimsThisRun.ToString("N0"));
                 var snapshotCurrent=alive&&!history&&s.connected!=false;
@@ -670,8 +812,7 @@ namespace Tappo {
                 E<FrameworkElement>("ClickerRate").Visibility=savedMode=="clicker"?Visibility.Visible:Visibility.Collapsed;
                 E<FrameworkElement>("FixedSpeed").Visibility=savedMode=="human"?Visibility.Visible:Visibility.Collapsed;
                 Text("FixedSpeed","波动慢速");
-                E<Label>("SpeedLabel").Content=savedMode=="human"?"补充方式":savedMode=="brute"?"补充速度（次/秒）":"补充速度";
-                E<Label>("ReserveLabel").Content=savedMode=="brute"?"储备目标（次）":"储备目标";
+                E<Label>("SpeedLabel").Content=savedMode=="human"?"补充方式":"补充速度（次/秒）";
                 E<Label>("ReserveLabel").Target=savedMode=="brute"?(UIElement)E<TextBox>("BruteTarget"):E<ComboBox>("ReserveTarget");
                 E<Label>("SpeedLabel").Target=savedMode=="brute"?(UIElement)E<TextBox>("BruteRate"):E<ComboBox>("ClickerRate");
                 var balanceHistory=history||s!=null&&s.connected==false||state!=null&&state.time>0&&(ReadClock()-state.time>45000||state.time>ReadClock());
@@ -689,6 +830,8 @@ namespace Tappo {
                 }
             } catch(Exception) {
                 Text("StatusLabel","状态未知");Text("MainMessage","无法确认后台状态");Text("DetailMessage","暂时无法读取运行记录。请勿重复启动；请导出日志。");
+                PresentMiniStatus("状态未知",E<TextBlock>("MainMessage").Text,E<TextBlock>("DetailMessage").Text,false,false,true,
+                    E<Button>("ResetPendingButton").Visibility==Visibility.Visible);
                 HistoricalNumbers(lastDisplayedStatus,true);Text("SnapshotLabel","上次记录 "+RecordTime(lastDisplayedStatus==null?null:lastDisplayedStatus.at));
                 Chest("Left","left",lastDisplayedStatus,false,false);Chest("Right","right",lastDisplayedStatus,false,false);
                 E<Button>("StartButton").IsEnabled=false;
@@ -707,7 +850,10 @@ namespace Tappo {
                     else {text=state.Button(side)?"已就绪":"冷却已结束";progress=1;}
                 }
             }
-            Text(prefix+"Time",text);
+            var time=E<TextBlock>(prefix+"Time");
+            bool showPlaceholder=mini&&(!alive||state==null||!state.loggedIn||!valid);
+            time.Text=showPlaceholder?"--:--":text;
+            time.ToolTip=showPlaceholder&&text!="--:--"?text:null;
             E<Border>(prefix+"Fill").Width=Math.Max(0,E<Border>(prefix+"Track").ActualWidth*progress);
         }
         void Activity(Status status) {

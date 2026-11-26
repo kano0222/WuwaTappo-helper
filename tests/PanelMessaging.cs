@@ -56,21 +56,40 @@ namespace Tappo {
                         Check(Text(panel,"StatusLabel")=="结果未确认"&&!Text(panel,"DetailMessage").Contains("已成功"),"timeout looks successful");
                     }
                     panel.ControlTimeoutMs=3000;
+                    var output=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"console-previews");Directory.CreateDirectory(output);
+                    status.commandId=store.Read<Command>("control.json").id;status.resetCommandId=status.commandId;
+                    status.paused=true;status.manuallyPaused=true;panel.Refresh();
+                    panel.E<Button>("ViewModeButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    var window=panel.Window;
+                    window.ShowActivated=false;window.ShowInTaskbar=false;window.Opacity=0;
+                    window.Show();window.UpdateLayout();
+                    var alert=panel.E<Border>("MiniAlert");var miniStatus=panel.E<TextBlock>("MiniStatusLabel");
+                    double compactHeight=window.ActualHeight;
+                    var stats=panel.E<Border>("MiniStatsCard");var surface=panel.E<Border>("RootSurface");
+                    double statsTop=stats.TranslatePoint(new Point(),surface).Y;
+                    Check(alert.Visibility==Visibility.Collapsed,"stopped mini shows an alert");
                     Pump(async()=>{
-                        status.paused=true;status.manuallyPaused=true;
                         var operation=panel.Act("resume");
+                        window.UpdateLayout();
+                        Check(alert.Visibility==Visibility.Collapsed&&window.ActualHeight==compactHeight&&miniStatus.Text=="正在恢复运行…"&&
+                            miniStatus.ToolTip.ToString().Contains("接收恢复指令"),"initial mini resume changes its height or loses progress");
                         status.commandId=store.Read<Command>("control.json").id;
                         status.message="正在准备桌宠连接…";status.retrying=true;
                         status.paused=false;status.manuallyPaused=false;status.at=DateTimeOffset.UtcNow.ToString("o");
                         await Task.Delay(400);
                         Check(!operation.IsCompleted&&Text(panel,"DetailMessage")==status.message,
                             "resume acknowledged completion before preparation finished or hid its progress");
+                        window.UpdateLayout();
+                        Check(alert.Visibility==Visibility.Collapsed&&window.ActualHeight==compactHeight&&miniStatus.ToolTip.ToString()==status.message&&
+                            stats.TranslatePoint(new Point(),surface).Y==statsTop,"detailed mini resume moves cards or loses tooltip");
+                        panel.Render(Path.Combine(output,"mini-resuming.png"),(int)Math.Ceiling(window.ActualWidth),(int)Math.Ceiling(window.ActualHeight));
                         status.retrying=false;
                         await operation;
                     });
+                    window.Hide();
+                    panel.E<Button>("MiniViewModeButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
                     panel.ControlTimeoutMs=1;
                     Pump(async()=>{try {await panel.Act("pause");}catch(TimeoutException) { }});
-                    var output=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"console-previews");Directory.CreateDirectory(output);
                     panel.Render(Path.Combine(output,"messages-pause-unconfirmed-minimum.png"),820,660);
                     var detail=panel.E<TextBlock>("DetailMessage");var picker=panel.E<Button>("BrowseAppButton");
                     Check(detail.TranslatePoint(new Point(),panel.Window.Content as UIElement).Y+detail.ActualHeight<=picker.TranslatePoint(new Point(),panel.Window.Content as UIElement).Y,"unconfirmed-action text overlaps path selection at minimum size");

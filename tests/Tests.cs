@@ -958,7 +958,8 @@ namespace Tappo {
                 Check(preference.reserveTarget==10000&&preference.clickerRate==1000,"parameters not persisted");
                 target.SelectedIndex=3;Check(store.Read<Preference>("preferences.json").reserveTarget==20000,"20000 target not persisted");
                 target.SelectedIndex=4;Check(store.Read<Preference>("preferences.json").reserveTarget==50000,"50000 target not persisted");
-                Check(((ComboBoxItem)rate.SelectedItem).Content.ToString()=="1,000 次/秒","speed label still approximate");
+                Check(((ComboBoxItem)rate.SelectedItem).Content.ToString()=="1,000"&&(string)panel.E<Label>("SpeedLabel").Content=="补充速度（次/秒）",
+                    "speed units are missing from the label or repeated in the selector");
                 panel.Render(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"previews","clicker-options.png"),820,660);
                 var speedPosition=rate.TranslatePoint(new Point(),panel.E<Border>("RootSurface"));
                 Check(speedPosition.X>=0&&speedPosition.X+rate.ActualWidth<796&&rate.ActualHeight>=32,"parameter controls overflow");
