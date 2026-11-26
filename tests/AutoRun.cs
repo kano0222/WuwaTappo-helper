@@ -2,8 +2,10 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Threading;
 
 namespace Tappo {
     internal static class AutoRunChecks {
@@ -88,6 +90,7 @@ namespace Tappo {
                     }
                     store.ClearPending();
                 }
+                StartupUpdate(root);
                 var missing=new RuntimeStore(Path.Combine(root,"missing"),"missing-pet");missing.Write("preferences.json",new Preference {mode="clicker",autoRun=true});
                 using(var panel=new Panel(missing,true)) {
                     int calls=0;panel.DispatchOverride=action=>calls++;panel.AutoRunOnOpen().GetAwaiter().GetResult();
@@ -99,6 +102,47 @@ namespace Tappo {
                 }
                 return checks;
             } finally {Directory.Delete(root,true);}
+        }
+        static void StartupUpdate(string root) {
+            foreach(var scenario in new[]{"current","offline","available","available-mini"}) {
+                var store=new RuntimeStore(Path.Combine(root,scenario));
+                store.Write("preferences.json",new Preference {autoRun=true});
+                bool mini=scenario=="available-mini",available=scenario.StartsWith("available");
+                if(mini)store.Write("panel-mini.json",true);
+                using(var panel=new Panel(store)) {
+                    var waiting=new TaskCompletionSource<UpdateInfo>();
+                    var identity=RuntimeIdentity.Create(store,"worker");
+                    var status=new Status {running=true,pid=identity.pid,identity=identity,connected=true,at=DateTimeOffset.UtcNow.ToString("o"),
+                        paused=mini,manuallyPaused=mini};
+                    int checksStarted=0,resumes=0;
+                    panel.AutoCheckUpdates=true;
+                    panel.UpdateCheck=token=>{checksStarted++;return waiting.Task;};
+                    panel.ReadStatus=()=>status;
+                    panel.DispatchOverride=action=>{
+                        Check(action=="resume"&&checksStarted==1,"startup update delayed resume or started too late");
+                        resumes++;status.paused=false;status.manuallyPaused=false;
+                    };
+                    panel.InitializeTray();panel.Window.Show();
+                    panel.Window.Dispatcher.Invoke(new Action(()=>{}),DispatcherPriority.ApplicationIdle);
+                    panel.TryAutoTray();
+                    Check(checksStarted==1&&resumes==(mini?1:0)&&panel.Window.IsVisible&&panel.Window.ShowInTaskbar,
+                        "automatic tray did not wait for the startup update check: "+scenario);
+                    if(scenario=="offline")waiting.SetException(new System.Net.Http.HttpRequestException("offline"));
+                    else waiting.SetResult(new UpdateInfo {version="9.8.7",available=available});
+                    panel.Window.Dispatcher.Invoke(new Action(()=>{}),DispatcherPriority.ApplicationIdle);
+                    Check(panel.Window.IsVisible==available&&panel.Window.ShowInTaskbar==available,
+                        "startup update result did not determine automatic tray visibility: "+scenario);
+                    if(available) {
+                        var button=panel.E<Button>(mini?"MiniUpdateButton":"UpdateButton");
+                        Check(button.IsVisible&&button.IsEnabled&&button.Content.ToString().Contains("下载新版"),"new version action is not visible: "+scenario);
+                        if(mini) {
+                            panel.UpdateDownload=(info,progress,token)=>Task.FromResult("isolated-stage");
+                            button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                            Check(button.Content.ToString().Contains("重启更新"),"mini update action did not use the shared download flow");
+                        }
+                    }
+                }
+            }
         }
         static void LauncherConflict(string root,string pet) {
             var store=new RuntimeStore(Path.Combine(root,"launcher-conflict"));Platform.SavePath(store,pet);

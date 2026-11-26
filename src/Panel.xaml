@@ -565,6 +565,24 @@
           </StackPanel>
         </Grid>
       </Border>
+      <Button x:Name="MiniUpdateButton" Grid.Row="2" Width="180" Height="28" Margin="0,0,0,10" Padding="10,0" FontSize="11"
+              Content="{Binding Content, ElementName=UpdateButton}" IsEnabled="{Binding IsEnabled, ElementName=UpdateButton}"
+              Tag="{Binding Tag, ElementName=UpdateButton}" ToolTip="{Binding ToolTip, ElementName=UpdateButton}">
+        <Button.Style>
+          <Style TargetType="Button" BasedOn="{StaticResource UpdateAction}">
+            <Setter Property="Visibility" Value="Collapsed"/>
+            <Style.Triggers>
+              <MultiDataTrigger>
+                <MultiDataTrigger.Conditions>
+                  <Condition Binding="{Binding Visibility, ElementName=MiniViewport}" Value="Visible"/>
+                  <Condition Binding="{Binding Tag, ElementName=UpdateButton}" Value="update"/>
+                </MultiDataTrigger.Conditions>
+                <Setter Property="Visibility" Value="Visible"/>
+              </MultiDataTrigger>
+            </Style.Triggers>
+          </Style>
+        </Button.Style>
+      </Button>
     </Grid>
 
   </Border>

@@ -127,6 +127,7 @@ namespace Tappo {
                 E<Button>(name).Click+=async(s,e)=>await RequestClose();
             UpdateCaption("检查更新");
             E<Button>("UpdateButton").Click+=async(s,e)=>await UpdateAction();
+            E<Button>("MiniUpdateButton").Click+=async(s,e)=>await UpdateAction();
             E<Button>("FeedbackButton").Click+=(s,e)=>{
                 try {OpenUpdatePage(Updates.IssuesUrl);}
                 catch {SetNotice("无法打开浏览器，请手动访问 "+Updates.IssuesUrl);Refresh();}
@@ -146,7 +147,16 @@ namespace Tappo {
                 };
             Window.Closing+=(s,e)=>{if(!AllowExit){e.Cancel=true;Window.Dispatcher.BeginInvoke(new Action(async()=>await RequestClose()));}};
             Window.Closed+=(s,e)=>Life("closed");
-            Window.ContentRendered+=async(s,e)=>{if(disposed)return;Life("visible");if(!preview) {if(AutoShowReleaseNotes)ShowReleaseNotes();await AutoRunOnOpen();}if(AutoCheckUpdates&&RuntimeStore.Now>=nextUpdateCheck)await CheckForUpdates();};
+            Window.ContentRendered+=async(s,e)=>{
+                if(disposed)return;
+                Life("visible");
+                var startupUpdate=AutoCheckUpdates&&RuntimeStore.Now>=nextUpdateCheck?CheckForUpdates():Task.CompletedTask;
+                if(!preview) {
+                    if(AutoShowReleaseNotes)ShowReleaseNotes();
+                    await AutoRunOnOpen();
+                }
+                await startupUpdate;
+            };
             var path=preview?null:Platform.Discover(store);SetPath(path);
             if(ReadMiniView())ApplyView(true);
             Refresh();
@@ -397,6 +407,7 @@ namespace Tappo {
         }
         internal void TryAutoTray() {
             if(!autoTrayPending||autoTrayCancelled||!autoRun||Busy||disposed||AllowExit||releaseNotesDialog!=null||tray==null)return;
+            if(AutoCheckUpdates&&(nextUpdateCheck==0||checkingUpdates))return;
             try {
                 var status=ReadStatus();DateTimeOffset at;
                 if(store.Exists("pending.json")||!Alive(status)||status.paused||status.manuallyPaused||status.recovering||status.fault!=null||status.readRetryAt.HasValue||status.retrying||
@@ -471,6 +482,7 @@ namespace Tappo {
                 var result=await UpdateCheck(updateCancellation.Token);
                 if(disposed)return;
                 update=result;button.Tag=result.available?"update":null;
+                if(result.available)autoTrayCancelled=true;
                 UpdateCaption(result.available?"下载新版":"已是最新");
             } catch {
                 if(disposed)return;
@@ -478,7 +490,10 @@ namespace Tappo {
                 button.Tag=null;
                 nextUpdateCheck=RuntimeStore.Now+15*60*1000L;
                 UpdateCaption(update==null?"检查更新":"已是最新");
-            } finally {checkingUpdates=false;if(!disposed)button.IsEnabled=true;}
+            } finally {
+                checkingUpdates=false;
+                if(!disposed) {button.IsEnabled=true;TryAutoTray();}
+            }
         }
         void OpenAnother() {
             try {
