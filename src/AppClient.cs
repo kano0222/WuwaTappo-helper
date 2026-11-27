@@ -63,7 +63,11 @@ namespace Tappo {
         public static async Task<AppClient> Connect(int mainWaitMs=25000,string appPath=null) {
             if(appPath!=null&&!Platform.CheckRunningApp(appPath))throw new ConnectionFailureException("debug-unavailable","所选桌宠尚未运行。");
             var port=appPath==null?19222:Instances.PortFor(appPath);
-            var selected=await WaitForMain(()=>FindMain(port,appPath),Task.Delay,()=>RuntimeStore.Now,mainWaitMs).ConfigureAwait(false);
+            var selected=await WaitForMain(()=> {
+                if(appPath==null)Platform.CheckListeners(port);
+                else if(Instances.PortFor(appPath)!=port)throw new InvalidOperationException("桌宠调试端口已变化，请重新连接。");
+                return FindMain(port);
+            },Task.Delay,()=>RuntimeStore.Now,mainWaitMs).ConfigureAwait(false);
             try {
                 if(appPath!=null&&!Platform.CheckRunningApp(appPath))throw new ConnectionFailureException("debug-unavailable","所选桌宠已退出。");
                 if(appPath!=null&&Instances.PortFor(appPath)!=port)throw new InvalidOperationException("桌宠调试端口已变化。");
@@ -78,11 +82,9 @@ namespace Tappo {
             // actual main window through CDP; no account or game operations.
             var version=Json.Decode<Dictionary<string,object>>(LocalGet("/json/version",1000,port).GetAwaiter().GetResult());
             if(version==null||!version.ContainsKey("Browser")||!version.ContainsKey("Protocol-Version"))return false;
-            using(var main=FindMain(port,null).GetAwaiter().GetResult())return main!=null;
+            using(var main=FindMain(port).GetAwaiter().GetResult())return main!=null;
         }
-        static async Task<AppClient> FindMain(int port,string appPath) {
-            if(appPath!=null&&Instances.PortFor(appPath)!=port)throw new InvalidOperationException("桌宠调试端口已变化，请重新连接。");
-            if(appPath==null)Platform.CheckListeners(port); // PortFor already validates the selected process and endpoint.
+        static async Task<AppClient> FindMain(int port) {
             var targets=Json.Decode<Target[]>(await LocalGet("/json/list",5000,port).ConfigureAwait(false));
             AppClient selected=null;
             try {

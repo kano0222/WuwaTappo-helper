@@ -65,10 +65,10 @@ namespace Tappo {
                 using(var hostIdentity=ProcessIdentity.Open(host.Id))using(var browserIdentity=ProcessIdentity.Open(browser.Id)) {
                     Check(!WebViewExecutable.IsTrusted(browserIdentity.Path),"unsigned renamed fixture was trusted as Microsoft WebView2");
                     Check(!RootIds(hostIdentity,WebViewExecutable.IsTrusted).Contains(browser.Id),"production discovery trusted an unsigned impersonator");
-                    bool rejected=false;try {Instances.OwnedPort(host.Id);}catch(ConnectionFailureException){rejected=true;}
+                    bool rejected=false;try {Instances.PortFor(hostIdentity.Path);}catch(ConnectionFailureException){rejected=true;}
                     Check(rejected,"production port resolution accepted unsigned impersonator");
                     Check(RootIds(hostIdentity,fixtureTrust).Contains(browser.Id),"native WMI host binding not discovered");
-                    Check(Instances.OwnedPort(host.Id,fixtureTrust)==port,"broker-launched owned browser could not connect");
+                    Check(Instances.PortFor(hostIdentity.Path,fixtureTrust)==port,"broker-launched owned browser could not connect");
 
                     var targetPort=Instances.AvailablePort();var auxiliaryPort=Instances.AvailablePort();
                     while(auxiliaryPort==targetPort)auxiliaryPort=Instances.AvailablePort();
@@ -80,7 +80,7 @@ namespace Tappo {
                         Check(!RootIds(newerHost,fixtureTrust).Contains(browser.Id),"browser attached to another pet's process");
                     }
                     otherBrowser=Start(otherBrowserRoot,"msedgewebview2.exe",Args(other.Id,targetPort)+" --listener");
-                    Check(Instances.OwnedPort(other.Id,fixtureTrust)==targetPort,"auxiliary host listener masked the hosted browser debug port");
+                    Check(Instances.PortFor(Path.Combine(otherRoot,"WuwaTappo.exe"),fixtureTrust)==targetPort,"auxiliary host listener masked the hosted browser debug port");
 
                     File.WriteAllText(Path.Combine(browserRoot,"quit"),"quit");Check(browser.WaitForExit(3000),"browser fixture did not exit");
                     Check(!browserIdentity.Alive,"held browser identity survived process exit");
@@ -90,6 +90,9 @@ namespace Tappo {
                     bool deadHostRejected=false;
                     try {Instances.ProcessTree(hostIdentity,new ProcessIdentity[0]);}catch(ConnectionFailureException){deadHostRejected=true;}
                     Check(deadHostRejected,"dead host identity was allowed to bind a replacement process");
+                    deadHostRejected=false;
+                    try {Instances.OwnedPort(hostIdentity,fixtureTrust);}catch(ConnectionFailureException){deadHostRejected=true;}
+                    Check(deadHostRejected,"port resolution reopened an exited selection by PID");
                 }
             } finally {
                 foreach(var folder in new[]{hostRoot,browserRoot,otherRoot,otherBrowserRoot})if(Directory.Exists(folder))File.WriteAllText(Path.Combine(folder,"quit"),"quit");

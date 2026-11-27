@@ -71,6 +71,17 @@ namespace Tappo {
             Check(Instances.ResolvePort(missing,p=>true,()=>new[]{port,port+1},p=>p==port)==port,"unrelated listener masked valid CDP endpoint");
             Reject(()=>Instances.ResolvePort(()=>{throw new ConnectionFailureException("debug-unavailable","fixture","port-arguments-ambiguous");},p=>true,()=>new[]{port},p=>true),
                 "ambiguous arguments silently bypassed by listeners");
+            foreach(var duplicate in new[]{"--remote-debugging-port=12 --remote-debugging-port=13",
+                "--remote-debugging-port=12 --remote-debugging-port=invalid"}) {
+                foreach(var duplicateInHost in new[]{true,false}) {
+                    string reason=null;bool usedListeners=false;
+                    try {
+                        Instances.ResolvePort(()=>Instances.DebugPortFor(10,tree,p=>(p==10)==duplicateInHost?duplicate:null,p=>p==11),
+                            p=>true,()=>{usedListeners=true;return new[]{port};},p=>true);
+                    } catch(ConnectionFailureException error) {reason=error.Reason;}
+                    Check(reason=="port-arguments-ambiguous"&&!usedListeners,"duplicate switches degraded to missing arguments");
+                }
+            }
             Check(Instances.ListenerPorts(new[]{Row(11,port,state:2),Row(20,port+1,state:2),Row(11,port+2,state:5)},tree).Length==1,
                 "listener discovery included foreign or established rows");
             var wildcard=Row(11,port,state:2);wildcard.localAddress=IPAddress.Any;

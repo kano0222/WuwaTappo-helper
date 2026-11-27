@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Linq;
 using System.Management;
@@ -82,33 +83,39 @@ namespace Tappo {
                 return tree;
             } finally {CloseHandle(handle);}
         }
-        internal static int PortFor(string app) {
+        internal static int PortFor(string app,Func<string,bool> trustedBrowser=null) {
             var processes=Process.GetProcessesByName("WuwaTappo");
-            int pid;
+            ProcessIdentity selected=null;
             try {
-                var matching=processes.Where(p=>string.Equals(Platform.ProcessPath(p.Id),app,StringComparison.OrdinalIgnoreCase)).ToArray();
-                if(matching.Length!=1)throw new ConnectionFailureException("debug-unavailable","所选桌宠尚未运行，或无法确认唯一实例。");
-                pid=matching[0].Id;
-            } finally {foreach(var process in processes)process.Dispose();}
-            return OwnedPort(pid);
-        }
-        internal static int OwnedPort(int pid) {
-            return OwnedPort(pid,WebViewExecutable.IsTrusted);
+                foreach(var process in processes) {
+                    var candidate=ProcessIdentity.Open(process.Id);
+                    if(candidate==null)continue;
+                    if(!string.Equals(candidate.Path,app,StringComparison.OrdinalIgnoreCase)) {candidate.Dispose();continue;}
+                    if(selected!=null) {
+                        candidate.Dispose();
+                        throw new ConnectionFailureException("debug-unavailable","所选桌宠尚未运行，或无法确认唯一实例。");
+                    }
+                    selected=candidate;
+                }
+                if(selected==null)throw new ConnectionFailureException("debug-unavailable","所选桌宠尚未运行，或无法确认唯一实例。");
+                return OwnedPort(selected,trustedBrowser??WebViewExecutable.IsTrusted);
+            } finally {
+                if(selected!=null)selected.Dispose();
+                foreach(var process in processes)process.Dispose();
+            }
         }
         // The explicit verifier lets isolated fixtures exercise the same native
         // ownership path without requiring an installed runtime or a signed fake.
-        internal static int OwnedPort(int pid,Func<string,bool> trustedBrowser) {
-            using(var host=ProcessIdentity.Open(pid)) {
-                if(host==null)throw new ConnectionFailureException("debug-unavailable","无法读取所选桌宠的进程身份。");
-                var hosted=HostedWebViews.Roots(host,trustedBrowser);
-                try {
-                    Func<HashSet<int>> tree=()=>ProcessTree(host,hosted);
-                    return ResolvePort(()=>DebugPortFor(pid,tree(),CommandLine,
-                        child=>hosted.Any(browser=>browser.Id==child&&browser.Alive)),
-                        port=>ProbePort(port,tree,true),
-                        ()=>ListenerPorts(ReadTcpRows(),tree()),AppClient.IsPetEndpoint);
-                } finally {foreach(var browser in hosted)browser.Dispose();}
-            }
+        internal static int OwnedPort(ProcessIdentity host,Func<string,bool> trustedBrowser) {
+            if(!host.Alive)throw new ConnectionFailureException("debug-unavailable","所选桌宠进程已退出。");
+            var hosted=HostedWebViews.Roots(host,trustedBrowser);
+            try {
+                Func<HashSet<int>> tree=()=>ProcessTree(host,hosted);
+                return ResolvePort(()=>DebugPortFor(host.Id,tree(),CommandLine,
+                    child=>hosted.Any(browser=>browser.Id==child&&browser.Alive)),
+                    port=>ProbePort(port,tree,true),
+                    ()=>ListenerPorts(ReadTcpRows(),tree()),AppClient.IsPetEndpoint);
+            } finally {foreach(var browser in hosted)browser.Dispose();}
         }
         internal sealed class TcpRow {
             public int state,localPort,remotePort,pid;
@@ -153,10 +160,11 @@ namespace Tappo {
             return null;
         }
         internal static int DebugPort(string commandLine) {
-            var matches=Regex.Matches(commandLine??"","(?:^|[\\s\"])--remote-debugging-port=(\\d+)(?=[\\s\"]|$)");
+            var matches=Regex.Matches(commandLine??"","(?:^|[\\s\"])--remote-debugging-port(?==|[\\s\"]|$)(?:=([^\\s\"]*))?");
+            if(matches.Count>1)throw new ConnectionFailureException("debug-unavailable","启动参数包含多个调试端口。","port-arguments-ambiguous");
             int port;
-            if(matches.Count!=1||!int.TryParse(matches[0].Groups[1].Value,out port)||port<1||port>65535)
-                throw new ConnectionFailureException("debug-unavailable","无法从所选桌宠启动参数确认调试端口。");
+            if(matches.Count==0||!int.TryParse(matches[0].Groups[1].Value,NumberStyles.None,CultureInfo.InvariantCulture,out port)||port<1||port>65535)
+                throw new ConnectionFailureException("debug-unavailable","无法从所选桌宠启动参数确认调试端口。","port-arguments-unavailable");
             return port;
         }
         internal static int DebugPortFor(int pid,HashSet<int> tree,Func<int,string> commandLine,Func<int,bool> isBrowser) {
@@ -176,7 +184,10 @@ namespace Tappo {
         }
         static int? CandidatePort(int pid,Func<int,string> commandLine) {
             try {return DebugPort(commandLine(pid));}
-            catch(ConnectionFailureException) {return null;}
+            catch(ConnectionFailureException error) {
+                if(error.Reason!="port-arguments-unavailable")throw;
+                return null;
+            }
             catch(ManagementException) {return null;}
             catch(UnauthorizedAccessException) {return null;}
         }
