@@ -34,7 +34,7 @@ namespace Tappo {
                     Check(Instances.SavedPath(fresh.Root)==null&&!fresh.Exists("status.json"),"first-open fixture already has a saved path or run history");
                     panel.AutoRunOnOpen().GetAwaiter().GetResult();panel.AutoRunOnOpen().GetAwaiter().GetResult();
                     Check(calls==1&&command=="start","first automatic run requires a previous manual run despite discovering the pet");
-                    Check(!panel.Window.IsVisible&&!panel.Window.ShowInTaskbar,"successful first automatic start did not hide to tray");
+                    Check(panel.Window.IsVisible&&panel.Window.ShowInTaskbar,"successful first automatic start hid the panel");
                 }
                 var store=new RuntimeStore(root);Platform.SavePath(store,pet);
                 using(var panel=new Panel(store,true)) {
@@ -82,9 +82,7 @@ namespace Tappo {
                         panel.AutoRunOnOpen().GetAwaiter().GetResult();panel.AutoRunOnOpen().GetAwaiter().GetResult();
                         var shouldRun=scenario=="paused"||scenario=="failure";
                         Check(calls==(shouldRun?1:0)&&(!shouldRun||command=="resume"),"auto-run bypassed existing state: "+scenario);
-                        var hidden=scenario=="running"||scenario=="paused";
-                        Check(panel.Window.IsVisible!=hidden&&panel.Window.ShowInTaskbar!=hidden,"auto tray visibility incorrect: "+scenario);
-                        if(hidden) {panel.Show();panel.AutoRunOnOpen().GetAwaiter().GetResult();panel.TryAutoTray();Check(panel.Window.IsVisible,"restored panel automatically hid again");}
+                        Check(panel.Window.IsVisible&&panel.Window.ShowInTaskbar,"auto-run hid the panel: "+scenario);
                         if(scenario=="pending")Check(store.Exists("pending.json"),"auto-run cleared pending confirmation");
                         if(scenario=="failure")Check(panel.E<TextBlock>("DetailMessage").Text=="启动未获允许","auto-run failure hidden or retried");
                     }
@@ -104,10 +102,10 @@ namespace Tappo {
             } finally {Directory.Delete(root,true);}
         }
         static void StartupUpdate(string root) {
-            foreach(var scenario in new[]{"current","offline","available","available-mini"}) {
+            foreach(var scenario in new[]{"current","offline","available","current-mini","available-mini"}) {
                 var store=new RuntimeStore(Path.Combine(root,scenario));
                 store.Write("preferences.json",new Preference {autoRun=true});
-                bool mini=scenario=="available-mini",available=scenario.StartsWith("available");
+                bool mini=scenario.EndsWith("-mini"),available=scenario.StartsWith("available");
                 if(mini)store.Write("panel-mini.json",true);
                 using(var panel=new Panel(store)) {
                     var waiting=new TaskCompletionSource<UpdateInfo>();
@@ -124,14 +122,12 @@ namespace Tappo {
                     };
                     panel.InitializeTray();panel.Window.Show();
                     panel.Window.Dispatcher.Invoke(new Action(()=>{}),DispatcherPriority.ApplicationIdle);
-                    panel.TryAutoTray();
                     Check(checksStarted==1&&resumes==(mini?1:0)&&panel.Window.IsVisible&&panel.Window.ShowInTaskbar,
-                        "automatic tray did not wait for the startup update check: "+scenario);
+                        "startup check did not run alongside auto-run with a visible panel: "+scenario);
                     if(scenario=="offline")waiting.SetException(new System.Net.Http.HttpRequestException("offline"));
                     else waiting.SetResult(new UpdateInfo {version="9.8.7",available=available});
                     panel.Window.Dispatcher.Invoke(new Action(()=>{}),DispatcherPriority.ApplicationIdle);
-                    Check(panel.Window.IsVisible==available&&panel.Window.ShowInTaskbar==available,
-                        "startup update result did not determine automatic tray visibility: "+scenario);
+                    Check(panel.Window.IsVisible&&panel.Window.ShowInTaskbar,"startup update check hid the panel: "+scenario);
                     if(available) {
                         var button=panel.E<Button>(mini?"MiniUpdateButton":"UpdateButton");
                         Check(button.IsVisible&&button.IsEnabled&&button.Content.ToString().Contains("下载新版"),"new version action is not visible: "+scenario);

@@ -1098,6 +1098,23 @@ namespace Tappo {
             }
         }
         static void CloseChoices() {
+            foreach(var mini in new[]{false,true}) {
+                var store=Store();
+                if(mini)store.Write("panel-mini.json",true);
+                using(var panel=new Panel(store,preview:true)) {
+                    panel.InitializeTray();panel.Window.Show();
+                    int prompts=0,commands=0;
+                    panel.ClosePrompt=()=>{prompts++;return CloseChoice.Cancel;};
+                    panel.DispatchOverride=action=>commands++;
+                    var button=panel.E<Button>(mini?"MiniTrayButton":"TrayButton");
+                    Check(button.IsVisible,"tray shortcut unavailable in current view");
+                    button.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Check(!panel.Window.IsVisible&&!panel.Window.ShowInTaskbar&&!panel.AllowExit&&prompts==0&&commands==0,
+                        "tray shortcut prompted, dispatched a command, exited or failed to hide");
+                    panel.Show();
+                    Check(panel.Window.IsVisible&&panel.Window.ShowInTaskbar&&button.IsVisible,"tray shortcut lost the window or view on restore");
+                }
+            }
             foreach(var choice in new[]{CloseChoice.Cancel,CloseChoice.Tray,CloseChoice.Exit}) using(var panel=new Panel(Store())) {
                 panel.InitializeTray();panel.ReadStatus=()=>new Status {running=true,pid=Process.GetCurrentProcess().Id};panel.Window.Show();
                 string dispatched=null;panel.DispatchOverride=action=>dispatched=action;panel.ClosePrompt=()=>choice;

@@ -41,7 +41,6 @@ namespace Tappo {
         string runAction="start";
         bool startupEnabled;
         bool autoRun,autoRunAttempted;
-        bool autoTrayPending,autoTrayCancelled;
         ReleaseNotes releaseNotes;
         ReleaseNotesDialog releaseNotesDialog;
         internal Window ReleaseNotesWindow {get {return releaseNotesDialog==null?null:releaseNotesDialog.Window;}}
@@ -121,6 +120,8 @@ namespace Tappo {
             E<Button>("AnotherAppButton").Click+=(s,e)=>OpenAnother();
             foreach(var name in new[]{"ViewModeButton","MiniViewModeButton"})
                 E<Button>(name).Click+=(s,e)=>ToggleView();
+            foreach(var name in new[]{"TrayButton","MiniTrayButton"})
+                E<Button>(name).Click+=(s,e)=>HideToTray();
             foreach(var name in new[]{"MinimizeButton","MiniMinimizeButton"})
                 E<Button>(name).Click+=(s,e)=>Window.WindowState=WindowState.Minimized;
             foreach(var name in new[]{"CloseButton","MiniCloseButton"})
@@ -344,8 +345,18 @@ namespace Tappo {
             if(mini)Window.MaxHeight=Math.Max(Window.MinHeight,height-40);
             else Window.Height=Math.Max(Window.MinHeight,Math.Min(Window.Height,height-40));
         }
-        public void Show() {autoTrayCancelled=true;Window.ShowInTaskbar=true;Window.Show();Window.WindowState=WindowState.Normal;Window.Activate();if(releaseNotesDialog!=null)releaseNotesDialog.Window.Activate();Life("restored");}
-        void HideToTray() {Window.Hide();Window.ShowInTaskbar=false;Life("hidden-to-tray");}
+        public void Show() {
+            Window.ShowInTaskbar=true;Window.Show();Window.WindowState=WindowState.Normal;Window.Activate();
+            if(releaseNotesDialog!=null) {
+                if(!releaseNotesDialog.Window.IsVisible)releaseNotesDialog.Window.Show();
+                releaseNotesDialog.Window.Activate();
+            }
+            Life("restored");
+        }
+        void HideToTray() {
+            if(releaseNotesDialog!=null)releaseNotesDialog.Window.Hide();
+            Window.Hide();Window.ShowInTaskbar=false;Life("hidden-to-tray");
+        }
         internal async Task RequestClose() {
             if(choosingClose) return;
             if(Busy) {SetNotice("正在处理操作，请等待完成后关闭。");Refresh();return;}
@@ -376,7 +387,7 @@ namespace Tappo {
                     else {SetNotice("正在等待当前操作结束并退出，以安装更新…");Refresh();}
                     return;
                 }
-                if(showEvent!=null&&showEvent.WaitOne(0)) Show();Refresh();TryAutoTray();if(AutoCheckUpdates&&RuntimeStore.Now>=nextUpdateCheck)await CheckForUpdates();
+                if(showEvent!=null&&showEvent.WaitOne(0)) Show();Refresh();if(AutoCheckUpdates&&RuntimeStore.Now>=nextUpdateCheck)await CheckForUpdates();
             };timer.Start();
         }
         internal void SetStartup(bool enabled) {
@@ -397,23 +408,12 @@ namespace Tappo {
             if(!autoRun||Busy||disposed)return;
             try {
                 Refresh();
-                if(store.Exists("pending.json")||!E<Button>("StartButton").IsEnabled)return;
-                if(runAction=="pause") {autoTrayPending=true;TryAutoTray();return;}
+                if(store.Exists("pending.json")||!E<Button>("StartButton").IsEnabled||runAction=="pause")return;
                 if(runAction=="start"&&Platform.Discover(store)==null) {
                     SetNotice("请先选择桌宠程序，再点击“启动后台”。");Refresh();return;
                 }
-                if(await UserAction(runAction,true)) {autoTrayPending=true;TryAutoTray();}
+                await UserAction(runAction);
             } catch(Exception error) {SetNotice(error.Message);Refresh();}
-        }
-        internal void TryAutoTray() {
-            if(!autoTrayPending||autoTrayCancelled||!autoRun||Busy||disposed||AllowExit||releaseNotesDialog!=null||tray==null)return;
-            if(AutoCheckUpdates&&(nextUpdateCheck==0||checkingUpdates))return;
-            try {
-                var status=ReadStatus();DateTimeOffset at;
-                if(store.Exists("pending.json")||!Alive(status)||status.paused||status.manuallyPaused||status.recovering||status.fault!=null||status.readRetryAt.HasValue||status.retrying||
-                    status.connected!=true||Connection.Hint(status,ReadClock())!=null||!DateTimeOffset.TryParse(status.at,out at)||ReadClock()-at.ToUnixTimeMilliseconds()>45000)return;
-                autoTrayPending=false;HideToTray();
-            } catch { } // Keep the panel visible if startup health cannot be confirmed.
         }
         internal void ShowReleaseNotes(string version=null,ReleaseNote[] entries=null) {
             if(releaseNotes!=null||disposed)return;
@@ -423,14 +423,12 @@ namespace Tappo {
                 releaseNotesDialog=new ReleaseNotesDialog(Window,releaseNotes.Version,releaseNotes.Entries);
                 releaseNotesDialog.Window.Closed+=(s,e)=>{
                     try {if(!disposed&&!AllowExit)releaseNotes.MarkRead();}
-                    catch {autoTrayCancelled=true;SetNotice("更新内容已关闭，但未能保存已读状态，下次打开时可能再次显示。");Refresh();}
+                    catch {SetNotice("更新内容已关闭，但未能保存已读状态，下次打开时可能再次显示。");Refresh();}
                     finally {releaseNotes.Dispose();releaseNotes=null;releaseNotesDialog=null;}
-                    TryAutoTray();
                 };
                 releaseNotesDialog.Window.Show();
             } catch {
                 if(releaseNotes!=null)releaseNotes.Dispose();releaseNotes=null;releaseNotesDialog=null;
-                autoTrayCancelled=true;
                 SetNotice("暂时无法显示更新内容，请稍后重新打开助手。");Refresh();
             }
         }
@@ -482,7 +480,6 @@ namespace Tappo {
                 var result=await UpdateCheck(updateCancellation.Token);
                 if(disposed)return;
                 update=result;button.Tag=result.available?"update":null;
-                if(result.available)autoTrayCancelled=true;
                 UpdateCaption(result.available?"下载新版":"已是最新");
             } catch {
                 if(disposed)return;
@@ -492,7 +489,7 @@ namespace Tappo {
                 UpdateCaption(update==null?"检查更新":"已是最新");
             } finally {
                 checkingUpdates=false;
-                if(!disposed) {button.IsEnabled=true;TryAutoTray();}
+                if(!disposed)button.IsEnabled=true;
             }
         }
         void OpenAnother() {
@@ -702,14 +699,12 @@ namespace Tappo {
             }
             finally {diagnostics.Record("command-wait-ended",action,commandId,commandResult,elapsed:Math.Max(0,RuntimeStore.Now-commandStarted));Busy=false;busyCommandId=null;Refresh();}
         }
-        async Task<bool> UserAction(string action,bool automatic=false) {
-            if(!automatic)autoTrayCancelled=true;
-            try {await Act(action);return true;}
+        async Task UserAction(string action) {
+            try {await Act(action);}
             catch(Exception error) {
                 SetActionFailure(action,error);
                 try {store.Log("panel-action-failed",new {action=action,errorType=error.GetType().Name,message=error.Message});} catch { }
                 Refresh();
-                return false;
             }
         }
         void SetActionFailure(string action,Exception error) {

@@ -199,10 +199,15 @@ namespace Tappo {
                 Check(run.ActualWidth==38&&run.ActualHeight==34&&AutomationProperties.GetName(run)=="启动后台","mini start lost its hit target or accessible name");
                 Check(expand.ActualWidth==panel.E<Button>("MiniCloseButton").Width&&((FrameworkElement)expand.Content).Width==14,
                     "mini switch lost its common hit area or compact icon");
-                foreach(var name in new[]{"ViewModeButton","MiniViewModeButton","MiniStartButton","MiniMinimizeButton","MiniCloseButton"})
+                foreach(var name in new[]{"TrayButton","MiniTrayButton"})
+                    Check(object.Equals(panel.E<Button>(name).ToolTip,"收起到托盘"),"tray button lost its tooltip: "+name);
+                Check(object.Equals(button.ToolTip,"迷你模式")&&object.Equals(expand.ToolTip,"完整模式"),"view switches do not show their target mode");
+                Check(object.Equals(run.ToolTip,"启动后台"),"mini start does not show its action");
+                foreach(var name in new[]{"MiniMinimizeButton","MiniCloseButton"})
                     Check(panel.E<Button>(name).ToolTip==null,"routine toolbar button has a tooltip: "+name);
                 CheckTabFocus(run);
                 CheckTabFocus(expand);
+                CheckTabFocus(panel.E<Button>("MiniTrayButton"));
 
                 string command=null;panel.DispatchOverride=action=>command=action;
                 run.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -241,6 +246,7 @@ namespace Tappo {
                 RenderMini(panel,output,"running");
                 Check(window.ActualHeight==idleHeight&&AutomationProperties.GetName(run)=="停止运行"&&panel.E<TextBlock>("MiniAvailableValue").Text=="267,304",
                     "running changed the mini layout, accessible name or available count");
+                Check(object.Equals(run.ToolTip,"停止运行"),"mini stop does not show its action");
                 foreach(var name in new[]{"AvailableValue","TotalValue","ClaimsValue"})
                     Check(panel.E<TextBlock>("Mini"+name).Foreground==panel.E<TextBlock>(name).Foreground,"mini statistic does not reuse the full view foreground");
                 run.RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
@@ -248,6 +254,14 @@ namespace Tappo {
                 var width=window.Width;window.Width=window.MinWidth;
                 target.SelectedIndex=4;
                 RenderMini(panel,output,"minimum");
+                var toolbar=panel.E<Grid>("MiniToolbar");
+                var tray=panel.E<Button>("MiniTrayButton");
+                var trayCenter=tray.TranslatePoint(new Point(tray.ActualWidth/2,tray.ActualHeight/2),toolbar);
+                var hit=toolbar.InputHitTest(trayCenter) as DependencyObject;
+                Check(tray.Style==expand.Style&&tray.ActualWidth==expand.ActualWidth&&tray.ActualHeight==expand.ActualHeight&&
+                    AutomationProperties.GetName(tray)=="收起到托盘"&&tray.TranslatePoint(new Point(),toolbar).X==expand.TranslatePoint(new Point(expand.ActualWidth,0),toolbar).X&&
+                    hit!=null&&(hit==tray||tray.IsAncestorOf(hit))&&panel.E<Border>("MiniTitleGrip").ActualWidth>=24,
+                    "mini tray shortcut does not match the adjacent toggle or is clipped at minimum width");
                 foreach(var editor in new[]{modes,target,speed}) {
                     var selectedText=new TextBlock {Text=editor.SelectionBoxItem.ToString(),FontFamily=editor.FontFamily,FontSize=editor.FontSize};
                     selectedText.Measure(new Size(double.PositiveInfinity,double.PositiveInfinity));
@@ -311,6 +325,7 @@ namespace Tappo {
                 var shrink=panel.E<Button>("ViewModeButton");
                 var expand=panel.E<Button>("MiniViewModeButton");
                 CheckTabFocus(shrink);
+                CheckTabFocus(panel.E<Button>("TrayButton"));
                 CheckTabFocus(panel.E<Button>("StartButton"));
                 CheckTabFocus(panel.E<Button>("BrowseAppButton"));
                 CheckTabFocus(panel.E<Button>("UpdateButton"));
@@ -424,7 +439,7 @@ namespace Tappo {
                     new Point(width-16,3),new Point(width/2,height-3),new Point(16,height-3),new Point(width-16,height-3)};
                 for(int i=0;i<points.Length;i++)Check(HitTest(window,points[i])==10+i,"incorrect native resize hit at "+points[i]);
 
-                foreach(var name in new[]{"TitleGrip","ViewModeButton","CloseButton","MinimizeButton","ReserveTarget","UpdateButton"}) {
+                foreach(var name in new[]{"TitleGrip","ViewModeButton","TrayButton","CloseButton","MinimizeButton","ReserveTarget","UpdateButton"}) {
                     var control=panel.E<FrameworkElement>(name);
                     var center=control.TranslatePoint(new Point(control.ActualWidth/2,control.ActualHeight/2),window);
                     Check(HitTest(window,center)==1,"resize border interferes with "+name);

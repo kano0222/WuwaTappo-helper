@@ -2,13 +2,18 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Interop;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 
 namespace Tappo {
     internal static class ReleaseNotesChecks {
+        [DllImport("user32.dll")]
+        static extern bool IsWindowVisible(IntPtr handle);
+
         static int checks;
         static void Check(bool pass,string message) {checks++;if(!pass)throw new Exception(message);}
         static readonly ReleaseNote[] Notes={
@@ -50,15 +55,20 @@ namespace Tappo {
                     panel.ReadStatus=()=>status;
                     panel.ShowReleaseNotes("0.2.3",Notes);
                     panel.AutoRunOnOpen().GetAwaiter().GetResult();
-                    Check(panel.ReleaseNotesWindow!=null&&panel.ReleaseNotesWindow.IsVisible&&panel.Window.IsVisible,"notice hidden by automatic tray");
+                    Check(panel.ReleaseNotesWindow!=null&&panel.ReleaseNotesWindow.IsVisible&&panel.Window.IsVisible,"startup did not keep release notes visible");
+                    var notesHandle=new WindowInteropHelper(panel.ReleaseNotesWindow).Handle;
+                    panel.E<Button>("TrayButton").RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
+                    Check(!panel.Window.IsVisible&&panel.ReleaseNotesWindow!=null&&!IsWindowVisible(notesHandle),"tray shortcut did not hide both windows");
+                    Check(store.Read<ReleaseNotesRead>("release-notes-read.json").version=="0.2.1","tray shortcut marked release notes read");
+                    panel.Show();
+                    Check(panel.Window.IsVisible&&IsWindowVisible(notesHandle),"tray restore lost unread release notes");
                     using(var second=new Panel(new RuntimeStore(Path.Combine(root,"instance"),"fixture",root),true)) {
                         second.Window.Show();second.ShowReleaseNotes("0.2.3",Notes);
                         Check(second.ReleaseNotesWindow==null,"instance showed duplicate notice");
                     }
                     ((Button)panel.ReleaseNotesWindow.FindName("DismissButton")).RaiseEvent(new RoutedEventArgs(Button.ClickEvent));
-                    Check(panel.ReleaseNotesWindow==null&&!panel.Window.IsVisible&&!panel.Window.ShowInTaskbar,"dismissal did not complete deferred tray");
+                    Check(panel.ReleaseNotesWindow==null&&panel.Window.IsVisible&&panel.Window.ShowInTaskbar,"dismissing release notes hid the panel");
                     Check(ReleaseNotes.Open(root,"0.2.3",Notes)==null,"dismissal did not persist read version");
-                    panel.Show();panel.TryAutoTray();Check(panel.Window.IsVisible,"restoring after notes dismissal hid again");
                     panel.ShowReleaseNotes("0.2.3",Notes);Check(panel.ReleaseNotesWindow==null,"read notes reopened");
                 }
                 File.WriteAllText(Path.Combine(root,"runtime","release-notes-read.json"),"{corrupt");
