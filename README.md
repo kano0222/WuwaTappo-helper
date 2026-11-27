@@ -25,7 +25,7 @@ Windows 上的 Wuwa Tappo 第三方后台助手，支持国服与国际服，可
 
 ![迷你模式预览，展示运行状态、宝箱进度和模式设置](docs/images/readme-mini.png)
 
-分发包读者可在[项目主页](https://github.com/kano0222/WuwaTappo-helper#readme)查看两种面板的模拟预览。
+图片无法显示时，可前往[Github项目主页](https://github.com/kano0222/WuwaTappo-helper#readme)查看。
 
 ### 次数与宝箱
 
