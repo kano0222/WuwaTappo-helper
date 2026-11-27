@@ -296,10 +296,21 @@ namespace Tappo {
             var missing=Json.Decode<Snapshot>("{\"loggedIn\":true}");Reject(()=>Policy.Choose(missing,"brute",true,()=>0.5),"missing JSON counts accepted");
             RenderClaimScript();
             store.Write("control.json",new Command {id="previous-stop",action="disconnect"});Panel.PrepareStart(store);
-            Check(store.Read<Command>("control.json").action=="resume","new start consumes old disconnect");
+            Check(store.Read<Command>("control.json").id=="previous-stop","start preflight wrote an unbound command");
             store.Write("lock.json",new {pid=Process.GetCurrentProcess().Id});
             var command=RuntimeStore.ReadText(store.FilePath("control.json"));Reject(()=>Panel.PrepareStart(store),"duplicate worker start accepted");
             Check(RuntimeStore.ReadText(store.FilePath("control.json"))==command,"duplicate start resumed active worker");
+            var pid=Process.GetCurrentProcess().Id;
+            store.Write("status.json",new {pid=pid,running=true});
+            WorkerOwnership.BindControl(store,store.ReadWorkerStatus("status.json"),new Command());
+            store.Write("lock.json",new {pid=pid,identity=(object)null});
+            store.Write("status.json",new {pid=pid,running=true,identity=(object)null});
+            var incomplete=store.ReadWorkerStatus("status.json");
+            Check(WorkerOwnership.CanStart(store)&&!WorkerOwnership.MayBeRunning(store,incomplete),"incomplete native record fell back to a live PID");
+            using(WorkerOwnership.Acquire(store)) {
+                Check(WorkerOwnership.MayBeRunning(store,incomplete),"incomplete status ignored an occupied guard");
+                Reject(()=>WorkerOwnership.BindControl(store,incomplete,new Command()),"incomplete native identity authorized a command");
+            }
         }
         static void RenderClaimScript() {
             var flags=System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic;
@@ -347,7 +358,6 @@ namespace Tappo {
                 var store=Store();var client=new FakeClient();long now=100000;int loops=0,restores=0;
                 bool historical=action=="disconnect"||action=="stop-background"||action=="stop"||action=="poll";
                 if(historical) File.WriteAllText(store.FilePath("pending.json"),"{\"historical\":true}");
-                if(action=="disconnect"||action=="stop-background"||action=="stop") store.Write("control.json",new Command {id="fixture",action=action});
                 if(!historical) {client.State.left=4000;client.State.time=7000;}
                 if(action=="timeout") client.ThrowClaim=true;
                 if(action=="reject") client.ClaimResult=()=>{var s=Copy(client.State);s.rejected=true;s.code=70006;return s;};
@@ -358,17 +368,27 @@ namespace Tappo {
                 if(action=="wrong-slot") client.ClaimResult=()=>{var s=Copy(client.State);s.right=90000;s.consumed+=1000;s.available-=1000;return s;};
                 if(action=="unknown-rejection") client.ClaimResult=()=>{var s=Copy(client.State);s.rejected=true;s.code=12345;return s;};
                 Worker worker=null;
-                worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),async c=>{restores++;await c.Quit();},ms=>{now+=30000;if(++loops==2)worker.RequestDisconnect();return Task.FromResult(0);},()=>now);
+                worker=new Worker(store,()=> {
+                    if(action=="disconnect"||action=="stop-background"||action=="stop")
+                        store.Write("control.json",new Command {id="fixture",action=action,targetSession=worker.Status.identity.session});
+                    return Task.FromResult<IAppClient>(client);
+                },async c=>{restores++;await c.Quit();},ms=>{now+=30000;if(++loops==2)worker.RequestDisconnect();return Task.FromResult(0);},()=>now);
                 await worker.Run();
                 Check(restores==(action=="stop"?1:0),action+" restore intent");Check(client.Quits==restores,action+" quit intent");Check(client.Closed==1,action+" connection cleanup");
                 Check(!worker.Status.running&&worker.Status.automationDisconnected,action+" disconnect confirmation");
                 Check(worker.Status.petClosed==(action=="stop"),action+" pet close result");
                 Check(new ClaimHistory(store,null).Total==worker.Status.claimsThisRun,action+" persistent claim count");
                 using(new FileStream(store.FilePath("worker.guard"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None)) { }
-                store.Write("control.json",new Command {id="restart",action="disconnect"});
-                var nextClient=new FakeClient();nextClient.State.loggedIn=false;Worker next=null;
-                next=new Worker(store,()=>Task.FromResult<IAppClient>(nextClient),c=>{throw new Exception("restarting closed another pet");},ms=>{next.RequestDisconnect();return Task.FromResult(0);},()=>now);
+                store.Write("control.json",new Command {id="old-stop",action="stop",targetSession=worker.Status.identity.session});
+                var nextClient=new FakeClient();nextClient.State.loggedIn=false;Worker next=null;int restartLoops=0;
+                next=new Worker(store,()=>Task.FromResult<IAppClient>(nextClient),c=>{throw new Exception("restarting closed another pet");},ms=> {
+                    if(++restartLoops==1)store.Write("control.json",new Command {id="unbound-stop",action="stop"});
+                    else if(restartLoops==2)store.Write("control.json",new Command {id="restart",action="disconnect",targetSession=next.Status.identity.session});
+                    else next.RequestDisconnect();
+                    return Task.FromResult(0);
+                },()=>now);
                 await next.Run();Check(nextClient.Closed==1&&!next.Status.running,action+" worker could not restart after stopping");Check(!store.Exists("lock.json"),action+" stale lock");
+                Check(restartLoops==2&&next.Status.commandId=="restart",action+" worker applied an old or unbound command");
                 if(historical) {Check(File.ReadAllText(store.FilePath("pending.json"))=="{\"historical\":true}","historical record changed");Check(client.Claims==0&&client.Boosts==0,"pending allowed mutations");}
                 if(action=="poll") Check(client.Reads==2,"paused historical polling");
                 if(action=="timeout") Check(store.Exists("pending.json")&&client.Claims==1,"uncertain claim retried");
@@ -464,13 +484,14 @@ namespace Tappo {
             }
         }
         static async Task FixedPairWorker() {
-            foreach(var scenario in new[]{"success","left-skipped","right-skipped","right-timeout","pause-after-left","reward-stalled","receipt-clock"}) {
+            foreach(var scenario in new[]{"success","left-skipped","right-skipped","right-timeout","pause-after-left","old-pause-after-left","reward-stalled","receipt-clock"}) {
                 var store=Store();var client=new FakeClient();var calls=new List<string>();
                 const long now=100000;
                 var state=client.State;state.time=now;state.left=1000;state.right=2000;
                 state.cumulative=4015;state.local=15;state.serverTotal=4000;state.available=2015;
                 var baseline=new ServerState {accountKey=state.accountKey,total=4000,consumed=2000,left=1000,right=2000,observedAt=now-400};
                 client.ServerResult=()=>baseline;
+                Worker worker=null;
                 client.PairResult=(journal,command)=>{
                     calls.Add(command);
                     var disk=store.Read<Journal>("pending.json");
@@ -492,7 +513,10 @@ namespace Tappo {
                             result.server=new ServerState {accountKey=baseline.accountKey,total=4000,consumed=2000,
                                 left=900000,right=901000,observedAt=now-123};
                             return result;
-                        }else if(scenario=="pause-after-left")store.Write("control.json",new Command {id="pause",action="pause"});
+                        }else if(scenario=="pause-after-left"||scenario=="old-pause-after-left") {
+                            var session=scenario=="pause-after-left"?worker.Status.identity.session:Guid.NewGuid().ToString("N");
+                            store.Write("control.json",new Command {targetSession=session,id="pause",action="pause"});
+                        }
                         result.outcome="success";
                         var sentAt=scenario=="reward-stalled"?now-61000:now;
                         result.slot=new PairSlot {id=intent.id,outcome="success",assetId=42,cost=1000,clickNum=4000,sentAt=sentAt,receivedAt=sentAt+1,applied=true};
@@ -509,7 +533,7 @@ namespace Tappo {
                     if(scenario=="receipt-clock"){result.server=baseline;result.outcome="pending";}
                     return result;
                 };
-                Worker worker=null;var loops=0;
+                var loops=0;
                 Func<Worker> make=()=>new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>Task.FromResult(0),
                     ms=>{if(scenario!="left-skipped"||++loops>=2)worker.RequestDisconnect();return Task.FromResult(0);},()=>now);
                 worker=make();await worker.Run();
@@ -757,8 +781,10 @@ namespace Tappo {
                 if(scenario!="replayed") File.WriteAllText(store.FilePath("pending.json"),journal);
                 var hash=scenario=="replayed"?"old-hash":store.PendingHash();
                 if(scenario=="archive-failed") File.WriteAllText(store.FilePath("history"),"blocked");
-                store.Write("control.json",new Command {id="reset-test",action="reset",pendingHash=scenario=="changed"?"wrong-hash":hash});
-                Worker worker=null;worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>Task.FromResult(0),ms=>{worker.RequestDisconnect();return Task.FromResult(0);},()=>100000);
+                Worker worker=null;worker=new Worker(store,()=> {
+                    store.Write("control.json",new Command {id="reset-test",action="reset",pendingHash=scenario=="changed"?"wrong-hash":hash,targetSession=worker.Status.identity.session});
+                    return Task.FromResult<IAppClient>(client);
+                },c=>Task.FromResult(0),ms=>{worker.RequestDisconnect();return Task.FromResult(0);},()=>100000);
                 await worker.Run();
                 var success=scenario=="success"||scenario=="replayed";
                 Check(worker.Status.resetCommandId=="reset-test"&&(worker.Status.resetError==null)==success,scenario+" reset acknowledgement");
@@ -786,8 +812,8 @@ namespace Tappo {
                 Worker worker=null;
                 worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>Task.FromResult(0),ms=> {
                     now+=ms;loops++;
-                    if(worker.Status.readRetryCount>0&&scenario=="manual-pause"&&!pauseSent) {store.Write("control.json",new Command {id="pause-test",action="pause"});pauseSent=true;}
-                    if(worker.Status.readRetryCount>0&&scenario=="disconnect") store.Write("control.json",new Command {id="disconnect-test",action="disconnect"});
+                    if(worker.Status.readRetryCount>0&&scenario=="manual-pause"&&!pauseSent) {store.Write("control.json",new Command {targetSession=worker.Status.identity.session,id="pause-test",action="pause"});pauseSent=true;}
+                    if(worker.Status.readRetryCount>0&&scenario=="disconnect") store.Write("control.json",new Command {targetSession=worker.Status.identity.session,id="disconnect-test",action="disconnect"});
                     if(client.Boosts>0||worker.Status.fault!=null||scenario=="persistent"&&worker.Status.readRetryCount==6||
                         scenario=="manual-pause"&&pauseSent&&worker.Status.readRetryCount==0||scenario=="snapshot"&&snapshots>1&&worker.Status.readRetryCount==0||loops>260) worker.RequestDisconnect();
                     return Task.FromResult(0);
@@ -862,17 +888,21 @@ namespace Tappo {
                 var identity=RuntimeIdentity.Create(store,"worker");
                 panel.ReadStatus=()=>new Status {running=true,pid=Process.GetCurrentProcess().Id,at=DateTimeOffset.UtcNow.ToString("o")};
                 panel.Refresh();Check(panel.E<TextBlock>("StatusLabel").Text=="状态未知","legacy PID-only status presented as current");
-                panel.ReadStatus=()=>new Status {identity=identity,running=true,pid=Process.GetCurrentProcess().Id,at=DateTimeOffset.UtcNow.ToString("o")};
-                panel.Refresh();Check(!panel.E<Button>("ResetPendingButton").IsEnabled,"in-flight reset enabled");
-                bool asked=false;panel.ConfirmReset=()=>{asked=true;return true;};panel.ResetPending().GetAwaiter().GetResult();
-                Check(!asked&&store.Exists("pending.json"),"in-flight reset accepted");
-                panel.ReadStatus=()=>new Status {identity=identity,running=true,paused=true,fault="unknown",pid=Process.GetCurrentProcess().Id,at=DateTimeOffset.UtcNow.ToString("o")};
-                panel.Refresh();Check(panel.E<Button>("ResetPendingButton").IsEnabled,"blocked reset disabled");
-                string dispatched=null;panel.DispatchOverride=action=>dispatched=action;panel.ResetPending().GetAwaiter().GetResult();Check(dispatched=="reset","reset button did not dispatch");
+                using(WorkerOwnership.Acquire(store)) {
+                    panel.ReadStatus=()=>new Status {identity=identity,running=true,pid=Process.GetCurrentProcess().Id,at=DateTimeOffset.UtcNow.ToString("o")};
+                    panel.Refresh();Check(!panel.E<Button>("ResetPendingButton").IsEnabled,"in-flight reset enabled");
+                    bool asked=false;panel.ConfirmReset=()=>{asked=true;return true;};panel.ResetPending().GetAwaiter().GetResult();
+                    Check(!asked&&store.Exists("pending.json"),"in-flight reset accepted");
+                    panel.ReadStatus=()=>new Status {identity=identity,running=true,paused=true,fault="unknown",pid=Process.GetCurrentProcess().Id,at=DateTimeOffset.UtcNow.ToString("o")};
+                    panel.Refresh();Check(panel.E<Button>("ResetPendingButton").IsEnabled,"blocked reset disabled");
+                    string dispatched=null;panel.DispatchOverride=action=>dispatched=action;panel.ResetPending().GetAwaiter().GetResult();Check(dispatched=="reset","reset button did not dispatch");
+                }
             }
         }
         static void Layouts() {
-            var store=Store();using(var panel=new Panel(store)) {
+            var store=Store();
+            using(var guard=WorkerOwnership.Acquire(store))
+            using(var panel=new Panel(store)) {
                 panel.InitializeTray();
                 var state=State();state.left=RuntimeStore.Now+650000;state.right=RuntimeStore.Now-1000;
                 var status=new Status {identity=RuntimeIdentity.Create(store,"worker"),at=DateTimeOffset.UtcNow.ToString("o"),pid=Process.GetCurrentProcess().Id,running=true,mode="brute",state=state,
@@ -920,7 +950,7 @@ namespace Tappo {
                 }
                 status.chestTimes.error="timeout";panel.Refresh();Check(panel.E<TextBlock>("LeftTime").Text=="等待同步"&&panel.E<Border>("LeftFill").Width==0,"failed API displayed live time");
                 status.chestTimes.error=null;status.chestTimes.updatedAt=RuntimeStore.Now-100000;panel.Refresh();Check(panel.E<TextBlock>("LeftTime").Text=="等待同步","expired time");
-                status.running=false;panel.Render(Path.Combine(images,"disconnected.png"));Check(panel.E<TextBlock>("LeftTime").Text=="未连接","disconnected view");
+                status.running=false;guard.Dispose();panel.Render(Path.Combine(images,"disconnected.png"));Check(panel.E<TextBlock>("LeftTime").Text=="未连接","disconnected view");
                 status.fault="桌宠主窗口尚未就绪";panel.Refresh();Check(panel.E<TextBlock>("DetailMessage").Text==status.fault,"stopped failure hidden behind restart hint");status.fault=null;
                 panel.SetPath(@"C:\Long installation path\Long installation path\Long installation path\WuwaTappo.exe");panel.Render(Path.Combine(images,"minimum.png"),820,660);
                 var surface=panel.E<Border>("RootSurface");var start=panel.E<Button>("StartButton").TranslatePoint(new Point(),surface);

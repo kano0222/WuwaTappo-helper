@@ -25,6 +25,7 @@ namespace Tappo {
                 }
                 Check(Platform.ValidPath(pet),"fixture path is invalid");
                 LauncherConflict(root,pet);
+                ControlSession(root);
                 var freshRoot=Path.Combine(root,"first-open");Directory.CreateDirectory(freshRoot);
                 File.Copy(pet,Path.Combine(freshRoot,"WuwaTappo.exe"));
                 var fresh=new RuntimeStore(freshRoot);fresh.Write("preferences.json",new Preference {mode="clicker",autoRun=true});
@@ -37,6 +38,7 @@ namespace Tappo {
                     Check(panel.Window.IsVisible&&panel.Window.ShowInTaskbar,"successful first automatic start hid the panel");
                 }
                 var store=new RuntimeStore(root);Platform.SavePath(store,pet);
+                GuardedAutoRun(root,pet);
                 using(var panel=new Panel(store,true)) {
                     int calls=0;panel.DispatchOverride=action=>calls++;
                     panel.InitializeTray();
@@ -101,12 +103,57 @@ namespace Tappo {
                 return checks;
             } finally {Directory.Delete(root,true);}
         }
+        static void ControlSession(string root) {
+            var store=new RuntimeStore(Path.Combine(root,"control-session"));
+            var exe=Path.Combine(store.Root,"WuwaTappoHelper.exe");
+            File.Copy(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"WuwaTappoHelper.exe"),exe);
+            File.Copy(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"WuwaTappoHelper.exe.config"),exe+".config");
+            var current=RuntimeIdentity.Create(store,"worker");
+            var status=new Status {pid=current.pid,identity=current,running=true};
+            using(WorkerOwnership.Acquire(store)) {
+                store.Write("lock.json",status);
+                status.identity=RuntimeIdentity.Create(store,"worker");
+                store.Write("status.json",status);
+                using(var child=Process.Start(new ProcessStartInfo(exe,"--control pause") {UseShellExecute=false,CreateNoWindow=true}))
+                    Check(child.WaitForExit(10000)&&child.ExitCode==1&&!store.Exists("control.json"),"CLI addressed a superseded session");
+                status.identity=current;store.Write("status.json",status);
+                using(var child=Process.Start(new ProcessStartInfo(exe,"--control pause") {UseShellExecute=false,CreateNoWindow=true}))
+                    Check(child.WaitForExit(10000)&&child.ExitCode==0&&store.Read<Command>("control.json").targetSession==current.session,"CLI failed to bind control to the current session");
+            }
+        }
+        static void GuardedAutoRun(string root,string pet) {
+            var store=new RuntimeStore(Path.Combine(root,"guarded-auto-run"));
+            Platform.SavePath(store,pet);
+            store.Write("preferences.json",new Preference {autoRun=true});
+            var owner=RuntimeIdentity.Create(store,"worker");owner.processCreated--;
+            var status=new Status {pid=owner.pid,identity=owner,running=true,at=DateTimeOffset.UtcNow.AddHours(-1).ToString("o")};
+            store.Write("status.json",status);store.Write("lock.json",status);
+            Check(RuntimeIdentity.Inspect(owner)=="pid-reused","fixture PID does not belong to a different process incarnation");
+            using(WorkerOwnership.Acquire(store))
+            using(var panel=new Panel(store,true)) {
+                panel.Refresh();
+                Check(!panel.E<Button>("StartButton").IsEnabled,"confirmed PID reuse bypassed an occupied guard");
+                bool rejected=false;
+                try {panel.Act("pause").GetAwaiter().GetResult();}catch(InvalidOperationException) {rejected=true;}
+                Check(rejected&&!store.Exists("control.json"),"confirmed PID reuse accepted a command for the old worker");
+                int starts=0;panel.InspectIdentity=_=>"identity-unverifiable";panel.DispatchOverride=_=>starts++;
+                panel.AutoRunOnOpen().GetAwaiter().GetResult();
+                Check(starts==0&&panel.E<TextBlock>("StatusLabel").Text=="状态未知","denied identity allowed a second guarded worker");
+            }
+            using(var panel=new Panel(store,true)) {
+                string action=null;panel.InspectIdentity=_=>"identity-unverifiable";panel.DispatchOverride=next=>action=next;
+                panel.AutoRunOnOpen().GetAwaiter().GetResult();
+                Check(action=="start"&&panel.E<Button>("StartButton").IsEnabled&&panel.E<TextBlock>("StatusLabel").Text=="已退出",
+                    "released guard did not restore manual and automatic startup with a recycled PID");
+            }
+        }
         static void StartupUpdate(string root) {
             foreach(var scenario in new[]{"current","offline","available","current-mini","available-mini"}) {
                 var store=new RuntimeStore(Path.Combine(root,scenario));
                 store.Write("preferences.json",new Preference {autoRun=true});
                 bool mini=scenario.EndsWith("-mini"),available=scenario.StartsWith("available");
                 if(mini)store.Write("panel-mini.json",true);
+                using(WorkerOwnership.Acquire(store))
                 using(var panel=new Panel(store)) {
                     var waiting=new TaskCompletionSource<UpdateInfo>();
                     var identity=RuntimeIdentity.Create(store,"worker");
@@ -152,7 +199,7 @@ namespace Tappo {
             var failure=store.Read<LauncherStatus>("launcher-status.json");
             Check(failure!=null&&failure.error.Contains("已由另一个助手后台接管")&&!store.Exists("status.json"),"launcher lost the conflict reason or ran a worker");
             var now=RuntimeStore.Now;
-            store.Write("status.json",new Status {pid=int.MaxValue,at=DateTimeOffset.FromUnixTimeMilliseconds(now-60000).ToString("o"),claimsThisRun=7});
+            store.Write("status.json",new Status {running=true,pid=int.MaxValue,at=DateTimeOffset.FromUnixTimeMilliseconds(now-60000).ToString("o"),claimsThisRun=7});
             using(var panel=new Panel(store,preview:true)) {
                 panel.ReadClock=()=>now;panel.Refresh();
                 Check(panel.E<TextBlock>("MainMessage").Text=="后台已退出","conflict fixture does not start from an exited worker");

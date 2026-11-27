@@ -300,7 +300,7 @@ namespace Tappo {
                 store.ClearPending();
                 Publish(Status.readRetryAt.HasValue?Status.message:"领取条件已变化，已重新同步");return;
             }
-            var command=store.Read<Command>("control.json");
+            var command=ReadControl();
             if(firstSucceeded&&journal.left.applied&&journal.bagBefore!=null&&client.Connected&&!stop&&
                (command==null||command.id==lastCommand)&&!UpdateInstaller.Requested(AppDomain.CurrentDomain.BaseDirectory)) {
                 journal.right=new PairSlot{id=Guid.NewGuid().ToString("N"),outcome="armed"};
@@ -424,11 +424,14 @@ namespace Tappo {
             var description=action==null?"操作":action.kind=="boost"?"补充 "+action.delta+" 次":action.kind=="claim"?"领取"+(action.side=="left"?"宝箱一":"宝箱二"):action.kind=="claim-pair"?"双箱领取":"操作";
             return when+" 的"+description+"结果未确认，已暂停；核对桌宠后点击“确认并继续”。";
         }
+        Command ReadControl() {
+            var command=store.Read<Command>("control.json");
+            return command!=null&&!string.IsNullOrEmpty(command.id)&&command.targetSession==Status.identity.session?command:null;
+        }
         public async Task<int> Run() {
             // This guard serializes native workers; lock.json also blocks an older Node worker.
-            using(var guard=new FileStream(store.FilePath("worker.guard"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None)) {
-                var old=store.Read<Status>("lock.json");
-                if(old!=null&&RuntimeStore.Alive(old.pid)) throw new InvalidOperationException("自动化已运行，请先暂停或停止现有后台。");
+            using(WorkerOwnership.Acquire(store)) {
+                WorkerOwnership.CheckReservation(store);
                 if(store.Exists("lock.json")) File.Delete(store.FilePath("lock.json"));
                 using(diagnostics=new DiagnosticSession(store,"worker")) {
                 diagnostics.Sample=diagnostics.ObserveSelf;
@@ -448,7 +451,7 @@ namespace Tappo {
                         int loopDelay=1000;
                         string retryCommand=null;
                         bool resumeRequested=false;
-                        var command=store.Read<Command>("control.json");
+                        var command=ReadControl();
                         if(command!=null&&command.id!=lastCommand) {
                             diagnostics.Command("command-received",command);
                             lastCommand=command.id;

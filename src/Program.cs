@@ -43,10 +43,10 @@ namespace Tappo {
                 if(args.Length==2&&args[0]=="--probe") {Probe(args[1],store).GetAwaiter().GetResult();return 0;}
                 if(args.Length==2&&args[0]=="--control") {
                     if(Array.IndexOf(new[]{"pause","resume","stop","disconnect"},args[1])<0) throw new InvalidOperationException("未知控制操作。");
-                    if(!Panel.Alive(store.Read<Status>("status.json"))) throw new InvalidOperationException("后台未运行。");
+                    var command=new Command {id=Guid.NewGuid().ToString(),action=args[1]};
+                    WorkerOwnership.BindControl(store,store.ReadWorkerStatus("status.json"),command);
                     if(args[1]=="resume"&&store.Exists("pending.json")) throw new InvalidOperationException("存在未确认记录，禁止恢复。");
                     using(var diagnostics=new DiagnosticSession(store,"control")) {
-                        var command=new Command {id=Guid.NewGuid().ToString(),action=args[1]};
                         diagnostics.Command("command-requested",command);store.Write("control.json",command);diagnostics.Command("command-sent",command);
                     }
                     return 0;

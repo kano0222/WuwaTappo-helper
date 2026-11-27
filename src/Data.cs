@@ -94,7 +94,7 @@ namespace Tappo {
         }
     }
     internal sealed class Settings { public string appPath; }
-    internal sealed class Command { public string id, action, pendingHash; }
+    internal sealed class Command { public string id, action, pendingHash, targetSession; }
     internal sealed class LauncherStatus { public string failedAt, error; }
     internal sealed class PairSlot {
         public string id, outcome;
@@ -139,6 +139,15 @@ namespace Tappo {
             using (var reader = new StreamReader(stream,Encoding.UTF8,true)) return reader.ReadToEnd();
         }
         public T Read<T>(string name) { return File.Exists(FilePath(name)) ? Json.Decode<T>(ReadText(FilePath(name))) : default(T); }
+        internal Status ReadWorkerStatus(string name) {
+            var fields=Read<Dictionary<string,object>>(name);
+            if(fields==null)return null;
+            var status=Json.Convert<Status>(fields);
+            // Node omitted these fields. An explicit null identity is still a native record.
+            if(status.identity==null&&(fields.ContainsKey("identity")||fields.ContainsKey("automationDisconnected")))
+                status.identity=new RuntimeIdentity();
+            return status;
+        }
         public static void AtomicWrite(string path, object value) {
             var temp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
             try {

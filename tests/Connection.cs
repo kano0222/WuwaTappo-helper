@@ -51,10 +51,11 @@ namespace Tappo {
                     var store=new RuntimeStore(Path.Combine(root,"stop-"+scenario+pending));
                     if(pending)store.Write("pending.json",new {historical=true});
                     var client=new FakeClient();client.State.loggedIn=false;int restores=0,reconnects=0;long now=100000;
-                    var worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>{restores++;return c.Quit();},ms=> {
+                    Worker worker=null;
+                    worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>{restores++;return c.Quit();},ms=> {
                         now+=ms;
                         client.Connected=scenario!="disconnected";
-                        store.Write("control.json",new Command {id="stop",action=scenario=="recovered-before-stop"?"stop-background":"stop"});
+                        store.Write("control.json",new Command {targetSession=worker.Status.identity.session,id="stop",action=scenario=="recovered-before-stop"?"stop-background":"stop"});
                         return Task.FromResult(0);
                     },()=>now,()=>{reconnects++;throw new Exception("stop must precede reconnect");});
                     await worker.Run();

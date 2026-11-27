@@ -77,7 +77,7 @@ namespace Tappo {
             }
             E<CheckBox>("StartupCheckBox").Click+=(s,e)=>SetStartup(E<CheckBox>("StartupCheckBox").IsChecked==true);
             E<CheckBox>("AutoRunCheckBox").Click+=(s,e)=>SetAutoRun(E<CheckBox>("AutoRunCheckBox").IsChecked==true);
-            ReadStatus=()=>store.Read<Status>("status.json");
+            ReadStatus=()=>store.ReadWorkerStatus("status.json");
             var preference=store.Read<Preference>("preferences.json");
             autoRun=preference!=null&&preference.autoRun;E<CheckBox>("AutoRunCheckBox").IsChecked=autoRun;
             if(preference!=null&&Policy.Modes.Contains(preference.mode)) savedMode=preference.mode;
@@ -296,11 +296,10 @@ namespace Tappo {
             }
         }
         string PresentationIdentity(Status status) {
-            if(status==null)return "no-status";
-            if(status.identity==null)return verifyIdentity?"identity-unavailable":RuntimeStore.Alive(status.pid)?"matched":"process-exited";
-            if(!diagnostics.StatusBelongs(status))return "identity-unverifiable";
-            if(status.identity.pid!=status.pid)return "identity-unverifiable";
-            return InspectIdentity(status.identity);
+            var identity=WorkerOwnership.Inspect(store,status,InspectIdentity);
+            if(identity=="identity-unavailable"&&!verifyIdentity)return "matched";
+            if(identity=="matched"&&!diagnostics.StatusBelongs(status))return "identity-unverifiable";
+            return identity;
         }
         string RecordTime(string at) {DateTimeOffset value;return DateTimeOffset.TryParse(at,out value)?value.ToLocalTime().ToString("MM-dd HH:mm:ss"):"时间未知";}
         string StatusAge(Status status) {
@@ -615,13 +614,10 @@ namespace Tappo {
             }
             Refresh();
         }
-        public static bool Alive(Status status) {return status!=null&&status.running&&RuntimeStore.Alive(status.pid)&&
-            (status.identity==null||RuntimeIdentity.Inspect(status.identity)!="pid-reused");}
+        bool Alive(Status status) {return WorkerOwnership.MayBeRunning(store,status,InspectIdentity);}
         static string PauseAction(Status status,bool pending) {return status!=null&&(pending||status.recovering?status.manuallyPaused:status.paused)?"resume":"pause";}
-        internal static void PrepareStart(RuntimeStore store,string commandId=null) {
-            var old=store.Read<Status>("lock.json");
-            if(old!=null&&RuntimeStore.Alive(old.pid)) throw new InvalidOperationException("自动化已运行，请先停止现有后台。");
-            store.Write("control.json",new Command {id=commandId??Guid.NewGuid().ToString(),action="resume"});
+        internal static void PrepareStart(RuntimeStore store) {
+            using(WorkerOwnership.Acquire(store)) WorkerOwnership.CheckReservation(store);
         }
         public async Task Act(string action,string pendingHash=null) {
             if(UpdateInstaller.Requested(AppDomain.CurrentDomain.BaseDirectory))throw new InvalidOperationException("助手正在退出以安装更新，请稍候。");
@@ -634,27 +630,28 @@ namespace Tappo {
             Busy=true;SetNotice(null);Refresh();var requested=DateTimeOffset.UtcNow;
             var commandStarted=RuntimeStore.Now;string commandResult="completed";
             string targetSession=null;
-            var diagnosticCommand=new Command {id=commandId,action=action};
+            var diagnosticCommand=new Command {id=commandId,action=action,pendingHash=pendingHash};
             diagnostics.Command("command-requested",diagnosticCommand);
             try {
                 if(action=="reset"&&!Alive(ReadStatus())) {
-                    using(var guard=new FileStream(store.FilePath("worker.guard"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None)) store.ResolvePending(pendingHash);
+                    using(WorkerOwnership.Acquire(store)) {
+                        WorkerOwnership.CheckReservation(store);
+                        store.ResolvePending(pendingHash);
+                    }
                     SetNotice("记录已保留，请点击启动后台。",true);return;
                 }
                 if(action=="start") {
-                    PrepareStart(store,commandId);
-                    diagnostics.Command("command-sent",new Command {id=commandId,action="resume"});
+                    PrepareStart(store);
                     var info=new ProcessStartInfo(Platform.Executable,"--worker"+Instances.Arguments(store)) {WorkingDirectory=store.Root,UseShellExecute=true,WindowStyle=ProcessWindowStyle.Hidden};
                     if(!Platform.Administrator) {info.Verb="runas";startupElevation=true;}
                     using(var process=Process.Start(info)) {
                         if(process==null) throw new InvalidOperationException("后台未启动。");
                     }
                 } else {
-                    var status=ReadStatus();if(!Alive(status)) throw new InvalidOperationException("后台未运行。");
-                    if(!diagnostics.StatusBelongs(status))throw new InvalidOperationException("当前文件属于其他后台会话，请导出日志核对。");
-                    targetSession=status.identity==null?null:status.identity.session;
+                    WorkerOwnership.BindControl(store,ReadStatus(),diagnosticCommand,InspectIdentity);
+                    targetSession=diagnosticCommand.targetSession;
                     if(action=="resume"&&store.Exists("pending.json")) throw new InvalidOperationException("存在结果未确认的操作，已阻止恢复。");
-                    store.Write("control.json",new Command {id=commandId,action=action,pendingHash=pendingHash});
+                    store.Write("control.json",diagnosticCommand);
                     diagnostics.Command("command-sent",diagnosticCommand);
                 }
                 var until=RuntimeStore.Now+(action=="start"?75000:ControlTimeoutMs);
@@ -679,7 +676,7 @@ namespace Tappo {
                     }
                     if(action=="start"&&Alive(status)||action=="pause"&&Alive(status)&&status.manuallyPaused||action=="resume"&&Alive(status)&&!status.paused&&!status.retrying) return;
                     if((action=="stop"||action=="stop-background"||action=="disconnect")&&!status.running) {
-                        if(RuntimeStore.Alive(status.pid)) continue;
+                        if(!WorkerOwnership.Exited(WorkerOwnership.Inspect(store,status,InspectIdentity))) continue;
                         if(action=="disconnect"&&!status.automationDisconnected) throw new InvalidOperationException("自动化停止尚未确认。");
                         if(action=="stop"&&!status.petClosed&&!status.stoppedWithoutClose) throw new InvalidOperationException(status.fault??"后台已停止，但桌宠关闭尚未确认。");
                         SetNotice(null);
@@ -736,11 +733,12 @@ namespace Tappo {
             RefreshStartup();
             RefreshTotal();
             try {
-                var s=ReadStatus();var alive=Alive(s);DateTimeOffset at;
+                var s=ReadStatus();var identity=PresentationIdentity(s);DateTimeOffset at;
+                var exited=WorkerOwnership.Exited(identity);
+                var alive=s!=null&&s.running&&!exited;
+                var canStart=!alive&&WorkerOwnership.CanStart(store);
                 var stale=alive&&(verifyIdentity&&s.identity==null||!diagnostics.StatusBelongs(s)||!DateTimeOffset.TryParse(s.at,out at)||(DateTimeOffset.FromUnixTimeMilliseconds(ReadClock())-at).TotalSeconds>45);
-                var identity=PresentationIdentity(s);
-                var exited=identity=="process-exited"||identity=="pid-reused";
-                var unknown=s!=null&&identity!="matched"&&!exited;
+                var unknown=(s!=null&&identity!="matched"&&!exited)||(!alive&&!canStart);
                 var history=s!=null&&(!alive||stale||unknown||exited);
                 if(alive&&!history)startupError=null;
                 var state=s==null?null:s.state;
@@ -777,7 +775,7 @@ namespace Tappo {
                 } else if(s!=null&&s.fault!=null) {label="启动或运行失败";color="#F8E0D8";message="后台已停止";detail=s.fault;}
                 else if(pending) {label="需处理";color="#FFF0D1";message="上次领取或补充需要确认";detail="请查看桌宠，再点击“确认并继续”。";}
                 else if(s!=null&&s.running) {message="无法确认后台状态";detail="当前显示上次记录。请勿重复启动；请导出日志。";}
-                if(exited&&s!=null) {
+                if(exited&&s!=null&&s.running&&canStart) {
                     label="已退出";color="#EAE7E1";message="后台已退出";
                     detail=(string.IsNullOrWhiteSpace(s.fault)?"": "上次错误："+s.fault+"。")+"当前显示上次运行记录。"+(pending?"请先核对上次操作；如需分析原因，请导出日志。":"如需继续，请点击“启动后台”；如需分析原因，请导出日志。");
                 } else if(unknown) {
@@ -807,7 +805,7 @@ namespace Tappo {
                 runAction=alive?pauseAction:"start";
                 E<Button>("StartButton").Content=runAction=="pause"?"停止运行":"启动后台";
                 E<Button>("StartButton").Tag=runAction;
-                E<Button>("StartButton").IsEnabled=!Busy&&(!alive||pauseEnabled)&&!(runAction=="resume"&&stale);
+                E<Button>("StartButton").IsEnabled=!Busy&&(alive?pauseEnabled:canStart)&&!(runAction=="resume"&&stale);
                 E<Button>("BrowseAppButton").IsEnabled=!Busy&&!pending&&Instances.Arguments(store)==""&&(!alive||!stale&&s.paused&&s.manuallyPaused);
                 E<Button>("AnotherAppButton").IsEnabled=!Busy;
                 var canConfirm=pending&&(!alive||!stale&&s.paused&&s.fault!=null);
@@ -837,7 +835,7 @@ namespace Tappo {
                 var chestAt=clock!=null&&clock.updatedAt.HasValue?DateTimeOffset.FromUnixTimeMilliseconds(clock.updatedAt.Value).ToString("o"):s==null?null:s.at;
                 Text("SnapshotLabel",history||s!=null&&s.connected==false?"上次记录 "+RecordTime(chestAt):!alive?"启动后同步":clock!=null&&clock.error!=null?"宝箱时间查询失败":valid?"上次同步 "+DateTimeOffset.FromUnixTimeMilliseconds(clock.updatedAt.Value).ToLocalTime().ToString("HH:mm:ss"):"等待接口同步");
                 Chest("Left","left",s,snapshotCurrent,valid);Chest("Right","right",s,snapshotCurrent,valid);
-                Activity(s);
+                Activity(s,identity);
                 if(tray!=null) {
                     tray.Text="Wuwa Tappo 助手 · "+label;trayStatus.Text="后台："+label;
                     trayRun.Text=E<Button>("StartButton").Content.ToString();trayRun.Enabled=E<Button>("StartButton").IsEnabled;
@@ -871,13 +869,12 @@ namespace Tappo {
             time.ToolTip=showPlaceholder&&text!="--:--"?text:null;
             E<Border>(prefix+"Fill").Width=Math.Max(0,E<Border>(prefix+"Track").ActualWidth*progress);
         }
-        void Activity(Status status) {
+        void Activity(Status status,string identity) {
             activityLog.Refresh();var entries=activityLog.Recent.Take(3).ToList();
             DateTimeOffset at;
             if(status!=null) {
                 if(!DateTimeOffset.TryParse(status.at,out at))at=DateTimeOffset.FromUnixTimeMilliseconds(ReadClock());
-                var identity=PresentationIdentity(status);
-                if(status.running&&(identity=="process-exited"||identity=="pid-reused")) {
+                if(status.running&&WorkerOwnership.Exited(identity)) {
                     entries.Add(new ActivityRecord {at=at,message=string.IsNullOrWhiteSpace(status.fault)?"后台已退出，未记录原因（时间为最后状态时间）":"后台已退出，上次错误："+status.fault,error=true});
                 } else if(!status.running&&string.IsNullOrWhiteSpace(status.fault)&&(status.petClosed||status.stoppedWithoutClose))entries.Add(new ActivityRecord {at=at,message=status.petClosed?"后台和桌宠已关闭":"后台已停止，未关闭桌宠"});
             }

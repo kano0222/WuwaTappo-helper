@@ -44,7 +44,7 @@ namespace Tappo {
                         return Task.FromResult<IAppClient>(old);
                     },c=>{throw new Exception("must not restart the pet");},ms=> {
                         loops++;now+=Math.Max(ms,10000);
-                        if(loops==1&&scenario=="manual-pause")store.Write("control.json",new Command {id="pause",action="pause"});
+                        if(loops==1&&scenario=="manual-pause")store.Write("control.json",new Command {targetSession=worker.Status.identity.session,id="pause",action="pause"});
                         if(loops==1&&scenario=="account")old.State.accountKey="another-key";
                         if(worker.Status.claimsThisRun==1||new[]{"account","slot","wrong-id","receipt-lost"}.Contains(scenario)&&loops>=2||loops>25)worker.RequestDisconnect();
                         return Task.FromResult(0);
@@ -110,7 +110,7 @@ namespace Tappo {
                     old.RecoveryResult=fresh.RecoveryResult;
                     Worker worker=null;worker=new Worker(store,()=>Task.FromResult<IAppClient>(old),c=>Task.FromResult(0),ms=> {
                         now+=Math.Max(ms,10000);loops++;
-                        if(loops==1&&scenario=="boost-pause")store.Write("control.json",new Command {id="pause",action="pause"});
+                        if(loops==1&&scenario=="boost-pause")store.Write("control.json",new Command {targetSession=worker.Status.identity.session,id="pause",action="pause"});
                         if(recoveries>0&&!store.Exists("pending.json")||loops>=6)worker.RequestDisconnect();return Task.FromResult(0);
                     },()=>now,()=>Task.FromResult<IAppClient>(fresh));
                     await worker.Run();var blocked=scenario=="boost-account"||scenario=="boost-wrong-id";

@@ -19,9 +19,9 @@ namespace Tappo {
                             deadline=worker.Status.readRetryNotBefore??0;old.Connected=false;petExists=scenario=="existing";stage=1;
                         } else if(stage==1) {
                             if(prepared!=0||launched!=0)throw new Exception("automatic reconnect starts a pet");
-                            store.Write("control.json",new Command {id="pause",action="pause"});stage=2;
+                            store.Write("control.json",new Command {targetSession=worker.Status.identity.session,id="pause",action="pause"});stage=2;
                         } else if(stage==2&&worker.Status.manuallyPaused) {
-                            store.Write("control.json",new Command {id="resume",action="resume"});stage=3;
+                            store.Write("control.json",new Command {targetSession=worker.Status.identity.session,id="resume",action="resume"});stage=3;
                         } else if(stage==3) {
                             if(scenario=="server-wait") {
                                 if(fresh.Reads>0&&now<deadline)throw new Exception("manual startup bypasses the required server wait");

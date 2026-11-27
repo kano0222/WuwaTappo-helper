@@ -14,7 +14,6 @@ namespace Tappo {
                     var client=new FakeClient();client.State.left=client.State.right=900000;
                     bool pending=scenario=="connect-pending",sent=false;long now=100000,deadline=0;int loops=0,connections=0;
                     if(pending) {store.Write("pending.json",new {historical=true});client.State.loggedIn=false;}
-                    store.Write("control.json",new Command {id="pause",action="pause"});
                     int snapshots=0;bool mappingReady=false;
                     string desktopVersion="1.0.1";int versionChecks=0,discoveries=0,staleReads=0;
                     if(scenario=="cached-mapping") {
@@ -50,6 +49,7 @@ namespace Tappo {
                     if(scenario=="bridge-wait")client.RetryQueryResult=()=>120000;
                     Worker worker=null;
                     worker=new Worker(store,()=> {
+                        store.Write("control.json",new Command {targetSession=worker.Status.identity.session,id="pause",action="pause"});
                         if(pending)throw new IOException("offline");
                         return Task.FromResult<IAppClient>(client);
                     },c=>{throw new Exception("retry restored pet");},ms=> {
@@ -57,7 +57,7 @@ namespace Tappo {
                         if(!sent&&worker.Status.readRetryAt.HasValue) {
                             deadline=worker.Status.readRetryAt.Value;sent=true;
                             if(scenario=="cached-mapping")desktopVersion="1.0.2";
-                            store.Write("control.json",new Command {id="retry",action="retry"});
+                            store.Write("control.json",new Command {targetSession=worker.Status.identity.session,id="retry",action="retry"});
                         } else if(worker.Status.retryCommandId=="retry"||loops>10)worker.RequestDisconnect();
                         return Task.FromResult(0);
                     },()=>now,()=>{connections++;return Task.FromResult<IAppClient>(client);});
@@ -78,7 +78,6 @@ namespace Tappo {
                     var store=new RuntimeStore(Path.Combine(root,scenario));var client=new FakeClient();
                     client.State.left=client.State.right=900000;
                     long now=100000,deadline=0,resumedAt=0;int loops=0;bool sent=false;long secondRead=0;
-                    store.Write("control.json",new Command {id="pause",action="pause"});
                     client.ServerResult=()=> {
                         if(client.Reads==1&&scenario!="resume-no-backoff") {
                             if(scenario=="resume-required-wait")throw new AppQueryException(new QueryReply {httpStatus=503,retryAfterMs=120000,requiredRetryAfterMs=120000});
@@ -90,11 +89,14 @@ namespace Tappo {
                     };
                     if(scenario=="resume-bridge-wait")client.RetryQueryResult=()=>120000;
                     Worker worker=null;
-                    worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>{throw new Exception("resume closed the pet");},ms=> {
+                    worker=new Worker(store,()=> {
+                        store.Write("control.json",new Command {targetSession=worker.Status.identity.session,id="pause",action="pause"});
+                        return Task.FromResult<IAppClient>(client);
+                    },c=>{throw new Exception("resume closed the pet");},ms=> {
                         now+=ms;loops++;
                         if(!sent&&(worker.Status.readRetryAt.HasValue||scenario=="resume-no-backoff")) {
                             sent=true;deadline=worker.Status.readRetryAt??now;resumedAt=now;
-                            store.Write("control.json",new Command {id="resume",action="resume"});
+                            store.Write("control.json",new Command {targetSession=worker.Status.identity.session,id="resume",action="resume"});
                         } else if(client.Reads>=2||loops>140)worker.RequestDisconnect();
                         return Task.FromResult(0);
                     },()=>now);
@@ -110,7 +112,6 @@ namespace Tappo {
                 foreach(var scenario in new[]{"automatic-required-wait","pending-verification"}) {
                     var store=new RuntimeStore(Path.Combine(root,scenario));var client=new FakeClient();
                     client.State.left=client.State.right=900000;long now=100000,deadline=0;int loops=0;bool sent=false,earlyRequest=false;
-                    store.Write("control.json",new Command {id="pause",action="pause"});
                     if(scenario=="pending-verification") {
                         store.Begin(new Plan {kind="claim",side="left"},Tests.Copy(client.State),new ServerState {accountKey="test-key",total=4000,consumed=2000,left=900000,right=900000});
                         client.RecoveryResult=journal=> {
@@ -123,10 +124,13 @@ namespace Tappo {
                         return new ServerState {accountKey="test-key",total=4000,consumed=2000,left=900000,right=900000};
                     };
                     Worker worker=null;
-                    worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>Task.FromResult(0),ms=> {
+                    worker=new Worker(store,()=> {
+                        store.Write("control.json",new Command {targetSession=worker.Status.identity.session,id="pause",action="pause"});
+                        return Task.FromResult<IAppClient>(client);
+                    },c=>Task.FromResult(0),ms=> {
                         if(!sent&&worker.Status.readRetryAt.HasValue) {
                             sent=true;deadline=worker.Status.readRetryAt.Value;
-                            if(scenario=="pending-verification")store.Write("control.json",new Command {id="retry",action="retry"});
+                            if(scenario=="pending-verification")store.Write("control.json",new Command {targetSession=worker.Status.identity.session,id="retry",action="retry"});
                             else if(!worker.Status.readRetryNotBefore.HasValue||worker.Status.readRetryNotBefore.Value>deadline)throw new Exception("required wait exceeds automatic retry deadline");
                         }
                         now+=ms;loops++;
@@ -142,11 +146,13 @@ namespace Tappo {
                     var store=new RuntimeStore(Path.Combine(root,"manual-activity"));
                     var client=new FakeClient();client.State.left=client.State.right=900000;
                     long now=100000;int stage=0;Worker worker=null;
-                    store.Write("control.json",new Command {id="pause",action="pause"});
-                    worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>Task.FromResult(0),ms=> {
+                    worker=new Worker(store,()=> {
+                        store.Write("control.json",new Command {targetSession=worker.Status.identity.session,id="pause",action="pause"});
+                        return Task.FromResult<IAppClient>(client);
+                    },c=>Task.FromResult(0),ms=> {
                         now+=ms;
-                        if(stage==0)store.Write("control.json",new Command {id="repeat-pause",action="pause"});
-                        else if(stage==1)store.Write("control.json",new Command {id="resume",action="resume"});
+                        if(stage==0)store.Write("control.json",new Command {targetSession=worker.Status.identity.session,id="repeat-pause",action="pause"});
+                        else if(stage==1)store.Write("control.json",new Command {targetSession=worker.Status.identity.session,id="resume",action="resume"});
                         else worker.RequestDisconnect();
                         stage++;return Task.FromResult(0);
                     },()=>now);

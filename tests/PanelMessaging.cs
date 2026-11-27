@@ -19,6 +19,8 @@ namespace Tappo {
                 var identity=RuntimeIdentity.Create(store,"worker");
                 var status=new Status {identity=identity,pid=identity.pid,running=true,connected=true,at=DateTimeOffset.FromUnixTimeMilliseconds(now).ToString("o"),state=Tests.State(),claimsThisRun=7};
                 status.state.time=now;
+                store.Write("lock.json",status);
+                using(var guard=WorkerOwnership.Acquire(store))
                 using(var panel=new Panel(store,preview:true)) {
                     panel.ReadStatus=()=>status;panel.ReadClock=()=>now;panel.InspectIdentity=_=>"matched";panel.Refresh();
                     Check(Text(panel,"AvailableCaption")=="可用次数"&&Text(panel,"ClaimsCaption")=="本次运行领取","fresh figures marked historical");
@@ -29,8 +31,6 @@ namespace Tappo {
                     Check(Text(panel,"CountCaption")=="助手领取的宝箱数"&&Text(panel,"TotalValue")=="0","independent cumulative count incorrectly marked stale");
                     panel.InspectIdentity=_=>"identity-unverifiable";panel.Refresh();
                     Check(Text(panel,"MainMessage")=="无法确认后台状态"&&!Text(panel,"ActivityText").Contains("后台已退出"),"unknown identity presented as exit");
-                    panel.InspectIdentity=_=>"pid-reused";panel.Refresh();
-                    Check(Text(panel,"MainMessage")=="后台已退出"&&Text(panel,"DetailMessage").Contains("上次运行记录")&&Text(panel,"AvailableCaption").Contains("上次记录"),"original process disappearance not clearly distinguished");
                     panel.InspectIdentity=_=>"matched";status.at=DateTimeOffset.FromUnixTimeMilliseconds(now).ToString("o");status.state.time=now;panel.Refresh();
                     Check(Text(panel,"MainMessage")=="后台运行中"&&!Text(panel,"AvailableCaption").Contains("上次"),"fresh state retains old anomaly labels");
                     status.state.time=now-60000;panel.Refresh();
@@ -103,7 +103,9 @@ namespace Tappo {
                     now+=65000;
                     panel.Render(Path.Combine(output,"messages-stale-minimum.png"),820,660);
                     panel.InspectIdentity=_=>"identity-unverifiable";panel.Render(Path.Combine(output,"messages-unknown.png"));
-                    panel.InspectIdentity=_=>"process-exited";panel.Render(Path.Combine(output,"messages-exited.png"));
+                    guard.Dispose();panel.Refresh();
+                    Check(Text(panel,"MainMessage")=="后台已退出"&&Text(panel,"DetailMessage").Contains("上次运行记录")&&Text(panel,"AvailableCaption").Contains("上次记录"),"released guard with an unverifiable PID did not show an exit");
+                    panel.Render(Path.Combine(output,"messages-exited.png"));
                 }
                 Check(Panel.TimeoutMessage("start",true).Contains("管理员")&&!Panel.TimeoutMessage("start",false).Contains("管理员"),"start prompt ignores actual elevation path");
                 Check(Panel.TimeoutMessage("pause",false).Contains("可能仍在执行")&&!Panel.TimeoutMessage("pause",false).Contains("命令未执行"),"pause timeout claims an unobserved outcome");

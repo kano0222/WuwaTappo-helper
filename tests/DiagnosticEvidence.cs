@@ -33,10 +33,27 @@ namespace Tappo {
             return checks;
         }
         static async Task BlockedWorker(RuntimeStore store) {
+            var previous=RuntimeIdentity.Create(store,"worker");previous.processCreated--;
+            store.Write("lock.json",new Status {pid=previous.pid,identity=previous});
+            store.Write("control.json",new Command {id="previous",action="disconnect",targetSession=previous.session});
+            Panel.PrepareStart(store);
+            Check(store.Read<Status>("lock.json").identity.session==previous.session,"panel preflight replaced the native reservation");
             var gate=new TaskCompletionSource<Snapshot>();var client=new FakeClient {SnapshotTask=()=>gate.Task};
             var worker=new Worker(store,()=>Task.FromResult<IAppClient>(client),c=>Task.FromResult(0),Task.Delay,()=>RuntimeStore.Now);
             var run=worker.Run();
             try {
+                var owner=store.Read<Status>("lock.json").identity;
+                Check(owner.session==worker.Status.identity.session&&owner.session!=previous.session,"worker could not replace a stale native reservation");
+                var command=store.Read<Command>("control.json").id;
+                bool preflightRejected=false;
+                try {Panel.PrepareStart(store);}catch(InvalidOperationException) {preflightRejected=true;}
+                Check(preflightRejected&&store.Read<Command>("control.json").id==command,"startup preflight rewrote a running worker's command");
+                Worker duplicate=null;bool connected=false;
+                duplicate=new Worker(store,()=>{connected=true;duplicate.RequestDisconnect();return Task.FromResult<IAppClient>(new FakeClient());},
+                    c=>Task.FromResult(0),_=>Task.FromResult(0),()=>RuntimeStore.Now);
+                bool rejected=false;
+                try {await duplicate.Run();}catch(InvalidOperationException) {rejected=true;}
+                Check(rejected&&!connected&&store.Read<Status>("lock.json").identity.session==owner.session,"duplicate startup bypassed the active guard");
                 var path=Path.Combine(store.Runtime,"diagnostics",worker.Status.identity.session,"health.json");
                 var until=DateTime.UtcNow.AddSeconds(8);DiagnosticState first=null,latest=null;
                 while(DateTime.UtcNow<until) {
@@ -145,9 +162,11 @@ namespace Tappo {
             }
         }
         static void PauseTimeout(RuntimeStore store) {
+            using(WorkerOwnership.Acquire(store))
             using(var worker=new DiagnosticSession(store,"worker",false)) {
                 var status=new Status {identity=worker.Identity,pid=worker.Identity.pid,running=true,at=DateTimeOffset.UtcNow.ToString("o")};
                 store.Write("status.json",status);worker.Published(status);worker.Tick();
+                store.Write("lock.json",status);
                 using(var panel=new Panel(store,preview:true)) {
                     panel.ControlTimeoutMs=1;
                     var previous=SynchronizationContext.Current;
@@ -159,7 +178,8 @@ namespace Tappo {
                         System.Windows.Threading.Dispatcher.PushFrame(frame);
                         try {task.GetAwaiter().GetResult();throw new Exception("unacknowledged pause succeeded");}catch(TimeoutException) { }
                     } finally {SynchronizationContext.SetSynchronizationContext(previous);}
-                    Check(store.Read<Command>("control.json").action=="pause","fixture did not send pause");
+                    var command=store.Read<Command>("control.json");
+                    Check(command.action=="pause"&&command.targetSession==worker.Identity.session,"panel sent an unbound pause");
                     Check(panel.E<Button>("ExportDiagnosticsButton").IsEnabled,"timeout prevents exporting diagnostics");
                     panel.Render(Path.Combine(store.Root,"diagnostic-button.png"),740,660);
                     var button=panel.E<Button>("ExportDiagnosticsButton");
