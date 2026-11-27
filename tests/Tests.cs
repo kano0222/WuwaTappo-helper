@@ -134,6 +134,9 @@ namespace Tappo {
                 Check(lines.Length==3&&lines[0].EndsWith("已补充 100 次")&&
                     lines[1].EndsWith("已领取宝箱二 · 确认中")&&lines[2].EndsWith("已领取宝箱一 · 确认中"),
                     "activity did not show both successful receipts in time order");
+                Check(lines[1].StartsWith(DateTimeOffset.FromUnixTimeMilliseconds(receivedAt+2000).ToLocalTime().ToString("MM-dd HH:mm:ss")+"    ")&&
+                    lines[2].StartsWith(DateTimeOffset.FromUnixTimeMilliseconds(receivedAt).ToLocalTime().ToString("MM-dd HH:mm:ss")+"    "),
+                    "activity receipt times are not shown in the local time zone");
                 store.Log("claim-confirmed",new {side="left",operationId="left",receivedAt});
                 panel.Refresh();
                 Check(activity.Text==pending.Replace("宝箱一 · 确认中","宝箱一 · 消耗 1,000 次"),

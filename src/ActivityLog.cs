@@ -9,7 +9,7 @@ namespace Tappo {
         public string message,operationId;
         public bool confirming,resolvesPending;
         public bool error;
-        public string Line { get {return at.ToOffset(TimeSpan.FromHours(8)).ToString("MM-dd HH:mm:ss")+"    "+message.Replace('\r',' ').Replace('\n',' ');} }
+        public string Line { get {return at.ToLocalTime().ToString("MM-dd HH:mm:ss")+"    "+message.Replace('\r',' ').Replace('\n',' ');} }
     }
     // Keep the UI to user-facing messages; technical diagnostics remain in the log file.
     internal sealed class ActivityLog {
