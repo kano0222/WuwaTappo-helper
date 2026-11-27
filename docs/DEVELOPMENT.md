@@ -6,7 +6,7 @@
 
 **发布。** 在 [CHANGELOG](../CHANGELOG.md) 新增 `## [X.Y.Z] - YYYY-MM-DD`，测试版使用 `X.Y.Z-beta.N`。条目描述使用者能观察到的变化，同时供程序内更新窗口和 GitHub Release 使用。候选版本完成全量回归与关键场景验收后，按授权推送对应的 `v` 标签。[工作流](../.github/workflows/build.yml) 在 Windows 上构建、测试并检查包内资源，以同一次通过检查的 ZIP 发布；推送 `main` 生成构建产物。
 
-**README 预览。** 从仓库根目录运行 `.\scripts\Generate-ReadmePreview.ps1` 可用模拟数据渲染完整面板，并由 FFmpeg 生成动图。完整面板动图和 Mini 静态图均存放在 `docs/images/`。[预览脚本](../scripts/Generate-ReadmePreview.ps1)
+**README 预览。** 有 FFmpeg 时运行 `.\scripts\Generate-ReadmePreview.ps1`，可用 `-FFmpeg` 指定程序路径，或用 `-Version` 生成指定版本的预览。脚本使用独立构建和模拟数据，复用真实面板渲染，在 `docs/images/` 输出完整面板动图和 Mini 静态图。[预览脚本](../scripts/Generate-ReadmePreview.ps1)
 
 ## 代码入口
 
